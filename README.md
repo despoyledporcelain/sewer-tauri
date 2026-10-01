@@ -48,7 +48,7 @@
 
 <div align="center">
 
-### ↓ `seWer Tauri_1.0.0_x64-setup.exe`
+### ↓ `seWer.Tauri_1.0.0_x64-setup.exe`
 
 **3,4 МБ** · Windows x64 · WebView2 уже есть в системе
 
