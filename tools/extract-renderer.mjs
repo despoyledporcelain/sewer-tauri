@@ -338,6 +338,22 @@ const PATCHES = [
     ],
   },
   {
+    why: 'раздел «О приложении» остался от electron-с сборки: старая версия, старый репозиторий и Electron в стеке',
+    from: [
+      '        <Row label={t(\'version\')}><span style={{fontSize: \'var(--fs-sm)\', color:\'rgba(255,255,255,0.3)\'}}>0.4.0-alpha</span></Row>',
+      '        <Row label={t(\'repository\')}><span style={{fontSize: \'var(--fs-sm)\', color:\'rgba(255,255,255,0.3)\'}}>despoyledporcelain/seWer</span></Row>',
+      '        <Row label={t(\'stack\')} last><span style={{fontSize: \'var(--fs-sm)\', color:\'rgba(255,255,255,0.3)\'}}>Electron · React · HTML</span></Row>',
+    ],
+    to: [
+      '        <Row label={t(\'version\')}><span style={{fontSize: \'var(--fs-sm)\', color:\'rgba(255,255,255,0.3)\'}}>1.0.0</span></Row>',
+      '        <Row label={t(\'repository\')}><span',
+      '          onClick={()=>window.open(\'https://github.com/despoyledporcelain/sewer-tauri\',\'_blank\',\'noopener\')}',
+      '          title="https://github.com/despoyledporcelain/sewer-tauri"',
+      '          style={{fontSize: \'var(--fs-sm)\', color:\'rgba(255,255,255,0.3)\', cursor:\'pointer\'}}>despoyledporcelain/sewer-tauri</span></Row>',
+      '        <Row label={t(\'stack\')} last><span style={{fontSize: \'var(--fs-sm)\', color:\'rgba(255,255,255,0.3)\'}}>Tauri v2 · Rust · React</span></Row>',
+    ],
+  },
+  {
     why: 'слой обложки с уже присутствующим url добавлялся вторым экземпляром: два одинаковых key ломали reconcile react и оставляли сверху обложку чужого трека',
     from: [
       '    setLayers(prev => (url ? [...prev, { url }] : []));',

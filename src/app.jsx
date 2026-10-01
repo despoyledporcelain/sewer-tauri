@@ -4724,9 +4724,12 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     </>),
     about: (
       <Card>
-        <Row label={t('version')}><span style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)'}}>0.4.0-alpha</span></Row>
-        <Row label={t('repository')}><span style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)'}}>despoyledporcelain/seWer</span></Row>
-        <Row label={t('stack')} last><span style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)'}}>Electron · React · HTML</span></Row>
+        <Row label={t('version')}><span style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)'}}>1.0.0</span></Row>
+        <Row label={t('repository')}><span
+          onClick={()=>window.open('https://github.com/despoyledporcelain/sewer-tauri','_blank','noopener')}
+          title="https://github.com/despoyledporcelain/sewer-tauri"
+          style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)', cursor:'pointer'}}>despoyledporcelain/sewer-tauri</span></Row>
+        <Row label={t('stack')} last><span style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)'}}>Tauri v2 · Rust · React</span></Row>
       </Card>
     ),
   };
