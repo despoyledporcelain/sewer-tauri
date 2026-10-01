@@ -1,0 +1,241 @@
+  @font-face {
+    font-family: 'Proxima Soft';
+    src: url('/fonts/ProximaSoft-Bold.ttf') format('truetype');
+    font-weight: 300 900;
+    font-style: normal;
+  }
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; user-select:none; }
+  body.resizing * { transition: none !important; }
+  :root {
+    --bg:          #07070a;
+    --border:      rgba(255,255,255,0.055);
+    --text:        #ededf4;
+    --accent:      #b2b2b2;
+    --accent-rgb:  178, 178, 178;
+    --titlebar-h:  46px;
+
+    /* типографическая лестница — 7 ступеней вместо 16 разрозненных значений.
+       раньше каждое подбиралось под конкретный элемент: соседние 10.5/11/11.5
+       (54 вхождения) и 12/12.5 делали одну и ту же работу, а хвост
+       14.5…20 — это 8 вхождений на 6 значений. правится в одном месте */
+    --fs-eyebrow:  9.5px;   /* caps-эйбелы с трекингом +0.12em, мелкие бейджи */
+    --fs-xs:      11px;     /* мета, подсказки, счётчики, статус-пилюли */
+    --fs-sm:      12px;     /* базовый текст, пункты меню, кнопки */
+    --fs-md:      13px;     /* усиленный текст, названия треков */
+    --fs-lg:      15px;     /* заголовки секций, empty-state заголовки */
+    --fs-xl:      19px;     /* крупные заголовки */
+    --fs-display: 22px;     /* название плейлиста в редакторе */
+    /* ОТДЕЛЬНО живёт жидкий ярус — clamp(...vw): имя артиста, инфо и название
+       трека в плеере. они масштабируются с шириной окна, поэтому намеренно
+       вне лестницы: на ступеньку их класть нельзя, ломается адаптив.
+       если добавишь пятый — он тоже clamp, а не --fs-* */
+  }
+  html, body { width:100%; height:100%; background:transparent; overflow:hidden; font-family:'Proxima Soft',sans-serif; color:var(--text);
+    text-rendering:optimizeLegibility; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+  #app-shell {
+    position:fixed; inset:0;
+    background:var(--bg); border-radius:12px; overflow:hidden;
+    display:flex; flex-direction:column;
+  }
+  #app-shell::before {
+    content:''; position:absolute; inset:0; z-index:0; pointer-events:none;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    opacity:0.022;
+  }
+  #app-shell::after {
+    content:''; position:absolute; inset:0; z-index:0; pointer-events:none;
+    background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.5) 100%);
+  }
+  /* Акцентная подсветка сверху — только в плеере (body.in-player) и при
+     вкл. свечениях. Градиент прозрачен уже к ~235px, а элемент раньше
+     занимал inset:0, то есть на каждом кадре лерпа --accent-rgb
+     перерисовывался прямоугольник во всё окно ради пустого низа.
+     Теперь бокс ограничен верхними 62% — та же картинка, вдвое меньше
+     растрируемой площади. */
+  /* ❌ было `radial-gradient(ellipse 115% 115% at 50% -8%, accent 7%, …)`.
+     Это читалось как БЛОБ: пятно с центром в середине шапки, widest — по
+     центру, и на тёмном фоне оно выглядело не «светом сверху», а грязным
+     пятном, тем более что под ним сразу стоят иконки навигации.
+     светить нужно ОТ КРАЯ, а не из центра: линейный градиент от верхней
+     кромки вниз читается как верхняя подсветка, а узкая полоса в 1.5px —
+     как чёткая линия, а не размытость. оба приёма вместе дают цвет, но
+     без пятна. */
+  /* Акцент верхней панели.
+     1) было `radial-gradient(ellipse 115% 115% at 50% -8%)` — пятно с центром
+        в середине шапки, самое широкое ровно там, где иконки навигации.
+        Читалось не как свет сверху, а как грязное пятно.
+     2) стало два слоя: чёткая линия у самой кромки (цвет как элемент) и
+        мягкая подсветка сверху вниз.
+
+     ⚠️ БОКС ОСТАЁТСЯ `height:62%` ОТ ВЫСОТЫ ОКНА — так бокс вдвое меньше
+     растрируемой площади, чем `inset:0`. Из-за этого проценты в боксе
+     НЕЛЬЗЯ считать «долями панели»: панель здесь 46px, а бокс ~430px, то
+     есть вся панель занимает первые ~11% высоты бокса. Прежний стоп на 78%
+     означал 336px — далеко в содержимом, это и была «нецельность».
+
+     ⚠️ ПОЭТОМУ ГАСИМ В ПИКСЕЛЯХ, а не в процентах: ноль альфы на 40px, то
+     есть за 6px ДО нижней границы панели. Подсветка не доходит до неё и не
+     упирается в неё, а низ панели остаётся чистым `--bg`. В процентах это
+     означало бы ~9% — число, зависящее от высоты окна, и при другом размере
+     окна опять уехало бы. Пиксели от высоты окна не зависят. */
+  #accent-top {
+    position:absolute; left:0; right:0; top:0; height:62%;
+    z-index:0; pointer-events:none;
+    background:
+      /* чёткая линия у самого верха — «цвет» как элемент, а не как засветка */
+      linear-gradient(to right,
+        transparent 0%,
+        rgba(var(--accent-rgb), 0.55) 18%,
+        rgba(var(--accent-rgb), 0.55) 82%,
+        transparent 100%) top / 100% 1.5px no-repeat,
+      /* подсветка сверху вниз; ноль на 40px — выше границы панели (46px) */
+      linear-gradient(to bottom,
+        rgba(var(--accent-rgb), 0.085) 0px,
+        rgba(var(--accent-rgb), 0.052) 18px,
+        rgba(var(--accent-rgb), 0.024) 30px,
+        rgba(var(--accent-rgb), 0.007) 37px,
+        transparent 40px);
+    opacity:0; transition:opacity 0.6s ease;
+  }
+  body.in-player:not(.glow-off) #accent-top { opacity:1; }
+  #titlebar {
+    flex-shrink:0; height:var(--titlebar-h);
+    -webkit-app-region: drag;
+    position:relative;
+    display:flex; align-items:center; justify-content:flex-end;
+    padding-right:8px; z-index:1000;
+    background:var(--bg);
+    border-bottom:1px solid rgba(255,255,255,0.018);
+    transition: background 0.6s ease;
+  }
+  #topbar-slot {
+    flex:1; height:100%; min-width:0;
+    display:flex; align-items:center;
+  }
+  /* десктоп-поведение: ничего не таскается нативным drag'ом (обложки/иконки),
+     фокус после клика не рисует обводок */
+  * { -webkit-user-drag: none; }
+  *:focus { outline: none; }
+  input:focus, textarea:focus { outline: none; }
+  .win-btn {
+    -webkit-app-region: no-drag;
+    width:24px; height:24px; border-radius:6px; border:none;
+    background:none; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    color:rgba(255,255,255,0.22);
+    transition:background 0.15s, color 0.15s;
+  }
+  .win-btn:hover { background:rgba(255,255,255,0.07); color:rgba(255,255,255,0.7); }
+  .win-btn.close:hover { background:rgba(255,80,80,0.18); color:#ff6060; }
+  #root {
+    position:relative; z-index:1;
+    width:100%; flex:1;
+    display:flex; overflow:hidden;
+  }
+  ::-webkit-scrollbar { width:2px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.07); border-radius:2px; }
+  .scroll-thin::-webkit-scrollbar { width:8px; }
+  .scroll-thin::-webkit-scrollbar-track { background:transparent; margin:10px 0; }
+  .scroll-home::-webkit-scrollbar-track { margin-top:68px; margin-bottom:18px; }
+  .scroll-thin::-webkit-scrollbar-thumb {
+    background:rgba(255,255,255,0.09);
+    border-radius:4px;
+    border:3px solid transparent;
+    background-clip:content-box;
+    min-height:40px;
+  }
+  .scroll-thin::-webkit-scrollbar-thumb:hover {
+    background:rgba(255,255,255,0.28);
+    border:2px solid transparent;
+    background-clip:content-box;
+  }
+  /* Полоса текста песни: видна только пока скроллим или под курсором.
+     Раньше висела постоянно и в колонке 260px читалась как тяжёлая
+     вертикальная черта во всю высоту панели. Вместо «полосы как
+     индикация» добавлены ещё градиенты по краям (mask у LyricsPanel) —
+     как у VirtualTrackList в библиотеке. */
+  /* Полосы нет вообще, но скролл живёт — панель текста песни. Раньше был
+     класс `.scroll-fade`: полоса прозрачна, вспыхивал на 900мс после скролла
+     и под курсором. Мешала читать, поэтому убрана вместе с состоянием
+     `scrolling` и таймером — они гоняли ререндер панели после каждого
+     скролла ради строчки, которой уже нет. Края теперь держит mask
+     (см. LyricsPanel) — как у VirtualTrackList в библиотеке.
+     `scrollbar-width` — стандарт, `::-webkit-scrollbar` — потому что
+     приложение всё равно на chromium. ширину НЕ обнуляем через width:0
+     (колесо и перетаскивание работают и с нулевой), а прячем через display */
+  .scroll-none { scrollbar-width:none; -ms-overflow-style:none; }
+  .scroll-none::-webkit-scrollbar { display:none; width:0; height:0; }
+  input::placeholder { color:rgba(255,255,255,0.2); }
+  input { caret-color:var(--accent); }
+  input::selection { background:rgba(255,255,255,0.18); color:inherit; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+  input[type=number] { -moz-appearance:textfield; }
+  /* ❌ УДАЛЕНЫ как мёртвые: `breathe`, `fadeOutDown`, `marqueeScroll`.
+     ни один не имел ни одного `animation:`/`animation-name` — бегущая
+     строка у них перебивалась короче или компонент писал transform инлайном.
+     `marqueeScroll` — самая коварная из них: переменная `--mq-d` есть
+     только у marquee-элемента, а сам marquee давно ездит на JS. */
+  @keyframes spin       { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+  @keyframes fadeInUp   { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+  /* ⚠️ здесь НЕ БЫЛО `transform`/`transition` и `:hover { transform }` —
+     они были, и не работали НИ РАЗУ. корень карточки — `motion.div`,
+     который анимирует `scale`, то есть после входной анимации Motion
+     оставляет инлайновый `transform`, а он приоритетнее любого css-правила
+     класса. `:hover` просто не применялся, подъёма карточки не было.
+     теперь подъём живёт в `whileHover` у HomeCard/PlaylistCard.
+     Потомки (`.home-card-overlay`, `.home-card-play`, `.home-card-like`)
+     работают как раньше: это opacity, а корень инлайновый opacity не
+     перекрывает — он и не мешает селектору по потомку. */
+  .home-card-overlay { opacity:0; transition:opacity 0.2s ease; }
+  .home-card:hover .home-card-overlay { opacity:1; }
+  .home-card-like { opacity:0; transition:opacity 0.18s ease; }
+  .home-card:hover .home-card-like { opacity:1; }
+  .home-card-play {
+    transform:scale(0.6); opacity:0;
+    transition:transform 0.3s cubic-bezier(0.34,1.56,0.64,1), opacity 0.16s ease;
+  }
+  .home-card:hover .home-card-play { transform:scale(1); opacity:1; }
+  /* like: spring pop + accent glow (var(--accent-rgb) перетекает с глобальным акцентом) */
+  @keyframes likePop {
+    0%   { transform:scale(1); }
+    35%  { transform:scale(1.45); }
+    65%  { transform:scale(0.88); }
+    82%  { transform:scale(1.07); }
+    100% { transform:scale(1); }
+  }
+  @keyframes likeGlow {
+    0%   { filter:drop-shadow(0 0 0   rgba(var(--accent-rgb),0)); }
+    30%  { filter:drop-shadow(0 0 9px rgba(var(--accent-rgb),0.55)); }
+    100% { filter:drop-shadow(0 0 1px rgba(var(--accent-rgb),0)); }
+  }
+  .like-pop  { animation:likePop 0.48s cubic-bezier(0.34,1.56,0.64,1); }
+  .like-glow { animation:likeGlow 0.6s ease-out; }
+  /* оба класса на одном элементе: shorthand animation друг друга перекрывал —
+     объединяем, pop и glow играют одновременно */
+  .like-pop.like-glow { animation:likePop 0.48s cubic-bezier(0.34,1.56,0.64,1), likeGlow 0.6s ease-out; }
+  /* режим «выкл»: glow-часть глушится, pop остаётся */
+  body.glow-off .like-glow { animation:likePop 0.48s cubic-bezier(0.34,1.56,0.64,1); }
+  /* skeleton shimmer */
+  .skel { position:relative; overflow:hidden; background:rgba(255,255,255,0.045); }
+  .skel::before {
+    content:''; position:absolute; inset:0;
+    transform:translateX(-100%);
+    background:linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.05) 50%, transparent 100%);
+    animation:shimmer 1.7s ease-in-out infinite;
+    animation-delay:var(--skel-delay,0s);
+    will-change:transform;
+  }
+  @keyframes shimmer { to { transform:translateX(100%); } }
+  /* мини-эквалайзер для станции (живой индикатор) */
+  .st-eq i { display:block; width:2px; height:100%; border-radius:1px;
+    background:var(--accent); transform-origin:bottom;
+    animation:stEq 0.9s ease-in-out infinite; }
+  .st-eq i:nth-child(2) { animation-delay:0.25s; }
+  .st-eq i:nth-child(3) { animation-delay:0.5s; }
+  @keyframes stEq { 0%, 100% { transform:scaleY(0.35); } 50% { transform:scaleY(1); } }
+  .track-row { background:none; transition:background 0.15s ease; }
+  .track-row:not(.active):hover { background:rgba(255,255,255,0.03); }
+  /* редактор плейлиста: hover обложки и карандаш у названия */
+  div:hover > .pl-art-hover { opacity:1; }
+  .pl-title-edit:hover .pl-title-pencil { opacity:1; }

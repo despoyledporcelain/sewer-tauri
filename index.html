@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>seWer</title>
+</head>
+<body>
+
+<div id="app-shell">
+<div id="accent-top"></div>
+<!-- data-tauri-drag-region: -webkit-app-region в WebView2 не работает, перетаскивание
+     окна даёт tauri. Кнопки внутри намеренно без атрибута — иначе клик по ним
+     начинал бы drag. -->
+<div id="titlebar" data-tauri-drag-region>
+  <div id="topbar-slot" data-tauri-drag-region></div>
+  <button class="win-btn" data-win="minimize" title="Свернуть">
+    <svg width="10" height="2" viewBox="0 0 10 2" fill="currentColor"><rect width="10" height="2" rx="1"/></svg>
+  </button>
+  <button class="win-btn close" data-win="close" title="Закрыть">
+    <svg width="10" height="10" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.5"><line x1="1" y1="1" x2="9" y2="9"/><line x1="9" y1="1" x2="1" y2="9"/></svg>
+  </button>
+</div>
+
+<div id="root"></div>
+</div>
+<script type="module" src="/src/main.jsx"></script>
+</body>
+</html>

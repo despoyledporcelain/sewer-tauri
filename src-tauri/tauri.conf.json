@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "seWer Tauri",
+  "version": "1.0.0",
+  "identifier": "com.sewer.tauri",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "seWer Tauri",
+        "width": 900,
+        "height": 700,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "center": true,
+        "focus": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      },
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: asset: http://asset.localhost; media-src 'self' data: blob: https: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' https: ipc: http://ipc.localhost asset: http://asset.localhost; worker-src 'self' blob:; child-src blob:; object-src 'none'; base-uri 'self'; frame-src 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: asset: http://asset.localhost; media-src 'self' data: blob: https: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' https: ipc: http://ipc.localhost asset: http://asset.localhost ws: wss: http://localhost:1420; worker-src 'self' blob:; child-src blob:; object-src 'none'; base-uri 'self'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "category": "Music",
+    "shortDescription": "seWer",
+    "longDescription": "музыкальный плеер с парсингом soundcloud",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Russian"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

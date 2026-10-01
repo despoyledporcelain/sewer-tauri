@@ -1,0 +1,54 @@
+[package]
+name = "sewer-tauri"
+version = "1.0.0"
+description = "seWer — музыкальный плеер с парсингом soundcloud"
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "sewer_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# protocol-asset обязателен: через asset-протокол отдаются локальные треки
+# и кэш обложек (bridge переводит путь через convertFileSrc), а включён он
+# в tauri.conf.json — cargo проверяет, что список features совпадает.
+tauri = { version = "2", features = ["tray-icon", "image-png", "protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json", "stream", "rustls-tls", "gzip", "charset", "http2",
+] }
+lofty = "0.22"
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+url = "2"
+rayon = "1"
+# discord-каналы: std-обёртка NamedPipeClientConn за фичей `named_pipe`,
+# которую из крейта включить нельзя, поэтому Win32 напрямую.
+# Версия 0.61 — та же, что тянет tauri: в дереве и так пять версий
+# windows-sys, и лишняя шестая только раздувает сборку.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }
+
+# Release: символы пользователю не нужны, lto — потому что tauri и webview2
+# тянут много кода, а размер инсталлятора тут единственный аргумент миграции.
+# panic=abort НЕ ставим: tauri держит перехват паник на границах окон.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
