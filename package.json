@@ -1,7 +1,7 @@
 {
   "name": "sewer-tauri",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "seWer — music player, Tauri v2 build (separate from the electron one)",
   "type": "module",
   "scripts": {
