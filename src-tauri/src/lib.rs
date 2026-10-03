@@ -4,6 +4,7 @@
 //! (`#[tauri::command(rename = "…")]`), поэтому фасад src/bridge.js не мог
 //! разойтись с логикой ui: 64 вызова window.electronAPI переехали как есть.
 
+mod backdrop;
 mod discord;
 mod download;
 mod ipc_pipe;
@@ -97,6 +98,21 @@ pub fn run() {
 
             build_tray(&handle)?;
             register_media_keys(&handle);
+            /* Материал окна — до загрузки страницы, иначе окно мигнёт
+               непрозрачным: настройка читается фронтендом асинхронно, а
+               полупрозрачной оболочку он делает уже после первого рендера */
+            if let Some(w) = handle.get_webview_window("main") {
+                let on = settings::load_settings()
+                    .get("windowEffect")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s == "mica");
+                if !backdrop::apply(&w, on) {
+                    /* система не умеет. молча оставлять включённым нельзя —
+                       фронтенд откатит настройку сам, но и здесь пишем в лог,
+                       иначе причина «ничего не изменилось» не видна нигде */
+                    eprintln!("[backdrop] mica недоступна");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -143,6 +159,7 @@ pub fn run() {
             discord_update,
             discord_clear,
             discord_rpc_enabled,
+            set_window_effect,
         ])
         .run(tauri::generate_context!())
         .expect("seWer Tauri: запуск tauri");
@@ -215,6 +232,14 @@ fn register_media_keys(app: &AppHandle) {
 }
 
 // ── окно ──────────────────────────────────────────────────────────────────
+
+/// Материал окна из настроек. Отвечает, получилось ли: на windows 10 и на 11
+/// ниже 22H2 DWM принимает вызов и не рисует ничего, поэтому «включилось» без
+/// проверки означало бы тумблер, который ничего не делает (см. backdrop.rs).
+#[tauri::command(rename = "set-window-effect")]
+fn set_window_effect(window: tauri::WebviewWindow, effect: String) -> bool {
+    backdrop::apply(&window, effect == "mica")
+}
 
 #[tauri::command(rename = "win-minimize")]
 fn win_minimize(app: AppHandle) {

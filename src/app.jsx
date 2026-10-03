@@ -1294,6 +1294,13 @@ const STRINGS = {
     minimize:'Свернуть', close:'Закрыть',
     nav_tracks:'Треки', nav_search:'Поиск', nav_player:'Плеер', nav_playlists:'Плейлисты',
     nav_local:'Локальная библиотека', nav_settings:'Настройки',
+    player_pick:'Выбери трек',
+    card_window:'Окно',
+    mica_accent_lock:'Материал окна несовместим с подсветкой акцента: при его включении акцент выключается. Чтобы вернуть подсветку, сначала выключите материал окна.',
+    mica:'Материал окна',
+    mica_only_win11:'только Windows 11',
+    mica_sub:'Фон становится полупрозрачным, и сквозь него видно материал системы — как в приложениях Windows 11. Скругление окна при этом пропадает: материал ложится на весь прямоугольник. Нужен Windows 11.',
+    mica_unsupported:'Система не поддерживает материал окна — нужен Windows 11',
     unavailable:'недоступен',
     off:'выкл', sec:'с',
     cancel:'отмена',
@@ -1308,8 +1315,9 @@ const STRINGS = {
     autoplay:'Автовоспроизведение', autoplay_sub:'Следующий трек запускается автоматически',
     default_repeat:'Повтор по умолчанию',
     crossfade:'Кроссфейд', crossfade_sub:'Плавное перекрытие треков',
-    card_interface:'Интерфейс',
-    hide_dividers:'Отключить разделители', hide_dividers_sub:'Убирает линии между пунктами настроек и треками',
+    /* ❌ УДАЛЕНЫ ключи `card_interface`, `hide_dividers`, `hide_dividers_sub` —
+       карточка «Интерфейс» была из одного тумблера разделителей, он убран,
+       а поведение зафиксировано константой HIDE_DIVIDERS */
     discord_rpc:'Discord Rich Presence', discord_rpc_sub:'Показывать текущий трек в Discord',
     card_discord:'Discord',
     discord_timestamp:'Таймстамп',
@@ -1408,6 +1416,13 @@ const STRINGS = {
     minimize:'Minimize', close:'Close',
     nav_tracks:'Tracks', nav_search:'Search', nav_player:'Player', nav_playlists:'Playlists',
     nav_local:'Local library', nav_settings:'Settings',
+    player_pick:'Pick a track',
+    card_window:'Window',
+    mica_accent_lock:'Window material is incompatible with accent glow: enabling it turns the accent off. Turn the material off first to get the accent back.',
+    mica:'Window material',
+    mica_only_win11:'Windows 11 only',
+    mica_sub:'The background turns translucent and the system material shows through, like in Windows 11 apps. The window loses its rounded corners — the material covers the whole rectangle. Requires Windows 11.',
+    mica_unsupported:'This system does not support window material — needs Windows 11',
     unavailable:'unavailable',
     off:'off', sec:'s',
     cancel:'cancel',
@@ -1422,8 +1437,7 @@ const STRINGS = {
     autoplay:'Autoplay', autoplay_sub:'Next track plays automatically',
     default_repeat:'Default repeat',
     crossfade:'Crossfade', crossfade_sub:'Smooth overlap between tracks',
-    card_interface:'Interface',
-    hide_dividers:'Hide dividers', hide_dividers_sub:'Removes lines between settings items and tracks',
+    /* ❌ removed card_interface, hide_dividers, hide_dividers_sub — см. ru */
     discord_rpc:'Discord Rich Presence', discord_rpc_sub:'Show current track in Discord',
     card_discord:'Discord',
     discord_timestamp:'Timestamp',
@@ -2143,6 +2157,15 @@ function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = fa
     const im = new Image();
     imgRef.current = im;
     im.decoding = 'async';
+    /* ⚠️ Счётчик попыток принадлежал ПРЕДЫДУЩЕМУ url: сбрасывался только в
+       `ready`, то есть на успехе. Поэтому исчерпанные попытки переносились на
+       СЛЕДУЮЩУЮ обложку в том же экземпляре слоя, и та падала сразу, не
+       получив ни одной попытки. Сбрасываем на смену url. */
+    retryRef.current = 0;
+    /* У локальных треков обложка приходит из тегов как
+       `data:image/jpeg;base64,…` (см. cover_art в library.rs), а у sc —
+       как сетевой url. Разница критична для обработчика ошибки ниже. */
+    const isData = /^data:/i.test(url);
     im.onload = () => {
       if (dead) return;
       const ready = () => {
@@ -2153,23 +2176,28 @@ function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = fa
            `style.opacity = '1'` — нижний слой становился видимым и не
            уходил, поэтому кроссфейда не было, а новая обложка просто
            проявлялась поверх неподвижной старой */
-        retryRef.current = 0;
         onLoaded(url);
       };
       if (im.decode) im.decode().then(ready).catch(ready); else ready();
     };
     im.onerror = () => {
       if (dead) return;
-      if (retryRef.current < 2) {
-        retryRef.current++;
-        setTimeout(() => {
-          if (dead) return;
-          const sep = url.includes('?') ? '&' : '?';
-          im.src = url + sep + '_r=' + Date.now();
-        }, 500 * retryRef.current);
-      } else {
-        onFailed(url);
-      }
+      /* 🚨 Повтор через `?_r=<timestamp>` для data-url не просто бесполезен,
+         а ВРЕДИТЕЛЬ: хвост дописывается внутрь base64-полезной нагрузки, и
+         следующая попытка гарантированно падает на битом base64. Дальше —
+         две попытки, потом onFailed, слой выкидывается, и обложка навсегда
+         остаётся заглушкой: переоткрыть трек уже не помогает, потому что
+         каждый новый слой повторяет тот же цикл. Именно это и наблюдалось:
+         обложка локального трека слетала после переключения трек→библиотека→
+         трек. Для data-url повтор не нужен в принципе (сети нет, кэш не
+         при чём), поэтому уходим в отказ сразу. */
+      if (isData || retryRef.current >= 2) { onFailed(url); return; }
+      retryRef.current++;
+      setTimeout(() => {
+        if (dead) return;
+        const sep = url.includes('?') ? '&' : '?';
+        im.src = url + sep + '_r=' + Date.now();
+      }, 500 * retryRef.current);
     };
     im.src = url;
     return () => { dead = true; };
@@ -2329,6 +2357,12 @@ function AmbientGlow({ visible, off }) {
   if (off) return null;
   return (
     <div style={{
+      /* Пятно не трогать: это ореол ЗА ОБЛОЖКОЙ, и его размер задан тут же
+         ниже в комментарии функции осознанно (ближе к обложке = читаемая
+         альфа снаружи). Всё, что светится цветом акцента в верхней части
+         окна, приходит ОТСЮДА: пятно круглое и симметричное, поэтому его
+         ореол по бокам и его хвост через верх окна — одно и то же пятно,
+         и разделить их нельзя, не разрезав круг */
       position:'absolute', inset:'-50%', borderRadius:'50%',
       /* ⚠️ хвост после 60% намеренно сжат. У скруглённой обложки за дугой
          каждого угла остаётся просвет, и в него видно glow. Углы квадрата
@@ -3255,6 +3289,57 @@ function VirtualTrackList({ items, activeId, loadingId, errorId, onClickItem, on
   );
 }
 
+/* ── SourceMark ────────────────────────────────────────────────────────────── */
+/* Индикатор источника текста песни: кружок «ищем» и красная точка «упал».
+   Оба меняют ширину плашки — и меняли её мгновенно: в момент, когда
+   источник отвечал, чип терял 12px и подпрыгивал, а соседние чипы уезжали
+   вместе с ним. Теперь ширина слота переезжает на transition, и размер
+   меняется плавно.
+
+   Ширина, а не scale: под transform текст растягивался бы — на 24px плашке
+   это видно. Здесь текст остаётся резким на каждом кадре.
+
+   Слот в разметке всегда: иначе на `busy→false` элемент просто вынимался бы
+   из дерева и анимировать было бы нечего. Поэтому он абсолютный внутри
+   слота, а не потоковый ребёнок flex — иначе ширина снова зависела бы от
+   содержимого. */
+function SourceMark({ busy, dead }) {
+  /* 7px под кружок, 4px под точку, 0 когда индикатора нет */
+  const w = busy ? 7 : dead ? 4 : 0;
+  return (
+    <span style={{
+      position:'relative', flexShrink:0,
+      width:w, height:7, marginRight: w ? 5 : 0,
+      transition:'width 0.26s cubic-bezier(0.22,1,0.36,1), margin-right 0.26s cubic-bezier(0.22,1,0.36,1)',
+    }}>
+      <span style={{
+        position:'absolute', left:0, top:'50%', width:4, height:4, marginTop:-2,
+        borderRadius:'50%', background:'rgba(255,80,60,0.7)',
+        opacity: dead ? 1 : 0,
+        transform: dead ? 'scale(1)' : 'scale(0.3)',
+        transition:'opacity 0.16s ease, transform 0.2s cubic-bezier(0.34,1.56,0.64,1)',
+      }}/>
+      {/* кружок: scale живёт на обёртке, потому что transform самого кружка
+          занимает анимация spin — инлайновый scale просто не применился бы
+          (тот же класс бага, что с :hover у .home-card в styles.css) */}
+      <span style={{
+        position:'absolute', left:0, top:'50%', width:7, height:7, marginTop:-3.5,
+        opacity: busy ? 1 : 0,
+        transform: busy ? 'scale(1)' : 'scale(0.3)',
+        transition:'opacity 0.16s ease, transform 0.2s cubic-bezier(0.34,1.56,0.64,1)',
+      }}>
+        <span style={{
+          display:'block', width:'100%', height:'100%', borderRadius:'50%',
+          boxSizing:'border-box',
+          border:'1px solid rgba(255,255,255,0.28)',
+          borderTopColor:'rgba(255,255,255,0.7)',
+          animation: busy ? 'spin 0.7s linear infinite' : 'none',
+        }}/>
+      </span>
+    </span>
+  );
+}
+
 /* ── LyricsPanel ──────────────────────────────────────────────────────────── */
 /* панель текста песни: перекрывает библиотеку в колонке 260px и уезжает
    вместе с ней. всегда смонтирована — видимостью управляет `open`
@@ -3280,6 +3365,10 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
   const userScrollRef = useRef(0);
   const autoUntilRef  = useRef(0);
   const wasOpenRef    = useRef(false);
+  /* появление текста: строки проявляются волной сверху вниз. живёт в состоянии
+     ради одного триггера — самого факта «текст пришёл»; сама волна сделана на
+     css-переходах в разметке строки, без rAF и без записи в dom */
+  const [shown, setShown] = useState(false);
   /* края храним в ref + чиним через счётчик: меняются они на каждом
      скролле, а ререндер ради двух булевых значений не нужен — маска
      применяется стилем, а состояние нужно только чтобы перерисовалось */
@@ -3295,6 +3384,12 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
   /* `synced` в панели больше не читается: подпись «без таймкодов» убрана.
      само поле `state.synced` по-прежнему нужно — по нему App гоняет rAF
      подсветки (см. эффект активной строки) */
+
+  /* Волна появления. Текст пришёл — проявляется; новый поиск или трек без
+     текста — гаснет, чтобы следующая волна отыграла с начала.
+     Ключ — сам объект `state`: App создаёт новый только на результат поиска,
+     так что на трек приходится ровно одна волна, а не по кадру. */
+  useEffect(() => { setShown(state?.status === 'ready' && !!lines?.length); }, [state, lines]);
 
   /* Градиенты по краям контента — ОТДЕЛЬНЫМИ слоями поверх скроллера, а не
      mask'ом на нём: маска заставляет chromium перерастрировать содержимое
@@ -3395,6 +3490,12 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
     border:'1px solid rgba(255,255,255,0.03)',
     color:'rgba(255,255,255,0.22)',
     boxSizing:'border-box',
+    /* Ответ источника меняет не только размер, но и цвет плашки (нашли
+       текст — она заливается акцентом), и цвет переключался мгновенно:
+       плашка не просто прыгала, а ещё и вспыхивала. Кнопки возврата и
+       обновления переопределяют transition ниже по стилю, так что здесь
+       анимируется только чип источника. */
+    transition:'color 0.25s ease, background-color 0.25s ease, border-color 0.25s ease',
   };
 
   return (
@@ -3426,17 +3527,17 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
           return (
             <span key={s.id} title={dead ? entry.why : undefined} style={{
               ...CHIP,
+              /* gap обнулён именно у чипа: отступ до подписи теперь задаёт
+                 сам слот индикатора (marginRight 5 только когда он виден).
+                 При gap:5 пустой слот всё равно раздвинул бы плашку на 5px,
+                 и в покое она была бы шире нужной. Кнопки рядом gap не
+                 используют — у них один ребёнок. */
+              gap:0,
               color: used ? 'rgba(255,255,255,0.6)' : CHIP.color,
               background: used ? 'rgba(var(--accent-rgb),0.1)' : CHIP.background,
               border: used ? '1px solid rgba(var(--accent-rgb),0.28)' : CHIP.border,
             }}>
-              {dead && <span style={{width:4, height:4, borderRadius:'50%', background:'rgba(255,80,60,0.7)', flexShrink:0}}/>}
-              {busy && <span style={{
-                width:7, height:7, borderRadius:'50%', flexShrink:0,
-                border:'1px solid rgba(255,255,255,0.28)',
-                borderTopColor:'rgba(255,255,255,0.7)',
-                animation:'spin 0.7s linear infinite',
-              }}/>}
+              <SourceMark busy={busy} dead={dead}/>
               {s.label}
             </span>
           );
@@ -3531,7 +3632,27 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
               cursor: l.t != null ? 'pointer' : 'default',
               padding:'3px 0', borderRadius:5,
               transition:'color 0.28s ease, font-weight 0.28s ease, transform 0.28s ease',
-            }}>{l.text}</div>
+            }}>
+              {/* Волна появления — на внутреннем span, а не на самой строке.
+                  У строки свой transform (сдвиг активной на 2px) и своя
+                  transition; если бы появление жило на ней же, задержка
+                  волны досталась бы и подсветке, и она запаздывала бы на
+                  треть секунды. Отдельный слой отделяет их друг от друга.
+                  Задержка на строке не сбрасывается после волны: она нужна
+                  ровно в момент старта, а дальше на этом span ничего не
+                  меняется — значит и подсветке она не мешает. */}
+              <span style={{
+                display:'block',
+                opacity: shown ? 1 : 0,
+                transform: shown ? 'translateY(0)' : 'translateY(7px)',
+                transition:'opacity 0.34s ease, transform 0.42s cubic-bezier(0.22,1,0.36,1)',
+                /* задержка растёт с номером строки, но не бесконечно: на
+                   первом экране помещается строк 19, а в песне их бывает
+                   под сотню. Дальше идут ровно — их всё равно не видно, и
+                   волна в полминуты ради нижних строк никому не нужна */
+                transitionDelay: Math.min(i, 16) * 24 + 'ms',
+              }}>{l.text}</span>
+            </div>
         ))}
 
         {/* «не нашлось» и «источник упал» — разные вещи, и раньше они
@@ -4080,7 +4201,7 @@ function LyricsSettings({ settings, onSettings, Card, Toggle }) {
     .filter(Boolean);
   const enabled  = byOrder(on);
   const disabled = byOrder(LYRICS_SOURCE_IDS.filter(id => !on.includes(id)));
-  const div = settings.hideDividers ? 'none' : '1px solid rgba(255,255,255,0.045)';
+  const div = HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.045)';
 
   const write  = next => onSettings(s => ({ ...s, lyricsSources: next }));
   const toggle = id => write(on.includes(id) ? on.filter(x => x !== id) : [...on, id]);
@@ -4156,6 +4277,8 @@ function LyricsSettings({ settings, onSettings, Card, Toggle }) {
 /* ── SettingsView ─────────────────────────────────────────────────────────── */
 function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFolder, onClearCoversCache, onClearLikesCache, appAccent, scAuth, onScLogin, onScLogout, sec, setSec, discordStatus }) {
   const t = useLang();
+  /* Материал окна выключает подсветку акцента — см. карточку акцента */
+  const micaOn = settings.windowEffect === 'mica';
   const [scLoading, setScLoading] = useState(false);
   const [scError, setScError] = useState(null);
   const scLogin = async () => {
@@ -4206,7 +4329,7 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     <div style={{
       display:'flex', alignItems:'center', justifyContent:'space-between',
       padding:'13px 20px',
-      borderBottom: (last || !!settings.hideDividers) ? 'none' : '1px solid rgba(255,255,255,0.045)',
+      borderBottom: (last || !!HIDE_DIVIDERS) ? 'none' : '1px solid rgba(255,255,255,0.045)',
     }}>
       <div>
         <div style={{fontSize: 'var(--fs-md)', color:'rgba(255,255,255,0.75)'}}>{label}</div>
@@ -4325,6 +4448,43 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
           <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.32)', marginBottom:14, lineHeight:1.4}}>
             {t('accent_sub')}
           </div>
+          {/* Подсветка акцента и материал окна несовместимы: DWM рисует мику под
+              окном, а акцент — это свет OUR OWN слоя над ней, и они бьют по
+              одному и тому же. Поэтому при включённом материале сегменты
+              заблокированы, а не просто гаснут: иначе можно было бы включить
+              материал, потом тыкнуть «Цвет» и снова получить несовместимую
+              комбинацию. Гасит акцент сам тумблер материала. */}
+          {/* Плашка замка. Раньше монтировалась и размонтировалась по `micaOn`, то
+              есть появлялась скачком. Теперь всегда в дереве и раскрывается
+              transition — как аккордеон discord ниже, из той же логики и по
+              той же причине: пересборка блока дёргает всё, что под ним, а
+              высота у этой плашки меняется с 0. */}
+          <div style={{
+            display:'flex', gap:8, overflow:'hidden',
+            marginBottom: micaOn ? 12 : 0,
+            padding: micaOn ? '9px 11px' : '0',
+            maxHeight: micaOn ? 120 : 0,
+            opacity: micaOn ? 1 : 0,
+            transform: micaOn ? 'translateY(0)' : 'translateY(-4px)',
+            pointerEvents: micaOn ? 'auto' : 'none',
+            /* ⚠️ Рамку задаём именно здесь, а не через `borderWidth` рядом с
+               `border` ниже. React ставит стили по порядку ключей, а шорткат
+               `border` идёт ПОСЛЕ и обнуляет ширину обратно в 1px: плашка в
+               свёрнутом виде занимала 2px высоты, то есть место в разметке,
+               хоть и была невидимой. */
+            border: micaOn ? '1px solid rgba(255,255,255,0.04)' : 'none',
+            transition:'max-height 0.32s cubic-bezier(0.22,1,0.36,1), opacity 0.2s ease,'
+              + 'margin-bottom 0.32s ease, padding 0.32s ease, transform 0.32s ease',
+            borderRadius:9, background:'rgba(255,255,255,0.028)',
+            fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.34)', lineHeight:1.45,
+          }}>
+            <div style={{
+              width:6, height:6, borderRadius:'50%', marginTop:5, flexShrink:0,
+              background:'var(--accent)', opacity: micaOn ? 0.7 : 0,
+              transition:'opacity 0.24s ease 0.06s',
+            }}/>
+            <div>{t('mica_accent_lock')}</div>
+          </div>
           {(() => {
             const mode = settings.accentMode || 'color';
             const preset = ACCENT_PRESETS[settings.accentPreset] ? settings.accentPreset : 'default';
@@ -4341,7 +4501,15 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
               <>
                 {/* сегмент Выкл | Цвет | От обложки — пилл плавно ездит между опциями */}
                 <LayoutGroup>
-                  <div style={{display:'flex', gap:3, padding:3, borderRadius:11, background:'rgba(255,255,255,0.035)'}}>
+                  <div style={{
+                    display:'flex', gap:3, padding:3, borderRadius:11,
+                    background:'rgba(255,255,255,0.035)',
+                    /* блокировка целиком, а не только у сегментов: пока активен
+                       только «выкл», гасить остальные бессмысленно */
+                    opacity: micaOn ? 0.4 : 1,
+                    pointerEvents: micaOn ? 'none' : 'auto',
+                    transition:'opacity 0.2s ease',
+                  }}>
                     {SEGS.map(([id, label, icon]) => {
                       const active = mode === id;
                       return (
@@ -4366,8 +4534,15 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
                     })}
                   </div>
                 </LayoutGroup>
-                {/* контекстный блок под выбранным режимом */}
-                <div key={mode} style={{marginTop:16, animation:'fadeInUp 0.22s ease'}}>
+                {/* Контекстный блок под выбранным режимом.
+                    ⚠️ Здесь стояли `key={mode}` и `animation:'fadeInUp'`, и
+                    оба были причиной рывка при первом входе в настройки.
+                    `key` перемонтировал блок при смене режима, а высота у
+                    режимов разная (палитра — пять образцов, «выкл» — одна
+                    короткая карточка), так что перемонтирование дёргало всё,
+                    что ниже. Сама анимация тут лишняя: переключение сегмента
+                    уже показывает пилл на layoutId. */}
+                <div style={{marginTop:16}}>
                   {mode === 'color' && (
                     <div style={{display:'flex', flexWrap:'wrap', gap:10}}>
                       {[
@@ -4502,7 +4677,7 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             marginTop:16, paddingTop:14,
             /* инлайн, а не через константу `div`: она объявлена в
                LyricsSettings, в SettingsView её нет (ReferenceError) */
-            borderTop: settings.hideDividers ? 'none' : '1px solid rgba(255,255,255,0.045)',
+            borderTop: HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.045)',
             opacity: settings.accentMode === 'off' ? 0.4 : 1,
             transition:'opacity 0.2s ease',
           }}>
@@ -4518,8 +4693,44 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
           </div>
         </div>
       </Card>
-      <Card title={t('card_interface')}>
-        <Row label={t('hide_dividers')} sub={t('hide_dividers_sub')} last><Toggle k="hideDividers"/></Row>
+      {/* ❌ УДАЛЕНА карточка «Интерфейс» с тумблером «Отключить разделители».
+           Тумблер убран по просьбе, а поведение оставлено включённым: разделители
+           между пунктами и треками не рисуются. Карточка была из одного этого
+           тумблера, так что с ним ушла и она.
+           Поведение теперь задано константой HIDE_DIVIDERS, а не настройкой —
+           иначе ключ остался бы в settings.json и мог вернуть разделители
+           обратно из старого файла настроек. */}
+      <Card title={t('card_window')}>
+        <Row label={
+            /* Плашка «только Windows 11» прямо у названия. Материал окна —
+               единственная функция в настройках, которая на другой системе
+               не просто не работает, а молча ничего не делает: DWM на Windows 10
+               и на 11 ниже 22H2 принимает атрибут и не рисует его. Поэтому
+               ограничение видно до переключения, а не после. */
+            <span style={{display:'flex', alignItems:'center', gap:8}}>
+              <span>{t('mica')}</span>
+              <span style={{
+                fontSize:'var(--fs-eyebrow)', letterSpacing:'0.08em',
+                textTransform:'uppercase', color:'rgba(255,255,255,0.34)',
+                background:'rgba(255,255,255,0.055)',
+                border:'1px solid rgba(255,255,255,0.05)', borderRadius:5,
+                padding:'2px 6px', flexShrink:0, whiteSpace:'nowrap',
+              }}>{t('mica_only_win11')}</span>
+            </span>
+          } sub={t('mica_sub')} last>
+          <Toggle k="windowEffect"
+            value={micaOn}
+            onChange={v => onSettings(s => {
+              const next = { ...s, windowEffect: v ? 'mica' : 'off' };
+              /* материал окна несовместим с подсветкой акцента (см. карточку
+                 акцента) — гасим здесь, в одном месте, чтобы правило не
+                 разъехалось по коду. обратно не трогаем: выключение материала
+                 не должно само включать акцент обратно, пользователь выберет
+                 режим сам */
+              if (v && next.accentMode !== 'off') next.accentMode = 'off';
+              return next;
+            })}/>
+        </Row>
       </Card>
     </>),
     /* секция discord вынесена из оформления: это интеграция, а не вид */
@@ -4555,7 +4766,7 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
                 <div style={{
                   display:'flex', alignItems:'center', gap:8,
                   padding:'10px 14px',
-                  borderBottom: settings.hideDividers ? 'none' : '1px solid rgba(255,255,255,0.04)',
+                  borderBottom: HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.04)',
                 }}>
                   <div style={{
                     width:6, height:6, borderRadius:'50%', background:map.c, flexShrink:0,
@@ -4569,7 +4780,7 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             <div style={{
               display:'flex', alignItems:'center', justifyContent:'space-between',
               padding:'11px 14px',
-              borderBottom: settings.hideDividers ? 'none' : '1px solid rgba(255,255,255,0.04)',
+              borderBottom: HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.04)',
             }}>
               <div style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.5)'}}>{t('discord_timestamp')}</div>
               <div style={{display:'flex', gap:4, flexShrink:0}}>
@@ -4599,7 +4810,7 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             <div style={{
               display:'flex', alignItems:'center', justifyContent:'space-between',
               padding:'11px 14px',
-              borderBottom: settings.hideDividers ? 'none' : '1px solid rgba(255,255,255,0.04)',
+              borderBottom: HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.04)',
             }}>
               <div style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.5)'}}>{t('discord_on_pause')}</div>
               <div style={{display:'flex', gap:4, flexShrink:0}}>
@@ -4737,8 +4948,13 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
   return (
     <div style={{
       position:'absolute', inset:0, display:'flex',
-      opacity: visible ? 1 : 0, transform: visible ? 'none' : 'translateY(8px)',
-      transition:'opacity 0.28s ease, transform 0.28s ease',
+      /* Только прозрачность, БЕЗ translateY. Панель — предок `layoutId`-пилла
+         сегментов, а framer меряет его бокс через getBoundingClientRect, то
+         есть вместе с transform предка. Пока предок едет на translateY, пилл
+         перепроецируется и на первом входе в настройки дёргается. Подъём на
+         8px того не стоил: эффект давали одни layout-анимации внутри */
+      opacity: visible ? 1 : 0,
+      transition:'opacity 0.28s ease',
       pointerEvents: visible ? 'auto' : 'none',
     }}>
       {/* левая навигация */}
@@ -4777,10 +4993,10 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
 
       {/* правый контент */}
       <div style={{flex:1, overflowY:'auto', padding:'36px 40px'}}>
-        <div style={{
-          fontSize: 'var(--fs-xs)', fontWeight:500, color:'rgba(255,255,255,0.22)',
-          letterSpacing:'0.08em', textTransform:'uppercase', marginBottom:22,
-        }}>{SECS.find(s=>s.id===sec)?.label}</div>
+        {/* Заголовок раздела над контентом удалён: он дублировал название
+           слева в навигации, и оба менялись синхронно — при переключении
+           раздела читались два одинаковых слова подряд. Верхний отступ
+           остался прежним (36px в padding), чтобы контент не прыгнул вверх */}
         <div style={{maxWidth:480}}>
           {content[sec]}
         </div>
@@ -6567,10 +6783,25 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
 }
 
 /* ── App ─────────────────────────────────────────────────────────────────── */
+/* заглушка «трека нет». раньше она была литералом прямо в выражении
+   `const track = …`, то есть новый объект на каждом рендере; здесь она одна
+   на всё приложение. Поля те же, что нужны потребителям: пустой путь — по
+   нему эффект смены трека сбрасывает src вместо попытки грузить файл */
+const BLANK_TRACK = { id: 0, title: '', artist: '', duration: 0, color: '#333' };
+
+/* Разделители между пунктами и треками: тумблер «Отключить разделители»
+   удалён по просьбе, поведение осталось включённым (разделителей нет).
+
+   Именно константа, а не чтение настройки: ключ `hideDividers` остался бы в
+   `%APPDATA%\sewer-tauri\settings.json` у всех, кто успел его получить, и
+   `...saved` в загрузке настроек вернул бы `false` — разделители появились бы
+   сами. Единственное место, где это можно перевернуть обратно. */
+const HIDE_DIVIDERS = true;
+
 function App() {
   const [view,          setView]          = useState('home');
   const [tracks,        setTracks]        = useState([]);
-  const [trackIdx,      setTrackIdx]      = useState(0);
+  const [trackIdx,      setTrackIdx]      = useState(-1);   /* -1 = трек не выбран */
   const [isPlaying,     setIsPlaying]     = useState(false);
   const progressRef = useRef(0);
   const [shuffle,       setShuffle]       = useState(false);
@@ -6600,6 +6831,7 @@ function App() {
     discordTimestamp: 'progress', discordPause: 'show', discordCover: true,
     accentMode: 'color', accentPreset: 'default',
     ambientGlow: true,   /* пятно за обложкой в плеере; false = не рисуем вовсе */
+    windowEffect: 'off',   /* 'off' | 'mica' — применяется эффектом ниже */
     lyricsSources: LYRICS_SOURCE_IDS.slice(),  /* включённые источники, сверху вниз */
     volume: 0.7,   /* gain 0..1 (не позиция ползунка) — переживает перезапуск */
   });
@@ -6759,7 +6991,20 @@ const shuffleKeepRef    = useRef(false);
   scPlayingTrackRef.current = scPlayingTrack;
   playlistActiveRef.current = playlistActive;
   settingsRef.current  = settings;
-  const track = scPlayingTrack || tracks[trackIdx] || tracks[0] || { id:0, title:'', artist:'', duration:0, color:'#333' };
+  /* `trackIdx === -1` — «трек не выбран». Раньше индекс начинался с нуля, и
+     `tracks[trackIdx]` отдавал первый файл папки ещё до всякого клика: в
+     плеере сразу стоял первый трек каталога, и он же считался текущим для
+     подсветки строк библиотеки и присутствия discord. Теперь выбор делает
+     пользователь, а до выбора плеер пустой.
+
+     ⚠️ `|| tracks[0]` из старого выражения убран СОЗНАТЕЛЬНО: именно он
+     молча подставлял первый трек, даже когда индекс пуст. */
+  const track = scPlayingTrack || (trackIdx >= 0 ? tracks[trackIdx] : null) || BLANK_TRACK;
+  /* есть ли что показывать в плеере. Имя и мысль совпадают с локальной
+     проверкой в обработчике перетаскивания (строка ниже по файлу): она
+     читает refs намеренно, чтобы не тащить себя в deps обработчика
+     mouseup, — поэтому это отдельная переменная, а не эта */
+  const hasTrack = !!scPlayingTrack || (trackIdx >= 0 && !!tracks[trackIdx]);
 
   useEffect(() => {
     if (!track?.coverUrl) { setAccentRGB(null); return; }
@@ -6858,16 +7103,34 @@ const shuffleKeepRef    = useRef(false);
   // привязано к playerVisible, а не к view: при уходе в настройки setView
   // отложен на 300мс — свечение гасло бы с запозданием, в отличие от
   // поиска/библиотеки, где view меняется сразу
+  /* ❌ УДАЛЁН эффект подсветки тайтлбара в плеере.
+     Здесь стояло `tb.style.background = linear-gradient(90deg, var(--bg),
+     rgba(accent) 9% в центре, var(--bg))` — горизонтальное свечение акцентом
+     через всю ширину полосы, плюс `body.in-player` для #accent-top.
+
+     Почему это и было то самое «свечение, из-за которого создаётся граница
+     тайтлбара»: заливка ставилась ИНЛАЙНО, то есть перебивала и `background`
+     из css, и `background: transparent` — тайтлбар снова становился
+     единственной непрозрачной полосой в окне. И видна была только в плеере,
+     потому что эффект навешивался по `view === 'player' && playerVisible`:
+     ни в css, ни в разметке этого свечения не было, и в проверке страницы
+     без открытого плеера оно не появлялось — поэтому и не находилось.
+
+     Что осталось: `in-player` больше не нужен (единственный его потребитель
+     был #accent-top, который тоже удалён), а `glow-off` живёт — на нём
+     держится .like-glow. */
   useEffect(() => {
     const inPlayer = view === 'player' && playerVisible;
+    /* Только класс: он включает палочку акцента у края (#accent-top в
+       styles.css) — её вернули по просьбе.
+       ❌ инлайновый градиент на самом `#titlebar`
+       (`linear-gradient(90deg, var(--bg), accent 9%, var(--bg))`) НЕ
+       возвращаем: он перебивал `background: transparent` и был именно той
+       «границей тайтлбара». Стиль чистим на случай, если он остался в
+       разметке от прошлой сборки. */
     document.body.classList.toggle('in-player', inPlayer);
     const tb = document.getElementById('titlebar');
-    if (!tb) return;
-    if (inPlayer && settings.accentMode !== 'off') {
-      tb.style.background = 'linear-gradient(90deg, var(--bg) 0%, rgba(var(--accent-rgb),0.09) 50%, var(--bg) 100%)';
-    } else {
-      tb.style.background = '';
-    }
+    if (tb) tb.style.background = '';
   }, [view, playerVisible, settings.accentMode]);
 
   /* загружаем настройки и треки при старте */
@@ -6949,6 +7212,60 @@ const shuffleKeepRef    = useRef(false);
   useEffect(() => {
     try { window.electronAPI.setLoginItem?.(settings.startWithWindows); } catch {}
   }, [settings.startWithWindows]);
+
+  /* Материал окна. Настройка тянет ДВА эффекта: класс на body — оболочка
+     становится полупрозрачной (styles.css), вызов в rust — DWM рисует
+     материал под окном. Порядок здесь и есть всё «плавно»: раньше класс
+     ставился СРАЗУ, а IPC летел следом, и на те самые десятки миллисекунд
+     окно было уже прозрачным, а материала под ним ещё не было — отсюда
+     вспышка «на секунду прозрачное всё». Теперь при включении сначала
+     дожидаемся материала и только потом двигаем фон; при выключении наоборот,
+     фон первым: материал гаснет под уже непрозрачной панелью, а не сквозь
+     прозрачную. */
+  const micaFirstRef = useRef(true);
+  /* Окно проявляется целиком после монтирования. Пока стоит класс `booting`
+     (см. index.html и #app-shell.booting в styles.css) оболочка невидима:
+     она и тайтлбар статичны, рисовались до react и давали секунду пустого
+     окна с кнопками «свернуть» и «×». Снимаем на следующем кадре — к этому
+     моменту содержимое уже в dom. */
+  useEffect(() => {
+    const el = document.getElementById('app-shell');
+    if (!el) return;
+    const id = requestAnimationFrame(() => el.classList.remove('booting'));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  useEffect(() => {
+    const on = settings.windowEffect === 'mica';
+    const setClass = v => document.body.classList.toggle('effect-mica', v);
+    /* Первое срабатывание приходит с дефолтом 'off' — настройки ещё не
+       прочитаны. Звать rust в этот момент нельзя: он снял бы материал,
+       применённый в setup по файлу настроек, и окно мигнуло бы дважды.
+       Пропускаем первый запуск — к этому моменту rust уже всё применил */
+    if (micaFirstRef.current) {
+      micaFirstRef.current = false;
+      setClass(on);
+      return;
+    }
+    /* Акцент с материалом несовместимы, и это правило обеспечивает тумблер.
+       Здесь — страховка на случай старого файла настроек, где могли прийти
+       оба значения сразу: иначе окно окажется с материалом и подсветкой, а
+       сегменты в настройках будут заблокированы при «выкл», что выглядит как
+       баг. Эффект не зациклится: в deps только windowEffect */
+    if (on && settings.accentMode && settings.accentMode !== 'off') {
+      setSettings(s => (s.accentMode === 'off' ? s : { ...s, accentMode: 'off' }));
+    }
+    if (!on) { setClass(false); window.electronAPI.setWindowEffect('off').catch(() => {}); return; }
+    window.electronAPI.setWindowEffect('mica').then(ok => {
+      if (!ok) {
+        setSettings(s => ({ ...s, windowEffect: 'off' }));
+        showToast(t('mica_unsupported'));
+        return;
+      }
+      /* фон двигаем следующим кадром: к этому моменту DWM уже нарисовал
+         материал, и переход идёт «по уже готовому», без кадра без фона */
+      requestAnimationFrame(() => setClass(true));
+    }).catch(() => {});
+  }, [settings.windowEffect]);
 
   /* инициализация Audio */
   useEffect(() => {
@@ -7489,7 +7806,12 @@ const shuffleKeepRef    = useRef(false);
     const list = searchRef.current ? filteredRef.current : tracks;
     if (!list.length) return;
     const curIdx = list.indexOf(tracks[trackIdx]);
-    setTrackIdx(tracks.indexOf(list[(curIdx - 1 + list.length) % list.length]));
+    /* curIdx === -1 бывает двух видов: трек не выбран (trackIdx -1, список
+       пустой) или он отсеян поиском. Формула «назад» в обоих случаях
+       молча давала предпоследний элемент — из пустого плеера «назад» уезжало
+       в произвольное место. Начинаем с первого */
+    const to = curIdx < 0 ? 0 : (curIdx - 1 + list.length) % list.length;
+    setTrackIdx(tracks.indexOf(list[to]));
     progressRef.current = 0;
   }
   handlePrevRef.current = handlePrev;
@@ -7598,7 +7920,11 @@ const shuffleKeepRef    = useRef(false);
         const ct = customTitlesRef.current;
         const withCustom = local.map(t => ct[t.path] ? { ...t, title: ct[t.path] } : t);
         setTracks(withCustom);
-        setTrackIdx(0);
+        /* ⚠️ здесь стояло `setTrackIdx(0)`, и это был источник «первый трек
+           сам включается на старте»: скан папки при запуске приложения
+           выбирал файл №0, и плеер показывал его до первого клика. Сброса
+           индекса больше нет — текущий трек (если он играет) переживает
+           пересканирование, а на старте остаётся «не выбран» */
         setIsPlaying(false);
         progressRef.current = 0;
         loadCovers(withCustom);
@@ -7621,7 +7947,7 @@ const shuffleKeepRef    = useRef(false);
   const handleClearFolder = useCallback(() => {
     setSettings(s => ({ ...s, musicFolder: null }));
     setTracks([]);
-    setTrackIdx(0);
+    setTrackIdx(-1);
     setIsPlaying(false);
     progressRef.current = 0;
   }, []);
@@ -9029,7 +9355,13 @@ const shuffleKeepRef    = useRef(false);
 
   return (
     <LangContext.Provider value={lang}>
-    <div style={{display:'flex', width:'100%', height:'100%', overflow:'hidden'}}>
+    <div style={{
+      display:'flex', width:'100%', height:'100%',
+      /* По вертикали не режем — см. контейнер центральной колонки ниже:
+         пятно за обложкой перелезало через эту границу и обрезалось по ней.
+         По горизонтали clip оставлен, чтобы колонки не наезжали друг на друга */
+      overflow:'clip visible',
+    }}>
       {hero && hero.targetRect && <HeroClone hero={hero} exiting={heroExiting}/>}
       {reverseHero && reverseHero.targetRect && <HeroClone hero={reverseHero} exiting={reverseHeroExiting} reverse={true}/>}
       <TopBar navActive={navActive} onNav={handleNav}
@@ -9037,7 +9369,21 @@ const shuffleKeepRef    = useRef(false);
         inPlayer={view==='player'} scAuth={settings.soundcloudAuth||null}
         sourceMode={sourceMode} onToggleSource={handleToggleSource}/>
 
-      <div style={{position:'relative', flex:1, height:'100%', overflow:'hidden'}}>
+      <div style={{
+        position:'relative', flex:1, height:'100%',
+        /* Этот контейнер — граница, по которой раньше срезалось пятно за
+           обложкой: колонка начинается на 46px, ровно под тайтлбаром, и
+           `overflow:hidden` обрезал свечение по этой линии — получалась ровная
+           граница поперёк окна. По вертикали теперь `visible`, пятно уходит под
+           тайтлбар и гаснет естественно.
+
+           Именно `clip visible`, а не `hidden visible`: в паре, где одно
+           значение visible, а другое не visible/clip, браузер превращает
+           visible в auto — и колонка стала бы прокручиваемой по вертикали.
+           Горизонтальный clip оставлен: колонка не должна наезжать на
+           библиотеку и на панель громкости. */
+        overflow:'clip visible',
+      }}>
 
         {(
           <div ref={homeScrollRef} className="scroll-thin scroll-home" style={{
@@ -9431,7 +9777,7 @@ const shuffleKeepRef    = useRef(false);
                   }}>×</div>
                 )}
               </div>
-              <ShuffleBtn variant="icon" field h={38} on={shuffle} onClick={() => handleShuffleToggle(activeQueueList())}/>
+              <ShuffleBtn variant="icon" field h={34} on={shuffle} onClick={() => handleShuffleToggle(activeQueueList())}/>
               </div>
             </motion.div>
           )}
@@ -9468,6 +9814,17 @@ const shuffleKeepRef    = useRef(false);
           }}>
             <div style={{width:'100%', display:'flex', flexDirection:'column', alignItems:'center'}}>
             <div ref={playerInfoRef} style={{width:'100%', display:'flex', flexDirection:'column', alignItems:'center', opacity:0}}>
+              {/* Пустой плеер. Ничего не выбрано — стоит только этот текст:
+                  артиста и названия нет, а рисовать их пустыми строками
+                  значило бы оставить двадцать пикселей мёртвого места и
+                  подсказку, что это ошибка загрузки. */}
+              {!hasTrack ? (
+                <div style={{
+                  textAlign:'center', marginBottom:14, width:'100%',
+                  fontSize:'clamp(15px, 2vw, 24px)', fontWeight:600,
+                  letterSpacing:'-0.022em', color:'rgba(255,255,255,0.28)',
+                }}>{t('player_pick')}</div>
+              ) : (<>
               {/* artist */}
               <div style={{
                 display:'flex', alignItems:'center', flexWrap:'wrap', justifyContent:'center',
@@ -9544,6 +9901,7 @@ const shuffleKeepRef    = useRef(false);
                   </div>
                 )}
               </div>
+              </>)}
             </div>{/* playerInfoRef end */}
               {/* album art with ambient glow */}
               <div style={{
@@ -9597,7 +9955,7 @@ const shuffleKeepRef    = useRef(false);
               <MagBtn onClick={handlePrev} size={'clamp(46px, 6vw, 66px)'}>
                 <img src="../assets/rewind.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:0.38}}/>
               </MagBtn>
-              <PlayBtn isPlaying={isPlaying} onToggle={()=>setIsPlaying(p=>!p)}
+              <PlayBtn isPlaying={isPlaying} onToggle={() => { if (hasTrack) setIsPlaying(p=>!p); }}
                 trackKey={scPlayingTrack ? 'sc:'+scPlayingTrack.id
                         : (track ? 'loc:'+track.id : null)}/>
               <MagBtn onClick={handleNext} size={'clamp(46px, 6vw, 66px)'}>
@@ -9653,9 +10011,9 @@ const shuffleKeepRef    = useRef(false);
           onResultsLoaded={handleSearchResultsLoaded}
           onArtistClick={handleOpenArtist}
           loadingTrackId={loadingTrackId} errorTrackId={errorTrackId}
-          hideDividers={settings.hideDividers}/>
+          hideDividers={HIDE_DIVIDERS}/>
         <ArtistView artist={artistView} visible={view==='artist'} onClose={handleCloseArtist} scAuth={settings.soundcloudAuth||null} artistCacheRef={artistCacheRef}
-          hideDividers={settings.hideDividers}
+          hideDividers={HIDE_DIVIDERS}
           likedIds={likedIds} onLike={handleLike}
           onPlayTrack={t => handleScTrackClick(t, -1)}
           onSelectTrack={t => { handleScTrackClick(t, -1); setHomeVisible(false); setPlayerVisible(true); setView('player'); setNavActive('library'); }}

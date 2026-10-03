@@ -68,6 +68,10 @@ window.electronAPI = {
   /* ── окно ─────────────────────────────────────────────────────────────── */
   minimize: () => invoke('win-minimize'),
   close: () => invoke('win-close'),
+  /* Материал окна. Возвращает bool — получилось ли: DWM на Windows 10 и на 11
+     ниже 22H2 принимает вызов и не рисует ничего, и без этой проверки тумблер
+     выглядел бы включённым, но нерабочим (см. src-tauri/src/backdrop.rs) */
+  setWindowEffect: effect => invoke('set-window-effect', { effect }),
 
   /* ── локальная библиотека ─────────────────────────────────────────────── */
   selectMusicFolder: () => invoke('dialog-select-folder'),
