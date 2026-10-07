@@ -12,13 +12,22 @@
 //! блокировка чтения останавливает и запись) — а писать нужно из
 //! tokio-горутины, пока читатель ждёт следующий кадр. Поэтому читатель
 //! опрашивает PeekNamedPipe: данных нет — спит, данные есть — читает.
+//!
+//! Про FILE_FLAG_OVERLAPPED. Раньше дескриптор открывался с этим флагом
+//! и lpOverlapped = NULL. На практике так работает (проверено прямым
+//! ReadFile по живому каналу discord-ipc-0), но MSDN этого не определяет:
+//! для OVERLAPPED-дескриптора структура обязана быть валидной, иначе
+//! поведение не гарантировано ничем. Ставить флаг тут незачем — читатель и
+//! так не блокируется, потому что дожидается в буфере ВЕСЬ кадр (см.
+//! discord.rs, read_frame). Дескриптор синхронный, то есть поведение
+//! документированное, и зависимости от недокументированного не остаётся.
 
 use std::io;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
-    FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, ReadFile, WriteFile, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::Sleep;
@@ -40,6 +49,8 @@ impl Pipe {
     /// Открывает `\\.\pipe\discord-ipc-{idx}`. Discord держит открытыми все
     /// десять каналов, но живой ровно один: остальные отдают
     /// ERROR_PIPE_BUSY, поэтому вызывающий просто перебирает индексы.
+    ///
+    /// Без FILE_FLAG_OVERLAPPED — см. замечание в шапке модуля.
     pub fn open(idx: u8) -> io::Result<Self> {
         let name = format!(r"\\.\pipe\discord-ipc-{idx}");
         let mut wide: Vec<u16> = name.encode_utf16().collect();
@@ -52,7 +63,7 @@ impl Pipe {
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 std::ptr::null(),
                 OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED,
+                0,
                 std::ptr::null_mut(),
             );
             if handle == INVALID_HANDLE_VALUE {
@@ -142,10 +153,25 @@ pub fn pause() {
     }
 }
 
+/// ERROR_PIPE_BUSY: канал есть, но его держит другой клиент. Для сеWer это
+/// почти всегда собственные потоки прошлой сессии — дискорд держит на канал
+/// ровно одного клиента, — и путать это с «канала нет» нельзя: лечится
+/// по-разному (см. Conn::shutdown в discord.rs).
+pub fn is_busy(e: &io::Error) -> bool {
+    e.raw_os_error() == Some(231) // ERROR_PIPE_BUSY
+}
+
 /// Есть ли хоть один живой канал discord. Пробуем все десять: тот, что
 /// обслуживает клиент, откроется, остальные вернут ошибку.
+///
+/// Ошибки всех десяти НЕ выкидываем, а собираем: раньше возвращалась ошибка
+/// последнего канала, и в лог уходило «ни один канал не открылся» даже когда
+/// канал был и был занят. Для самого частого сбоя (зависшие потоки прошлой
+/// сессии держат discord-ipc-0) это прямо противоположный вывод.
 pub fn first_available() -> io::Result<Pipe> {
-    let mut last = None;
+    let mut busy = 0u8;
+    let mut missing = 0u8;
+    let mut last: Option<io::Error> = None;
     for idx in 0..10u8 {
         match Pipe::open(idx) {
             Ok(p) => {
@@ -156,15 +182,26 @@ pub fn first_available() -> io::Result<Pipe> {
                 settings::log(&format!("[discord] открыт канал discord-ipc-{idx}"));
                 return Ok(p);
             }
-            Err(e) => last = Some(e),
+            Err(e) => {
+                if is_busy(&e) {
+                    busy += 1;
+                } else {
+                    missing += 1;
+                }
+                last = Some(e);
+            }
         }
     }
-    settings::log(&format!(
-        "[discord] ни один канал discord-ipc-0..9 не открылся: {}",
-        last.as_ref()
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "нет данных".into())
-    ));
+    /* «занято» и «нет такого канала» — разные причины с разными лечением,
+       поэтому в лог идут обе цифры, а не ошибка последнего попытки */
+    let detail = match (&last, busy, missing) {
+        (Some(e), b, m) if b > 0 => format!(
+            "занято другим клиентом: {b} шт (последняя ошибка: {e}), не найдено: {m} шт"
+        ),
+        (Some(e), _, m) => format!("не найдено: {m} шт, последняя ошибка: {e}"),
+        (None, b, m) => format!("занято: {b} шт, не найдено: {m} шт"),
+    };
+    settings::log(&format!("[discord] ни один канал discord-ipc-0..9 не открылся: {detail}"));
     Err(last.unwrap_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "discord ipc: каналы не найдены")
     }))

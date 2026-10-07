@@ -2231,7 +2231,25 @@ function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = fa
     if (!topReady) return;
     cv.style.opacity = '0';
     cv.style.transform = 'scale(0.985)';
-  }, [isTop, ready, topReady]);
+    /* ⚠️ `instant` в deps — обязателен, и это и есть баг «обложка из
+       библиотеки приезжает заглушкой».
+
+       React переносит `opacity` из JSX-стиля в инлайн-проп как
+       `instant ? 1 : 0`, а этот эффект управляет тем же свойством
+       через `cv.style` вручную. Пока instant не меняется, React
+       инлайн не трогает и эффект дописывает своё значение поверх.
+       Но как только instant меняется (hero стартует при клике по
+       карточке библиотеки и снимается по её прилёте), React
+       ПЕРЕЗАПИСЫВАЕТ opacity своим значением — и если в этот момент
+       ветка выше уже отработала (isTop / topReady не изменились),
+       эффект не перезапускается, потому что instant в списке
+       зависимостей не было. Верхний слой остаётся с opacity = 0
+       от React, то есть невидим, и под ним видна заглушка с нотой.
+
+       Именно поэтому баг воспроизводится ТОЛЬКО из библиотеки:
+       переключение треков в списке плеера идёт без hero, там
+       instant всегда false и конфликта значений не возникает. */
+  }, [isTop, ready, topReady, instant]);
 
   return (
     <canvas ref={canvasRef}
@@ -7715,7 +7733,21 @@ const shuffleKeepRef    = useRef(false);
     if (repeat === 'one') {
       const audio = audioRef.current;
       if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
-      progressRef.current = 0; return;
+      progressRef.current = 0;
+      /* ⚠️ Здесь pushDiscord обязателен, иначе полоса в присутствии
+         замирает на последней секунде. Трек не меняется (тот же id, та же
+         длительность), поэтому НИ ОДИН dep эффекта обновления не меняется и
+         update сам не уйдёт. А дискорд рисует полосу сам, по
+         timestamps.start, и пересчитывает её на своей стороне каждую секунду:
+         без свежего SET_ACTIVITY start остаётся от первого проигрывания, и
+         на репите полоса доезжает до конца и навсегда встаёт на 100%.
+
+         discordProgressRef обнуляем явно: timeupdate после currentTime = 0
+         придёт уже после вызова pushDiscord и не успеет поправить ушедшую
+         позицию. */
+      discordProgressRef.current = 0;
+      pushDiscord(0);
+      return;
     }
     if (scPlayingTrack) {
       const list = stationQueueRef.current || playlistQueueRef.current || searchQueueRef.current || (searchRef.current ? filteredScRef.current : scTracksRef.current);
@@ -7782,6 +7814,10 @@ const shuffleKeepRef    = useRef(false);
     if (progressRef.current > 0.05) {
       progressRef.current = 0;
       if (audioRef.current) audioRef.current.currentTime = 0;
+      /* тот же трек, тот же id — эффект обновления присутствия не
+         сработает, поэтому двигаем его руками, как в ветке repeat === 'one' */
+      discordProgressRef.current = 0;
+      pushDiscord(0);
       return;
     }
     if (scPlayingTrack) {
@@ -8864,6 +8900,12 @@ const shuffleKeepRef    = useRef(false);
       if (audio && audio.src) {
         if (audio.currentTime > 0.05) audio.currentTime = 0;
         progressRef.current = 0;
+        /* перезапуск того же трека с нуля: dep'ы эффекта присутствия не
+           меняются (id/duration/isPlaying те же), поэтому обновление надо
+           отправить вручную — иначе полоса в дискорде останется на старой
+           позиции. Подробности в ветке repeat === 'one' */
+        discordProgressRef.current = 0;
+        pushDiscord(0);
         startFadeIn(audio);
         audio.play().catch(() => setIsPlaying(false));
       }

@@ -58,13 +58,22 @@ fn minimize_to_tray() -> bool {
 /// Выход с очисткой присутствия. Electron делал это в before-quit с
 /// preventDefault: библиотека discord не имеет таймаута на запрос, и
 /// висящий клиент (pipe полуоткрыт) держал закрытие навсегда.
+///
+/// ⚠️ 250 мс тут больше не хватает. Раньше `SetEnabled(false)` уходил в
+/// `CLEAR_ACTIVITY`, который дискорд отклоняет кодом 4002, то есть очистка
+/// не работала вовсе и ждать было нечего. Теперь это настоящий
+/// `SET_ACTIVITY` с `activity: null` — round-trip по каналу плюс `shutdown()`,
+/// который ждёт выхода обоих потоков (до 1.2 с). 250 мс обрывало это
+/// на полпути, и карточка оставалась на экране discord до следующего запуска.
+/// Ждём generously: сетевого round-trip тут нет, всё локально, так что 1.5 с
+/// это в основном время выхода потоков, а не «на всякий случай».
 fn exit_now(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Some(state) = handle.try_state::<AppState>() {
             let _ = state.rpc.send(discord::Cmd::SetEnabled(false));
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
         handle.exit(0);
     });
 }
