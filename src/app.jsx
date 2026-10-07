@@ -948,6 +948,18 @@ function fmtCount(n) {
   return String(n);
 }
 
+/* Год выхода трека для колонки в строке: «2019», а не полная дата.
+   Ровно год, потому что колонка узкая, а месяц и день в списке из сотни
+   треков — шум: разница между соседними релизами всё равно не читается.
+   Полная дата остаётся в подсказке на ячейке.
+   Разбираем UTC, не локальное время: `new Date('2019-01-01')` без часового
+   пояса — это полночь UTC, и на машине к востоку от Гринвича getFullYear()
+   отдавала бы 2018-й год на бóльшую часть суток */
+function fmtYear(ms) {
+  if (!ms) return null;
+  return String(new Date(ms).getUTCFullYear());
+}
+
 /* логотип discord в том же приёме, что SoundCloudIcon: инлайн-svg с
    currentColor, потому что картинкой currentColor не красится */
 function DiscordIcon({ size = 15, fill = 'currentColor' }) {
@@ -1019,6 +1031,35 @@ function applyScTitles(list) {
   });
 }
 
+/* ISO-дата с необязательным временем. Проверка формы нужна ДО Date.parse,
+   потому что парсер слишком снисходителен: он разбирает «2 years ago»
+   (которое soundcloud реально присылает в display_date у части треков)
+   в 1997 год — не NaN, а вполне правдоподобное число, которое молча
+   уехало бы в колонку даты как настоящий год выхода */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?/;
+
+/* дата выхода трека. soundcloud отдаёт несколько почти одинаковых полей:
+     created_at     — когда залили (у перезаливов это может быть позже
+                      настоящего выхода),
+     display_date   — то же самое, но в своём формате,
+     release_date /
+     published_at   — встречаются у треков, оформленных как релиз альбома.
+   берём по убыванию «свежести» */
+function scReleaseDate(t) {
+  const raw = t.display_date || t.release_date || t.published_at || t.created_at;
+  if (!raw || typeof raw !== 'string') return null;
+  if (!ISO_DATE_RE.test(raw.trim())) return null;
+  const ms = Date.parse(raw.trim());
+  if (Number.isNaN(ms)) return null;
+  const y = new Date(ms).getUTCFullYear();
+  /* 1990 — раньше soundcloud не существовал; сверху — текущий год +1.
+     без верхней границы трек с датой «31.12.2031» показал бы в колонке
+     год из будущего: такие значения SC отдаёт у перезаливов с
+     неправленной меткой, и проверить их иначе нечем */
+  if (y < 1990 || y > new Date().getUTCFullYear() + 1) return null;
+  return ms;
+}
+
 function mapScTrack(t, noTitle) {
   const progressive = t.media?.transcodings?.find(tc => tc.format?.protocol === 'progressive');
   const hls = t.media?.transcodings?.find(tc => tc.format?.protocol === 'hls');
@@ -1037,6 +1078,7 @@ function mapScTrack(t, noTitle) {
     coverUrl: t.artwork_url ? t.artwork_url.replace('-large', '-t500x500') : null,
     likesCount: t.likes_count || 0,
     playCount: t.playback_count || 0,
+    releasedAt: scReleaseDate(t),
     streamUrl: progressive?.url || null,
     hlsUrl: hls?.url || null,
     permalinkUrl: t.permalink_url || null,
@@ -1374,6 +1416,7 @@ const STRINGS = {
     userid_err:'не удалось получить userId', api_err:'ошибка api',
     artist_popular:'Популярные', artist_tracks:'Треки',
     artist_label:'Артист',
+    artist_play_all:'Слушать всё',
     back:'назад',
     subscribe:'Подписаться', subscribed:'Вы подписаны',
     follow_err:'не удалось подписаться', unfollow_err:'не удалось отписаться',
@@ -1494,6 +1537,7 @@ const STRINGS = {
     userid_err:'could not get userId', api_err:'api error',
     artist_popular:'Popular', artist_tracks:'Tracks',
     artist_label:'Artist',
+    artist_play_all:'Play all',
     back:'back',
     subscribe:'Follow', subscribed:'Following',
     follow_err:'could not follow', unfollow_err:'could not unfollow',
@@ -5031,6 +5075,10 @@ const skelDelay = i => `${((i * 0.13) % 1.1).toFixed(2)}s`;
 
 function TrackRowSkeleton({ i }) {
   return (
+    /* геометрия 1:1 с SearchTrackRow: обложка 44, прослушивания 48, год 32,
+       длительность 34, лайк 58. скелетон должен занимать ровно то же место,
+       что и содержимое, иначе при подстановке списка вся правая часть
+       дёргается */
     <div style={{display:'flex', alignItems:'center', gap:12, padding:'7px 0',
       borderBottom:'1px solid rgba(255,255,255,0.032)'}}>
       <div className="skel" style={{width:44, height:44, borderRadius:8, flexShrink:0, '--skel-delay':skelDelay(i)}}/>
@@ -5038,8 +5086,12 @@ function TrackRowSkeleton({ i }) {
         <div className="skel" style={{height:11, borderRadius:4, width:skelW(i, 46, 30), '--skel-delay':skelDelay(i + 3)}}/>
         <div className="skel" style={{height:9,  borderRadius:4, width:skelW(i, 24, 22), '--skel-delay':skelDelay(i + 7)}}/>
       </div>
-      <div className="skel" style={{width:30, height:9, borderRadius:4}}/>
-      <div className="skel" style={{width:62, height:26, borderRadius:999, flexShrink:0, '--skel-delay':skelDelay(i + 5)}}/>
+      <div style={{display:'flex', alignItems:'center', gap:15, flexShrink:0}}>
+        <div className="skel" style={{width:48, height:9, borderRadius:4, '--skel-delay':skelDelay(i + 4)}}/>
+        <div className="skel" style={{width:32, height:9, borderRadius:4, '--skel-delay':skelDelay(i + 8)}}/>
+        <div className="skel" style={{width:34, height:9, borderRadius:4, '--skel-delay':skelDelay(i + 6)}}/>
+      </div>
+      <div className="skel" style={{width:58, height:13, borderRadius:4, flexShrink:0, '--skel-delay':skelDelay(i + 5)}}/>
     </div>
   );
 }
@@ -5110,10 +5162,20 @@ function HomeGridSkeleton() {
 
 function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoading, isError, hideDividers }) {
   const t = useLang();
+  const lang = React.useContext(LangContext);
   const [hov, setHov] = useState(false);
   const [popKey, setPopKey] = useState(0);
   const lc = fmtCount(track.likesCount);
   const pc = fmtCount(track.playCount);
+  const yr = fmtYear(track.releasedAt);
+  /* полная дата в подсказке — год в колонке слишком мал, чтобы сказать,
+     вышел трек в январе или в декабре. время выставляем UTC: разбираем
+     дату, полученную от soundcloud, — сдвиг на часы тут не нужен, а
+     локальная зона машины могла бы переставить её на соседние сутки */
+  const fullDate = track.releasedAt
+    ? new Date(track.releasedAt).toLocaleDateString(lang, {
+        year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })
+    : null;
   return (
     <motion.div onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
       layout
@@ -5152,46 +5214,89 @@ function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoadi
         <div style={{fontSize: 'var(--fs-md)', color:'rgba(255,255,255,0.86)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{track.title}</div>
         <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.3)', marginTop:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{formatArtistDisplay(track.artist)}</div>
       </div>
-      {/* stats — plays + duration */}
-      <div style={{display:'flex', alignItems:'center', gap:14, flexShrink:0}}>
-        {/* plays */}
-        {pc && <div style={{display:'flex', alignItems:'center', gap:5, color:'rgba(255,255,255,0.32)'}}>
-          <img src="../assets/vosproizvedenie.png" width="10" height="10" style={{display:'block', filter:'brightness(0) invert(1)', opacity:0.5}}/>
-          <span style={{fontSize: 'var(--fs-xs)', fontVariantNumeric:'tabular-nums'}}>{pc}</span>
-        </div>}
-        {/* duration / unavailable */}
-        {isError
-          ? <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,80,80,0.7)', minWidth:36, textAlign:'right'}}>{t('unavailable')}</div>
-          : <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.32)', minWidth:30, textAlign:'right', fontVariantNumeric:'tabular-nums'}}>{fmt(track.duration)}</div>
-        }
+      {/* ── числа ─────────────────────────────────────────────────────────────
+          Четыре колонки фиксированной ширины, дальше — сердце со счётчиком.
+
+          Раньше лайк был пилюлей с заливкой и рамкой, а рядом стояли голые
+          цифры. Пилюля была единственным элементом строки с обводкой, и на
+          тёмном фоне читалась как кнопка в интерфейсе — при том, что
+          лайкнуть трек можно и в самом плеере, и по правому клику. Убрали
+          и рамку, и заливку: сердце теперь просто тише проступает при
+          наведении, а состояние «лайкнуто» держит цвет акцента.
+
+          Ширины фиксированные не для красоты: без них «1.2K» и «61.2K»
+          давали колонке разную длину, и при вертикальной прокрутке счётчики
+          прыгали влево-вправо друг относительно друга. Пустые ячейки
+          держат заглушку той же ширины — иначе трек без прослушиваний
+          сдвинул бы всё, что правее. */}
+      <div style={{
+        display:'flex', alignItems:'center', gap:15, flexShrink:0,
+        opacity: hov ? 1 : 0.82, transition:'opacity 0.18s ease',
+      }}>
+        {/* прослушивания. при нуле fmtCount отдаёт null, и раньше ячейка
+            просто исчезала — теперь иконка и тире остаются на месте,
+            приглушённые, чтобы колонка не схлопывалась */}
+        <div title={track.playCount ? track.playCount.toLocaleString() : undefined} style={{
+          display:'flex', alignItems:'center', justifyContent:'flex-end', gap:5,
+          width:48, color:'rgba(255,255,255,0.34)',
+        }}>
+          <img src="../assets/vosproizvedenie.png" width="9" height="9"
+            style={{display:'block', filter:'brightness(0) invert(1)',
+              opacity: pc ? 0.55 : 0.22, flexShrink:0}}/>
+          <span style={{
+            fontSize: 'var(--fs-xs)', fontVariantNumeric:'tabular-nums',
+            opacity: pc ? 1 : 0.28,
+          }}>{pc || '—'}</span>
+        </div>
+        {/* год выхода. при отсутствии даты — пусто, а не тире: тире
+            читалось бы как «нет данных» о треке, который тут может и не
+            быть вовсе (акустика с чужого канала) */}
+        <div title={fullDate} style={{
+          width:32, textAlign:'right', flexShrink:0,
+          fontSize: 'var(--fs-xs)', fontVariantNumeric:'tabular-nums',
+          color:'rgba(255,255,255,0.3)',
+        }}>{yr || ''}</div>
+        {/* длительность / недоступен. само слово «недоступен» убрано — в
+            колонке шириной 34px оно не влезало и вылезало за неё; тире
+            читается однозначно, а точный текст остаётся в подсказке */}
+        <div title={isError ? t('unavailable') : fmt(track.duration)} style={{
+          width:34, textAlign:'right', flexShrink:0,
+          fontSize: 'var(--fs-xs)', fontVariantNumeric:'tabular-nums',
+          color: isError ? 'rgba(255,80,80,0.7)' : 'rgba(255,255,255,0.34)',
+        }}>{isError ? '—' : fmt(track.duration)}</div>
       </div>
-      {/* like — pill at the very end */}
-      {onLike && <div onClick={e=>{e.stopPropagation(); if (!isLiked) setPopKey(k=>k+1); onLike();}}
-        style={{
-          marginLeft:12, flexShrink:0,
-          display:'flex', alignItems:'center', justifyContent:'center', gap:5,
-          minWidth: lc ? 62 : 32,
-          padding:'5px 11px',
-          borderRadius: 999,
-          background: isLiked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.035)',
-          border: isLiked ? '1px solid rgba(255,255,255,0.10)' : '1px solid rgba(255,255,255,0.05)',
-          color: isLiked ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.42)',
-          cursor:'pointer',
-          transition:'background 0.15s, border-color 0.15s, color 0.15s',
-        }}
-        onMouseEnter={e=>{
-          e.currentTarget.style.background = isLiked ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.07)';
-          e.currentTarget.style.color = isLiked ? '#fff' : 'rgba(255,255,255,0.7)';
-        }}
-        onMouseLeave={e=>{
-          e.currentTarget.style.background = isLiked ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.035)';
-          e.currentTarget.style.color = isLiked ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.42)';
-        }}
-      >
-        <LikeHeart key={popKey} liked={isLiked} size={11}
-          className={popKey ? 'like-pop like-glow' : undefined}/>
-        {lc && <span style={{fontSize: 'var(--fs-xs)', fontVariantNumeric:'tabular-nums'}}>{lc}</span>}
-      </div>}
+
+      {/* like — сердце и число, без рамки. число прижато вправо, поэтому
+          колонка лайков тоже не дёргается при смене разрядности */}
+      {onLike && (
+        <div onClick={e=>{e.stopPropagation(); if (!isLiked) setPopKey(k=>k+1); onLike();}}
+          title={t('likes')}
+          /* отступы по вертикали — минимальная зона нажатия: сердце 13px
+             на тач-экране мелкая цель. по горизонтали место не растёт,
+             ширина зафиксирована */
+          style={{
+            marginLeft:4, flexShrink:0,
+            display:'flex', alignItems:'center', gap:6,
+            width:58, justifyContent:'flex-end',
+            padding:'6px 0', cursor:'pointer',
+          }}>
+          <div style={{
+            display:'flex', alignItems:'center', justifyContent:'flex-end',
+            width: lc ? 38 : 12, flexShrink:0,
+            color: isLiked ? 'var(--accent)' : 'rgba(255,255,255,0.3)',
+            transform: hov ? 'scale(1.12)' : 'scale(1)',
+            transition:'transform 0.16s cubic-bezier(0.34,1.56,0.64,1), color 0.18s ease',
+          }}>
+            <LikeHeart key={popKey} liked={isLiked} size={13}
+              className={popKey ? 'like-pop like-glow' : undefined}/>
+          </div>
+          <span style={{
+            fontSize: 'var(--fs-xs)', fontVariantNumeric:'tabular-nums',
+            color: isLiked ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.28)',
+            transition:'color 0.18s ease',
+          }}>{lc || '—'}</span>
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -6414,7 +6519,9 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
 });
 
 /* ── ArtistView ──────────────────────────────────────────────────────────── */
-function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlayTrack, onSelectTrack, loadingTrackId, errorTrackId, artistCacheRef, onFollow, onCheckFollow, hideDividers }) {
+function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlayTrack, onSelectTrack,
+                      loadingTrackId, errorTrackId, artistCacheRef, onFollow, onCheckFollow,
+                      onTracksAppended, onLogin, hideDividers, glowOff }) {
   const t = useLang();
   const [tab, setTab] = useState('popular');
   const [fetched, setFetched] = useState(null);
@@ -6431,6 +6538,8 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
   const tabReqRef = useRef(0);
   const [isFollowing, setIsFollowing] = useState(null);
   const [followBusy, setFollowBusy] = useState(false);
+  const [glowRgb, setGlowRgb] = useState(null);
+  const [avatarBroken, setAvatarBroken] = useState(false);
 
   const mapTrack = tr => mapScTrack(tr);
 
@@ -6444,6 +6553,7 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
     tabCacheRef.current = {};
     setTab('popular'); setFetched(null); setArtistTracks([]);
     setIsFollowing(null); setFollowBusy(false);
+    setAvatarBroken(false); setGlowRgb(null);
   }, [artist?.id, artist?.username]);
 
   useEffect(() => {
@@ -6570,6 +6680,10 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
         }
         return updated;
       });
+      /* очередью играет сам список артиста (см. onCoverClick ниже), поэтому
+         догруженные треки надо в неё доставить — иначе next упрётся в
+         конец снимка, сделанного в момент клика, и уйдёт в лайки */
+      onTracksAppended?.(newTracks);
     } catch {}
     loadingMoreRef.current = false;
     setLoadingMore(false);
@@ -6577,7 +6691,33 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
 
   const profile = fetched ? { ...artist, ...fetched } : artist;
   const avatarUrl = profile?.avatarUrl || null;
-  const bannerUrl = profile?.bannerUrl || null;
+
+  /* мягкое пятно за аватаром — цвет берём из самой картинки тем же
+     extractAccentColor, что и акцент обложки (кэш по url + один кадр
+     32×32, размер пятна на работу не влияет). Без filter:blur() — мягкость
+     даёт сам градиент, а блюр на боксе в три аватара это ровно тот
+     полноэкранный фильтр, от которого отказались в AmbientGlow */
+  useEffect(() => {
+    if (!avatarUrl) { setGlowRgb(null); return; }
+    let dead = false;
+    extractAccentColor(avatarUrl).then(c => {
+      if (dead || !c) return;
+      setGlowRgb(`${c.r}, ${c.g}, ${c.b}`);
+    });
+    return () => { dead = true; };
+  }, [avatarUrl]);
+
+  const AV = 92;                                    /* аватар */
+  /* суммарная длительность загруженного — второе число в строке мета.
+     пересчитывается на каждой подгрузке, поэтому мемо не нужен: список
+     треков и так меняет рендер */
+  const totalDur = artistTracks.reduce((s, x) => s + (x.duration || 0), 0);
+  const rise = (delay) => ({
+    initial: false,
+    animate: visible ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 },
+    transition: { duration: 0.42, ease: [0.22, 1, 0.36, 1], delay: visible ? delay : 0 },
+  });
+  const canPlay = !!(onPlayTrack && artistTracks.length && !tracksLoading);
 
   return (
     <div style={{
@@ -6588,202 +6728,284 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
       pointerEvents: visible ? 'auto' : 'none',
       transition: 'opacity 0.18s ease',
     }}>
-      {/* hero — asymmetric layout: avatar left, info right */}
-      <div style={{
-        position: 'relative', flexShrink: 0, overflow: 'hidden',
-        display: 'flex', alignItems: 'flex-end', gap: 24,
-        padding: '60px 40px 26px 40px',
-      }}>
-        {/* blur background — prefer banner, fallback to avatar */}
-        {(bannerUrl || avatarUrl) && (
-          <img src={bannerUrl || avatarUrl} style={{
-            position: 'absolute', inset: '-40px',
-            width: 'calc(100% + 80px)', height: 'calc(100% + 80px)',
-            objectFit: 'cover',
-            filter: 'blur(56px) saturate(1.3) brightness(0.5)',
-            transform: 'scale(1.06)',
-          }}/>
-        )}
-        {/* gradient overlay */}
-        <div style={{
-          position: 'absolute', inset: 0,
-          background: 'linear-gradient(to bottom, rgba(7,7,10,0.36) 0%, rgba(7,7,10,0.55) 55%, #07070a 100%)',
-        }}/>
-
-        {/* back button — circular with blur backdrop */}
+      {/* ── шапка ───────────────────────────────────────────────────────────
+          Одна колонка по центру, без фоновой картинки. Раньше здесь был баннер
+          на blur(56px) во всю ширину: он съедал ~230px высоты, превращал
+          страницу в мутное пятно и стоил полноэкранного блюра на каждом
+          пересчёте. Теперь верх держат аватар, одно слово имени и волосок —
+          остальное контент, а не декор. */}
+      <div style={{ position: 'relative', flexShrink: 0, padding: '0 24px' }}>
+        {/* назад — тихая квадратная кнопка, как в редакторе плейлиста:
+            круглая с blur была сделана под поверхность-герой и на странице
+            только шумела */}
         <div onClick={onClose} title={t('back')} style={{
-          position: 'absolute', top: 14, left: 14, zIndex: 10,
-          width: 32, height: 32, borderRadius: '50%',
+          position: 'absolute', top: 14, left: 18, zIndex: 4,
+          width: 28, height: 28, borderRadius: 9,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          cursor: 'pointer',
-          background: 'rgba(0,0,0,0.42)',
-          backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-          border: '1px solid rgba(255,255,255,0.09)',
-          color: 'rgba(255,255,255,0.72)',
-          transition: 'background 0.15s, color 0.15s, transform 0.15s',
+          background: 'transparent', cursor: 'pointer', transition: 'background 0.15s',
         }}
-          onMouseEnter={e => { e.currentTarget.style.background='rgba(0,0,0,0.62)'; }}
-          onMouseLeave={e => { e.currentTarget.style.background='rgba(0,0,0,0.42)'; }}
-          onMouseDown={e => e.currentTarget.style.transform='scale(0.92)'}
-          onMouseUp={e => e.currentTarget.style.transform='scale(1)'}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
         >
-          {/* ассет чёрный на прозрачном 100x100 → инвертим в белый, как
-              note.png/edit.png. у <img> нет currentColor, поэтому ховер-яркость
-              делаем через opacity на самой картинке. objectFit:contain —
-              иначе наконечник срежет по краям */}
           <img src="../assets/back.png" alt="" draggable="false"
-            style={{width:14, height:14, objectFit:'contain', opacity:0.72,
-              filter:'brightness(0) invert(1)', transition:'opacity 0.15s'}}
-            onMouseEnter={e => e.currentTarget.style.opacity='0.95'}
-            onMouseLeave={e => e.currentTarget.style.opacity='0.72'}/>
+            style={{ width: 15, height: 15, objectFit: 'contain', opacity: 0.5,
+              filter: 'brightness(0) invert(1)', transition: 'opacity 0.15s' }}
+            onMouseEnter={e => e.currentTarget.style.opacity = '0.95'}
+            onMouseLeave={e => e.currentTarget.style.opacity = '0.5'}/>
         </div>
 
-        {/* avatar — left */}
-        <div style={{
-          position: 'relative', zIndex: 2,
-          width: 148, height: 148, borderRadius: 16,
-          overflow: 'hidden', flexShrink: 0,
-          background: '#111116',
-          boxShadow: '0 18px 48px rgba(0,0,0,0.7)',
-          border: '1px solid rgba(255,255,255,0.07)',
+        <motion.div {...rise(0.02)} style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          padding: '46px 24px 24px',
         }}>
-          {avatarUrl
-            ? <img src={avatarUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
-            : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <svg width="52" height="52" fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth="1.4" viewBox="0 0 24 24">
-                  <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
-                </svg>
-              </div>
-          }
-        </div>
-
-        {/* info column — right */}
-        <div style={{
-          position: 'relative', zIndex: 2, flex: 1, minWidth: 0,
-          display: 'flex', flexDirection: 'column',
-          paddingBottom: 6,
-        }}>
-          <div style={{
-            fontSize: 'var(--fs-xs)', letterSpacing: '0.13em', textTransform: 'uppercase',
-            color: 'rgba(255,255,255,0.42)', marginBottom: 6, fontWeight: 600,
-          }}>
-            {t('artist_label') || 'Артист'}
-          </div>
-          <div style={{
-            fontSize: 'clamp(26px, 3.4vw, 38px)', fontWeight: 700,
-            letterSpacing: '-0.028em', lineHeight: 1.12,
-            overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis',
-            textShadow: '0 2px 14px rgba(0,0,0,0.55)',
-          }}>
-            {profile?.username || artist?.username || '—'}
-          </div>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 14,
-            marginTop: 10,
-          }}>
-            {(profile?.followersCount > 0) && (
-              <div style={{ fontSize: 'var(--fs-sm)', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.01em' }}>
-                {profile.followersCount.toLocaleString()} {t('followers')}
-              </div>
+          {/* аватар в пятне своего цвета */}
+          <div style={{ position: 'relative', display: 'grid', placeItems: 'center' }}>
+            {glowRgb && !glowOff && (
+              <div style={{
+                position: 'absolute',
+                width: AV * 3.6, height: AV * 3.6, borderRadius: '50%',
+                background: `radial-gradient(circle closest-side at center,
+                  rgba(${glowRgb},0.20) 0%, rgba(${glowRgb},0.11) 30%, rgba(${glowRgb},0.045) 55%,
+                  rgba(${glowRgb},0.012) 76%, rgba(${glowRgb},0) 100%)`,
+                pointerEvents: 'none',
+              }}/>
             )}
+            <div style={{
+              position: 'relative', width: AV, height: AV, borderRadius: 22, overflow: 'hidden',
+              background: '#111116',
+              boxShadow: '0 0 0 1px rgba(255,255,255,0.075), 0 18px 44px rgba(0,0,0,0.55)',
+            }}>
+              {avatarUrl && !avatarBroken
+                ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    onError={() => setAvatarBroken(true)}/>
+                : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <svg width="34" height="34" fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="1.3" viewBox="0 0 24 24">
+                      <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                    </svg>
+                  </div>}
+            </div>
+          </div>
+
+          <div style={{
+            marginTop: 20,
+            fontSize: 'var(--fs-eyebrow)', letterSpacing: '0.19em', textTransform: 'uppercase',
+            color: 'rgba(255,255,255,0.34)', fontWeight: 600,
+          }}>{t('artist_label')}</div>
+
+          <div style={{
+            marginTop: 9, maxWidth: '100%', textAlign: 'center',
+            fontSize: 'clamp(27px, 4.4vw, 46px)', fontWeight: 700,
+            letterSpacing: '-0.034em', lineHeight: 1.05,
+            color: 'rgba(255,255,255,0.95)', overflowWrap: 'anywhere',
+            textShadow: '0 2px 20px rgba(0,0,0,0.5)',
+          }}>{profile?.username || artist?.username || '—'}</div>
+
+          {/* мета: подписчики и длительность загруженного — цифры
+              tabular, иначе при подгрузке колонка дёргается по ширине */}
+          {((profile?.followersCount > 0) || artistTracks.length > 0) && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginTop: 12,
+              fontSize: 'var(--fs-sm)', color: 'rgba(255,255,255,0.42)',
+              fontVariantNumeric: 'tabular-nums',
+            }}>
+              {profile?.followersCount > 0 && (
+                <span>{profile.followersCount.toLocaleString()} {t('followers')}</span>
+              )}
+              {profile?.followersCount > 0 && artistTracks.length > 0 && (
+                <span style={{ color: 'rgba(255,255,255,0.2)' }}>·</span>
+              )}
+              {artistTracks.length > 0 && <span>{fmtHMS(totalDur)}</span>}
+            </div>
+          )}
+
+          {/* два действия. заливка акцентом только у «слушать всё» — это
+              главное действие страницы; подписка остаётся контуром, чтобы
+              два залитых пилюля не спорили друг с другом */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 24, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <button
+              onClick={() => canPlay && onPlayTrack(artistTracks[0], artistTracks)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                height: 32, padding: '0 18px 0 15px', borderRadius: 999, border: 'none',
+                background: canPlay ? 'rgba(var(--accent-rgb),0.92)' : 'rgba(255,255,255,0.05)',
+                color: canPlay ? '#0a0a0c' : 'rgba(255,255,255,0.28)',
+                fontSize: 'var(--fs-sm)', fontWeight: 600, fontFamily: 'inherit',
+                letterSpacing: '0.01em', cursor: canPlay ? 'pointer' : 'default',
+                transition: 'background 0.18s, color 0.18s',
+              }}
+              onMouseEnter={e => { if (canPlay) e.currentTarget.style.background = 'var(--accent)'; }}
+              onMouseLeave={e => { if (canPlay) e.currentTarget.style.background = 'rgba(var(--accent-rgb),0.92)'; }}
+            >
+              <svg width="9" height="10" viewBox="0 0 10 12" fill="currentColor" aria-hidden="true">
+                <polygon points="0,0 10,6 0,12"/>
+              </svg>
+              {t('artist_play_all')}
+            </button>
+
             {profileId && scAuth && isFollowing !== null && (
               <button
                 disabled={followBusy}
                 onClick={handleSubscribeClick}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 7,
+                  height: 32, padding: '0 18px', borderRadius: 999,
+                  background: isFollowing ? 'rgba(255,255,255,0.045)' : 'transparent',
+                  border: `1px solid ${isFollowing ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.22)'}`,
+                  color: isFollowing ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.9)',
+                  fontSize: 'var(--fs-sm)', fontWeight: 600, fontFamily: 'inherit',
+                  letterSpacing: '0.01em',
+                  cursor: followBusy ? 'default' : 'pointer',
+                  opacity: followBusy ? 0.55 : 1,
+                  transition: 'background 0.18s, color 0.18s, border-color 0.18s, opacity 0.18s',
+                }}
                 onMouseEnter={e => {
                   if (followBusy) return;
-                  e.currentTarget.style.background = isFollowing ? 'rgba(255,80,80,0.10)' : 'rgba(255,255,255,0.20)';
-                  e.currentTarget.style.color = isFollowing ? 'rgba(255,140,140,0.95)' : '#fff';
-                  e.currentTarget.style.borderColor = isFollowing ? 'rgba(255,120,120,0.32)' : 'transparent';
+                  e.currentTarget.style.background = isFollowing ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.06)';
+                  e.currentTarget.style.color = '#fff';
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.34)';
                 }}
                 onMouseLeave={e => {
-                  e.currentTarget.style.background = isFollowing ? 'transparent' : 'rgba(255,255,255,0.12)';
-                  e.currentTarget.style.color = isFollowing ? 'rgba(255,255,255,0.78)' : 'rgba(255,255,255,0.94)';
-                  e.currentTarget.style.borderColor = isFollowing ? 'rgba(255,255,255,0.22)' : 'transparent';
+                  e.currentTarget.style.background = isFollowing ? 'rgba(255,255,255,0.045)' : 'transparent';
+                  e.currentTarget.style.color = isFollowing ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.9)';
+                  e.currentTarget.style.borderColor = isFollowing ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.22)';
                 }}
-                style={{
-                  padding: '6px 18px',
-                  fontSize: 'var(--fs-sm)', fontWeight: 600, letterSpacing: '0.02em',
-                  background: isFollowing ? 'transparent' : 'rgba(255,255,255,0.12)',
-                  border: isFollowing ? '1px solid rgba(255,255,255,0.22)' : '1px solid transparent',
-                  color: isFollowing ? 'rgba(255,255,255,0.78)' : 'rgba(255,255,255,0.94)',
-                  borderRadius: 999,
-                  cursor: followBusy ? 'default' : 'pointer',
-                  fontFamily: 'inherit',
-                  opacity: followBusy ? 0.6 : 1,
-                  transition: 'background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s',
-                }}
-              >{isFollowing ? t('subscribed') : t('subscribe')}</button>
+              >
+                {isFollowing && (
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                )}
+                {isFollowing ? t('subscribed') : t('subscribe')}
+              </button>
             )}
           </div>
-        </div>
+        </motion.div>
       </div>
 
-      {/* tabs */}
-      <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'center', padding: '10px 0 12px' }}>
+      {/* ── вкладки ─────────────────────────────────────────────────────────
+          Не пилюли с заливкой, а подпись + волосок акцента, который едет за
+          активной. Пилюля была отдельной формой на фоне и читалась как
+          segmented control из другого приложения; здесь у вкладок нет
+          рамок, только вес цветом и линия.
+
+          Волосок и вкладки — в той же колонке 760, что и строки треков.
+          раньше вкладки стояли по центру шапки, а список центрирован
+          отдельно: на широком окне подписи уезжали влево от своих треков */}
+      <div style={{ flexShrink: 0, padding: '0 34px' }}>
+        <div style={{ width: '100%', maxWidth: 760, margin: '0 auto' }}>
+        <div style={{ height: 1, background: 'rgba(255,255,255,0.055)' }}/>
         <LayoutGroup id="artistTabs">
-          <div style={{ display: 'flex', gap: 2 }}>
+          <div style={{ display: 'flex', gap: 26, alignItems: 'flex-end', height: 42 }}>
             {TABS.map(tb => (
               <button key={tb.id}
                 onClick={() => setTab(tb.id)}
                 style={{
-                  position: 'relative', zIndex: 1,
-                  background: 'none', border: 'none',
-                  padding: '7px 18px',
-                  fontSize: 'var(--fs-sm)', fontWeight: 600,
-                  color: tab === tb.id ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.36)',
-                  cursor: 'pointer', fontFamily: 'inherit',
-                  transition: 'color 0.18s ease',
+                  position: 'relative',
+                  background: 'none', border: 'none', padding: 0,
+                  height: 42, lineHeight: '42px',
+                  fontSize: 'var(--fs-sm)', fontWeight: 600, fontFamily: 'inherit',
                   letterSpacing: '0.015em',
-                  borderRadius: 999,
+                  color: tab === tb.id ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.34)',
+                  cursor: 'pointer',
+                  transition: 'color 0.18s ease',
                 }}
-                onMouseEnter={e => { if (tab !== tb.id) e.currentTarget.style.color = 'rgba(255,255,255,0.6)'; }}
-                onMouseLeave={e => { if (tab !== tb.id) e.currentTarget.style.color = 'rgba(255,255,255,0.36)'; }}
+                onMouseEnter={e => { if (tab !== tb.id) e.currentTarget.style.color = 'rgba(255,255,255,0.58)'; }}
+                onMouseLeave={e => { if (tab !== tb.id) e.currentTarget.style.color = 'rgba(255,255,255,0.34)'; }}
               >
-                {tab === tb.id && (
-                  <motion.div layoutId="artistTabPill"
-                    style={{
-                      position: 'absolute', inset: 0,
-                      background: 'rgba(255,255,255,0.10)',
-                      border: '1px solid rgba(255,255,255,0.06)',
-                      borderRadius: 999, zIndex: -1,
-                    }}
-                    transition={{ type: 'spring', stiffness: 420, damping: 34, mass: 0.7 }}/>
-                )}
                 {tb.label}
+                {tab === tb.id && (
+                  <motion.div layoutId="artistTabLine"
+                    style={{
+                      position: 'absolute', left: 0, right: 0, bottom: 0, height: 1.5,
+                      background: 'var(--accent)', borderRadius: 2,
+                    }}
+                    transition={{ type: 'spring', stiffness: 460, damping: 36, mass: 0.6 }}/>
+                )}
               </button>
             ))}
           </div>
         </LayoutGroup>
+        </div>
       </div>
 
-      {/* content */}
-      <div ref={scrollContainerRef} className="scroll-thin" style={{ flex: 1, overflowY: 'auto', padding: '8px 32px 32px' }}
+      {/* ── контент ─────────────────────────────────────────────────────────
+          Колонка ограничена шириной и центрирована: на широком окне строки
+          во всю ширину растягиваются, и промах по play/like становится
+          неточным. Маска сверху — список растворяется под волоском, а не
+          упирается в него. */}
+      <div ref={scrollContainerRef} className="scroll-thin" style={{
+        flex: 1, overflowY: 'auto', padding: '10px 34px 40px',
+        maskImage: 'linear-gradient(to bottom, transparent 0, #000 18px)',
+        WebkitMaskImage: 'linear-gradient(to bottom, transparent 0, #000 18px)',
+      }}
         onScroll={e => {
           const el = e.currentTarget;
           if (el.scrollTop + el.clientHeight >= el.scrollHeight - 180) loadMore();
         }}>
-        {tracksLoading ? (
+        <div style={{ width: '100%', maxWidth: 760, margin: '0 auto' }}>
+        {!scAuth ? (
+          /* без входа soundcloud треки не отдадут: раньше это выглядело как
+             «ничего не найдено» — то есть как пустой артист, а не как
+             «нечем смотреть» */
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            gap: 18, minHeight: 220, textAlign: 'center', padding: '0 20px',
+          }}>
+            <SoundCloudIcon size={26} fill="rgba(255,255,255,0.2)"/>
+            <div style={{ fontSize: 'var(--fs-md)', color: 'rgba(255,255,255,0.34)', lineHeight: 1.6, maxWidth: 320 }}>
+              {t('sc_hint').split('\n').map((l, i) => <span key={i}>{l}{i === 0 && <br/>}</span>)}
+            </div>
+            {onLogin && (
+              <button onClick={onLogin} style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                background: 'rgba(255,85,0,0.1)', border: 'none', borderRadius: 10,
+                padding: '9px 18px', fontSize: 'var(--fs-md)', fontWeight: 500,
+                color: 'rgba(255,130,60,0.85)', cursor: 'pointer', fontFamily: 'inherit',
+                transition: 'background 0.15s',
+              }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,85,0,0.17)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,85,0,0.1)'; }}
+              >
+                <SoundCloudIcon size={14} fill="rgba(255,130,60,0.9)"/>
+                {t('login_sc')}
+              </button>
+            )}
+          </div>
+        ) : tracksLoading ? (
           <div>{[0,1,2,3,4,5].map(i => <TrackRowSkeleton key={i} i={i}/>)}</div>
         ) : tracksError ? (
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:12, padding:'48px 0' }}>
             <div style={{ fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)' }}>{tracksError}</div>
             <button onClick={() => { delete tabCacheRef.current[tab]; setFetchKey(k => k + 1); }}
               style={{ background:'rgba(255,255,255,0.06)', border:'none', borderRadius:8, padding:'6px 16px',
-                fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.55)', cursor:'pointer', fontFamily:'inherit' }}>
+                fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.55)', cursor:'pointer', fontFamily:'inherit',
+                transition:'background 0.15s' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}>
               {t('retry') || 'Повторить'}
             </button>
           </div>
         ) : artistTracks.length === 0 ? (
-          <div style={{ textAlign:'center', padding:'48px 0', fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.15)' }}>{t('not_found')}</div>
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
+            padding: '56px 0', textAlign: 'center',
+          }}>
+            <img src="../assets/note.png" alt="" style={{ width: 20, height: 20, opacity: 0.16, filter: 'brightness(0) invert(1)' }}/>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'rgba(255,255,255,0.24)' }}>{t('not_found')}</div>
+          </div>
         ) : (
           <AnimatePresence initial={false}>
             {artistTracks.map(tr => (
+              /* очередь = весь список артиста, а не один трек. Раньше
+                 onPlayTrack/onSelectTrack звались без второго аргумента,
+                 searchQueueRef оставался null, и next/prev после трека
+                 артиста уезжали в лайки — то есть в другой список */
               <SearchTrackRow key={tr.id} track={tr}
                 isLiked={likedIds?.has(tr.id) || false}
                 onLike={onLike ? () => onLike(tr) : null}
-                onClick={() => onSelectTrack?.(tr)}
-                onCoverClick={() => onPlayTrack?.(tr)}
+                onClick={() => onSelectTrack?.(tr, artistTracks)}
+                onCoverClick={() => onPlayTrack?.(tr, artistTracks)}
                 isLoading={loadingTrackId === tr.id}
                 isError={errorTrackId === tr.id}
                 hideDividers={hideDividers}/>
@@ -6795,6 +7017,7 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
             <div style={{ width:20, height:20, border:'2px solid rgba(255,255,255,0.07)', borderTopColor:'rgba(255,255,255,0.22)', borderRadius:'50%', animation:'spin 1s linear infinite' }}/>
           </div>
         )}
+        </div>
       </div>
     </div>
   );
@@ -10055,10 +10278,15 @@ const shuffleKeepRef    = useRef(false);
           loadingTrackId={loadingTrackId} errorTrackId={errorTrackId}
           hideDividers={HIDE_DIVIDERS}/>
         <ArtistView artist={artistView} visible={view==='artist'} onClose={handleCloseArtist} scAuth={settings.soundcloudAuth||null} artistCacheRef={artistCacheRef}
-          hideDividers={HIDE_DIVIDERS}
+          hideDividers={HIDE_DIVIDERS} glowOff={settings.accentMode==='off' || settings.ambientGlow === false}
           likedIds={likedIds} onLike={handleLike}
-          onPlayTrack={t => handleScTrackClick(t, -1)}
-          onSelectTrack={t => { handleScTrackClick(t, -1); setHomeVisible(false); setPlayerVisible(true); setView('player'); setNavActive('library'); }}
+          /* очередь = список артиста. раньше второй аргумент не передавался,
+             searchQueueRef оставался null, и next после трека артиста уезжал
+             в лайки — в совсем другой список */
+          onPlayTrack={(tr, queue) => { searchQueueRef.current = queue || null; handleScTrackClick(tr, -1); }}
+          onSelectTrack={(tr, queue) => { searchQueueRef.current = queue || null; handleScTrackClick(tr, -1); setHomeVisible(false); setPlayerVisible(true); setView('player'); setNavActive('library'); }}
+          onTracksAppended={handleSearchResultsLoaded}
+          onLogin={() => { setSettingsSec('account'); handleNav('settings'); }}
           loadingTrackId={loadingTrackId} errorTrackId={errorTrackId}
           onFollow={handleFollow} onCheckFollow={checkFollow}/>
 
