@@ -1387,6 +1387,8 @@ const STRINGS = {
     opening_browser:'открываем браузер...', login_browser:'войти через браузер',
     search_ph:'поиск',
     artists:'Исполнители', followers:'подписчиков', tracks_label:'Треки',
+    search_best:'Лучшее', search_recent:'Недавние запросы', search_recent_clear:'очистить',
+    search_hint:'начни вводить название трека, исполнителя\nили название плейлиста',
     loading:'загрузка...',
     likes:'Лайки', all_tracks:'Все треки',
     loading_dots:'загружаем...', updating:'обновляем...',
@@ -1508,6 +1510,8 @@ const STRINGS = {
     opening_browser:'opening browser...', login_browser:'log in via browser',
     search_ph:'search',
     artists:'Artists', followers:'followers', tracks_label:'Tracks',
+    search_best:'Top result', search_recent:'Recent searches', search_recent_clear:'clear',
+    search_hint:'start typing a track, an artist\nor a playlist name',
     loading:'loading...',
     likes:'Likes', all_tracks:'All tracks',
     loading_dots:'loading...', updating:'updating...',
@@ -5115,20 +5119,38 @@ function PlEditorRowSkeleton({ i }) {
   );
 }
 
-function ArtistCardsSkeleton() {
+/* скелет блока «Лучшее»: та же геометрия, что у SearchTopCard (обложка 76 +
+   две строки текста + строка чисел), иначе при подстановке результата всё
+   правее обложки дёргалось бы */
+function SearchTopSkeleton() {
   return (
-    <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:10}}>
-      {[0,1,2,3].map(i => (
-        <div key={i} style={{display:'flex', alignItems:'center', gap:14,
-          background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.02)',
-          borderRadius:14, padding:'12px 16px', minWidth:0}}>
-          <div className="skel" style={{width:42, height:42, borderRadius:'50%', flexShrink:0, '--skel-delay':skelDelay(i + 2)}}/>
-          <div style={{flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:6}}>
-            <div className="skel" style={{height:10, borderRadius:4, width:skelW(i, 52, 26)}}/>
-            <div className="skel" style={{height:8,  borderRadius:4, width:'38%', '--skel-delay':skelDelay(i + 6)}}/>
-          </div>
+    <div style={{
+      display:'flex', alignItems:'center', gap:16,
+      padding:'10px 14px 10px 10px', borderRadius:16, background:'rgba(255,255,255,0.03)',
+    }}>
+      <div className="skel" style={{width:76, height:76, borderRadius:12, flexShrink:0, '--skel-delay':skelDelay(2)}}/>
+      <div style={{flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:7, justifyContent:'center'}}>
+        <div className="skel" style={{height:12, borderRadius:4, width:skelW(2, 42, 26), '--skel-delay':skelDelay(3)}}/>
+        <div className="skel" style={{height:9,  borderRadius:4, width:skelW(3, 24, 20), '--skel-delay':skelDelay(6)}}/>
+        <div style={{display:'flex', gap:14, marginTop:5}}>
+          <div className="skel" style={{height:8, borderRadius:4, width:36}}/>
+          <div className="skel" style={{height:8, borderRadius:4, width:24, '--skel-delay':skelDelay(8)}}/>
+          <div className="skel" style={{height:8, borderRadius:4, width:28, '--skel-delay':skelDelay(11)}}/>
         </div>
-      ))}
+      </div>
+      <div className="skel" style={{width:26, height:26, borderRadius:'50%', flexShrink:0, '--skel-delay':skelDelay(13)}}/>
+    </div>
+  );
+}
+
+function SearchArtistSkeleton({ i }) {
+  return (
+    <div style={{display:'flex', alignItems:'center', gap:12, padding:'9px 12px', minWidth:0}}>
+      <div className="skel" style={{width:44, height:44, borderRadius:'50%', flexShrink:0, '--skel-delay':skelDelay(i + 6)}}/>
+      <div style={{flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:6}}>
+        <div className="skel" style={{height:10, borderRadius:4, width:skelW(i, 48, 26)}}/>
+        <div className="skel" style={{height:8, borderRadius:4, width:'36%', '--skel-delay':skelDelay(i + 9)}}/>
+      </div>
     </div>
   );
 }
@@ -5136,10 +5158,23 @@ function ArtistCardsSkeleton() {
 function SearchSkeleton() {
   return (
     <div>
-      <div className="skel" style={{height:10, width:58, borderRadius:4, marginBottom:10}}/>
-      <div style={{marginBottom:22}}><ArtistCardsSkeleton/></div>
-      <div className="skel" style={{height:10, width:52, borderRadius:4, marginBottom:8}}/>
-      {[0,1,2,3,4].map(i => <TrackRowSkeleton key={i} i={i}/>)}
+      {/* «Лучшее» */}
+      <div style={{marginBottom:28}}>
+        <div className="skel" style={{height:8, width:46, borderRadius:4, marginBottom:13}}/>
+        <SearchTopSkeleton/>
+      </div>
+      {/* исполнители */}
+      <div style={{marginBottom:28}}>
+        <div className="skel" style={{height:8, width:58, borderRadius:4, marginBottom:13}}/>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(4, minmax(0, 1fr))', gap:6}}>
+          {[0,1,2,3].map(i => <SearchArtistSkeleton key={i} i={i}/>)}
+        </div>
+      </div>
+      {/* треки */}
+      <div>
+        <div className="skel" style={{height:8, width:52, borderRadius:4, marginBottom:13}}/>
+        {[0,1,2,3,4].map(i => <TrackRowSkeleton key={i} i={i}/>)}
+      </div>
     </div>
   );
 }
@@ -5160,7 +5195,7 @@ function HomeGridSkeleton() {
   );
 }
 
-function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoading, isError, hideDividers }) {
+function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoading, isError, hideDividers, artHidden }) {
   const t = useLang();
   const lang = React.useContext(LangContext);
   const [hov, setHov] = useState(false);
@@ -5188,11 +5223,16 @@ function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoadi
         borderBottom: hideDividers ? 'none' : '1px solid rgba(255,255,255,0.032)',
         overflow:'hidden',
       }}>
-      {/* cover */}
-      <div onClick={e=>{e.stopPropagation(); if(!isLoading) onCoverClick();}} style={{
+      {/* cover. data-sewer-art — по нему App находит обложку, когда трек
+          открывают в плеере: клон hero стартует ровно из этого квадрата */}
+      <div data-sewer-art={track.id} onClick={e=>{e.stopPropagation(); if(!isLoading) onCoverClick();}} style={{
         width:44, height:44, borderRadius:8, flexShrink:0,
         background:'#111116', overflow:'hidden', position:'relative',
         cursor: isLoading ? 'default' : 'pointer',
+        /* на время полёта клона обложка прячется — иначе она осталась бы
+           висеть в строке вторым экземпляром. ненавязчиво, потому что сам
+           клон улетает отсюда и через 430мс её заменяет обложка плеера */
+        opacity: artHidden ? 0 : 1, transition:'opacity 0.14s ease',
       }}>
         {track.coverUrl && <img src={track.coverUrl} loading="lazy" decoding="async" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',clipPath:'inset(0 round 8px)',display:'block'}}
           onError={e=>{e.currentTarget.style.display='none'}}/>}
@@ -6316,15 +6356,216 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
   );
 });
 
-const SearchView = React.forwardRef(function SearchView({ visible, scAuth, likedIds, onLike, onPlayTrack, onSelectTrack, onResultsLoaded, onArtistClick, loadingTrackId, errorTrackId, hideDividers }, ref) {
+/* ── recent searches ─────────────────────────────────────────────────────────
+   Живут в localStorage, а не в settings: это не настройка, а личная история
+   вкладки, и тащить её в settings.json (который переписывается целиком при
+   каждом сохранении) незачем. Ключ читается один раз при монтировании —
+   вкладка перерисовывается на каждый кадр лерпа акцента, а список запросов
+   за это время не меняется. */
+const RECENT_KEY  = 'sewer.search.recent';
+const RECENT_MAX  = 6;
+function loadRecent() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+    return Array.isArray(raw) ? raw.filter(x => typeof x === 'string' && x.trim()).slice(0, RECENT_MAX) : [];
+  } catch { return []; }
+}
+function saveRecent(list) {
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); } catch {}
+}
+
+/* ── SearchTopResult ───────────────────────────────────────────────────────
+   «Лучшее» — первый результат крупной карточкой над списком. Приём взят с
+   главной: тот же hover-оверлей с play (классы .home-card-*), то же сердце
+   с пружинным pop, и то же пятно цвета обложки, каким AmbientGlow светит
+   в плеере — цвет берём из самой картинки тем же extractAccentColor
+   (кэш по url + один кадр 32×32). Без filter:blur — мягкость даёт сам
+   градиент, ровно как в ArtistView.
+
+   Смысл не только в украшении: первый результат — самый релевантный, и
+   раньше он ничем не отличался от остальных строк, поэтому его приходилось
+   искать глазами по первому месту в списке. */
+function SearchTopResult({ track, isLiked, onLike, onPlay, onSelect, isLoading, isError, artHidden, glowOff }) {
+  const t = useLang();
+  const [popKey, setPopKey] = useState(0);
+  const [glow, setGlow] = useState(null);
+
+  useEffect(() => {
+    if (!track.coverUrl) { setGlow(null); return; }
+    let dead = false;
+    extractAccentColor(track.coverUrl).then(c => {
+      if (!dead && c) setGlow(`${c.r}, ${c.g}, ${c.b}`);
+    });
+    return () => { dead = true; };
+  }, [track.coverUrl]);
+
+  const pc = fmtCount(track.playCount);
+  const yr = fmtYear(track.releasedAt);
+
+  return (
+    /* className="home-card" — не для вида, а ради `.home-card:hover
+       .home-card-overlay`: оверлей с play и сердце проявляются на карточке
+       целиком, ровно как на главной. Сама карточка тут широкая, поэтому
+       её фон и рамка заданы инлайном, а не классом. */
+    <div className="home-card" onClick={onSelect}
+      style={{
+        position:'relative', display:'flex', alignItems:'center', gap:18,
+        padding:'13px 16px 13px 13px', borderRadius:16, overflow:'hidden', cursor:'pointer',
+        background:'rgba(255,255,255,0.045)', border:'1px solid rgba(255,255,255,0.045)',
+        transition:'background 0.18s ease, border-color 0.18s ease',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background='rgba(255,255,255,0.075)';
+                           e.currentTarget.style.borderColor='rgba(255,255,255,0.08)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.045)';
+                           e.currentTarget.style.borderColor='rgba(255,255,255,0.045)'; }}>
+      {/* пятно цвета обложки — прижато к обложке и обрезано карточкой,
+          поэтому уезжает наружу ровно настолько, насколько хватает
+          скруглённого угла, и не ложится пятном на весь блок.
+          glowOff — тот же тумблер, что у AmbientGlow в плеере и у пятна за
+          аватаром артиста: выключенные свечения должны гаснуть везде */}
+      <div style={{
+        position:'absolute', left:-26, top:'-50%', width:180, height:'200%',
+        background: glow && !glowOff
+          ? `radial-gradient(ellipse closest-side at center, rgba(${glow},0.20) 0%, rgba(${glow},0.08) 48%, transparent 100%)`
+          : 'none',
+        opacity: glow && !glowOff ? 1 : 0, transition:'opacity 0.5s ease', pointerEvents:'none',
+      }}/>
+      {/* обложка. data-sewer-art — точка отрыва для hero: клик по карточке
+          уводит в плеер, и клон обложки стартует ровно отсюда, как на
+          главной (см. findArtEl и openSearchTrack) */}
+      <div data-sewer-art={track.id} onClick={e => { e.stopPropagation(); if (!isLoading) onPlay(); }} style={{
+        position:'relative', width:92, height:92, borderRadius:14, flexShrink:0,
+        background:'#111116', overflow:'hidden',
+        cursor: isLoading ? 'default' : 'pointer',
+        opacity: artHidden ? 0 : 1, transition:'opacity 0.14s ease',
+      }}>
+        {track.coverUrl
+          ? <img src={track.coverUrl} loading="lazy" decoding="async"
+              style={{position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', clipPath:'inset(0 round 14px)', display:'block'}}
+              onError={e => { e.currentTarget.style.display = 'none'; }}/>
+          : <img src="../assets/note.png" alt="" style={{width:24, height:24, filter:'brightness(0) invert(1)', opacity:0.13}}/>}
+        <div className="home-card-overlay" style={{
+          position:'absolute', inset:0, background:'rgba(0,0,0,0.36)',
+          display:'flex', alignItems:'center', justifyContent:'center',
+        }}>
+          <div className="home-card-play" style={{
+            width:44, height:44, borderRadius:'50%',
+            display:'flex', alignItems:'center', justifyContent:'center',
+          }}>
+            <svg width="24" height="24" fill="#fff" viewBox="0 0 24 24" style={{marginLeft:2}}><polygon points="6,4 20,12 6,20"/></svg>
+          </div>
+        </div>
+        {isLoading && <div style={{position:'absolute', inset:0, background:'rgba(0,0,0,0.55)',
+          display:'flex', alignItems:'center', justifyContent:'center'}}>
+          <div style={{width:15, height:15, border:'2px solid rgba(255,255,255,0.15)', borderTopColor:'rgba(255,255,255,0.6)', borderRadius:'50%', animation:'spin 0.75s linear infinite'}}/>
+        </div>}
+      </div>
+      {/* название / исполнитель / числа */}
+      <div style={{flex:1, minWidth:0, position:'relative'}}>
+        <div style={{fontSize:'var(--fs-lg)', fontWeight:500, color:'rgba(255,255,255,0.9)',
+          letterSpacing:'-0.01em', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+          {track.title}
+        </div>
+        <div style={{fontSize:'var(--fs-sm)', color:'rgba(255,255,255,0.42)', marginTop:3,
+          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+          {formatArtistDisplay(track.artist)}
+        </div>
+        <div style={{
+          display:'flex', alignItems:'center', gap:15, marginTop:9,
+          fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.3)', fontVariantNumeric:'tabular-nums',
+        }}>
+          {pc && <span style={{display:'flex', alignItems:'center', gap:5}}>
+            <img src="../assets/vosproizvedenie.png" alt="" width="9" height="9"
+              style={{display:'block', filter:'brightness(0) invert(1)', opacity:0.5, flexShrink:0}}/>
+            {pc}
+          </span>}
+          {yr && <span>{yr}</span>}
+          <span style={{color: isError ? 'rgba(255,80,80,0.7)' : undefined}}>{isError ? '—' : fmt(track.duration)}</span>
+        </div>
+      </div>
+      {/* сердце — без цифры: у лучшего результата счётчики уже есть слева,
+          а второе число читалось бы как «лайков столько-то» про то же самое.
+          Видно всегда, а не по наведению, как на карточках главной: здесь
+          карточка широкая, и без него вся правая половина пустует. Инлайновый
+          opacity перебивает `.home-card-like { opacity:0 }` из стилей. */}
+      {onLike && (
+        <div title={t('likes')}
+          onClick={e => { e.stopPropagation(); if (!isLiked) setPopKey(k => k + 1); onLike(); }}
+          style={{
+            position:'relative', width:36, height:36, flexShrink:0, borderRadius:'50%',
+            display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer',
+            opacity:1,
+            color: isLiked ? 'var(--accent)' : 'rgba(255,255,255,0.36)',
+            transition:'color 0.18s ease, background 0.15s ease',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+          <LikeHeart key={popKey} liked={isLiked} size={16}
+            className={popKey ? 'like-pop like-glow' : undefined}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── SearchArtistCard ──────────────────────────────────────────────────────
+   Исполнитель в результатах. Раньше это была клетка с заливкой И рамкой —
+   единственное место на вкладке, где фон и граница стояли одновременно, и на
+   общем тёмном фоне четыре такие клетки читались сеткой таблицы.
+
+   Теперь это та же карточка, что на главной, только круглая: аватар сверху,
+   имя под ним. Горизонтальный вариант в четырёх колонках не выжил — на
+   ~165px на колонку от аватара и подписи оставалось меньше 80px, и имена
+   обрезались до «aphex-…», а счётчики подписчиков — до «8 400 00…».
+   Вертикальная карточка даёт имени всю ширину колонки. */
+function SearchArtistCard({ user, onClick }) {
+  const t = useLang();
+  return (
+    <div onClick={onClick}
+      style={{
+        display:'flex', flexDirection:'column', alignItems:'center',
+        padding:'12px 8px 11px', borderRadius:14, cursor:'pointer', minWidth:0,
+        transition:'background 0.16s ease',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+      {user.avatarUrl
+        ? <img src={user.avatarUrl} loading="lazy" decoding="async"
+            style={{width:'100%', maxWidth:124, aspectRatio:'1', borderRadius:'50%', objectFit:'cover', background:'#111116'}}/>
+        : <div style={{width:'100%', maxWidth:124, aspectRatio:'1', borderRadius:'50%', background:'rgba(255,255,255,0.05)',
+            display:'flex', alignItems:'center', justifyContent:'center'}}>
+            <svg width="26" height="26" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.6" viewBox="0 0 24 24">
+              <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+            </svg>
+          </div>}
+      <div style={{fontSize:'var(--fs-md)', fontWeight:500, color:'rgba(255,255,255,0.84)',
+        marginTop:11, maxWidth:'100%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+        {user.username}
+      </div>
+      {user.followersCount > 0 && (
+        <div style={{fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.3)', marginTop:2,
+          maxWidth:'100%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+          {/* fmtCount, а не toLocaleString: «8.4M» помещается в колонку,
+              «8 400 000» — нет, и строка обрезалась на середине числа */}
+          {fmtCount(user.followersCount)} {t('followers')}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const SearchView = React.forwardRef(function SearchView({ visible, scAuth, likedIds, onLike, onPlayTrack, onSelectTrack, onResultsLoaded, onArtistClick, loadingTrackId, errorTrackId, hideDividers, heroId, glowOff, onLogin }, ref) {
   const T = useLang();
   const inputRef = useRef(null);
+  const listRef = useRef(null);
   const [query,   setQuery]   = useState('');
   const [results, setResults] = useState([]);
   const [users,   setUsers]   = useState([]);
   const [loading, setLoading] = useState(false);
   const [offset,  setOffset]  = useState(0);
   const [hasMore, setHasMore] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [recent,  setRecent]  = useState(loadRecent);
   const debounceRef  = useRef(null);
   const queryRef     = useRef('');
   const loadingRef   = useRef(false);
@@ -6338,9 +6579,18 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
       if (!hasMoreRef.current || loadingRef.current) return;
       doSearch(queryRef.current, offsetRef.current);
     },
+    /* Обложка трека в этом списке — для hero-перелёта в плеер. Ищем только
+       ВНУТРИ своей вёрстки, а не по всему экрану: те же data-sewer-art стоят
+       на строках экрана артиста и на карточках главной, и общий поиск отдал бы
+       hero элемент из невидимой вкладки — клон улетел бы из пустоты. */
+    findArt: (id) => listRef.current?.querySelector(`[data-sewer-art="${CSS.escape(String(id))}"]`) || null,
   }));
 
   const hasResults = results.length > 0 || users.length > 0;
+  /* состояние «пусто»: нечего искать, и поле стоит по центру крупным.
+     Поле то же самое, что и с результатами — меняются только отступы и
+     кегль, одним transition'ом (см. шапку ниже) */
+  const idle = !query.trim() && !loading && !hasResults;
 
   const doSearch = async (q, off = 0) => {
     if (!q.trim() || !scAuth) return;
@@ -6368,6 +6618,10 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
         followersCount: u.followers_count,
         bannerUrl: u.visuals?.visuals?.[0]?.visual_url || null,
       })));
+      /* запрос в историю — только когда он что-то нашёл. Иначе список
+         забивался бы опечатками и пустыми результатами, а он для того
+         и нужен, чтобы по нему возвращаться к удачному запросу */
+      if (newTracks.length > 0 || usersRes?.data?.collection?.length > 0) pushRecent(q);
     } else {
       setResults(prev => [...prev, ...newTracks]);
       if (newTracks.length > 0) onResultsLoaded?.(newTracks);
@@ -6378,13 +6632,52 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
     setLoading(false);
   };
 
+  /* История запросов. Список без повторов (регистр не важен: «Travis» и
+     «travis» — один и тот же запрос) и всегда свежие первыми. Запись
+     делается здесь, а не в useEffect на results: апдейт-эффект сработал бы
+     и при догрузке второй страницы, где запрос прежний.
+     На диск пишем отдельным эффектом: localStorage внутри апдейтера —
+     побочный эффект во время рендера, и StrictMode вызвал бы его дважды. */
+  const pushRecent = (q) => {
+    const s = q.trim();
+    if (!s) return;
+    setRecent(prev => [s, ...prev.filter(x => x.toLowerCase() !== s.toLowerCase())].slice(0, RECENT_MAX));
+  };
+  useEffect(() => { saveRecent(recent); }, [recent]);
+
+  const applyRecent = (q) => {
+    setQuery(q);
+    queryRef.current = q;
+    setResults([]); setUsers([]); setOffset(0);
+    doSearch(q, 0);
+    inputRef.current?.focus();
+  };
+
+  const clearRecent = () => { setRecent([]); saveRecent([]); };
+
   const handleInput = e => {
     const q = e.target.value;
     setQuery(q);
     queryRef.current = q;
     clearTimeout(debounceRef.current);
-    if (!q.trim()) { setResults([]); setUsers([]); setOffset(0); return; }
+    if (!q.trim()) { setResults([]); setUsers([]); setOffset(0); setHasMore(false); return; }
     debounceRef.current = setTimeout(() => doSearch(q, 0), 380);
+  };
+
+  const clear = () => {
+    setQuery(''); queryRef.current = '';
+    setResults([]); setUsers([]); setOffset(0); setHasMore(false);
+    inputRef.current?.focus();
+  };
+
+  const handleKey = e => {
+    if (e.key === 'Escape') { e.stopPropagation(); if (query) clear(); }
+    /* Enter отменяет дебаунс и ищет сразу — иначе пришлось бы ждать 380ms
+       после того, как человек уже отпустил кнопку и начал нажимать трек */
+    else if (e.key === 'Enter') {
+      clearTimeout(debounceRef.current);
+      if (query.trim()) doSearch(query.trim(), 0);
+    }
   };
 
   const handleScroll = e => {
@@ -6393,67 +6686,273 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) doSearch(query, offset);
   };
 
+  /* подложка-подсказка под полем в состоянии покоя. Раньше вместо неё
+     стоял одинокий хайдрайвер «Ctrl+F» в плейсхолдере: подсказка исчезала
+     на первом же напечатанном символе, то есть ровно тогда, когда она
+     нужна. Здесь она живёт отдельно от поля и не конкурирует с текстом. */
+  const keycap = (text) => (
+    <span style={{
+      display:'inline-block', padding:'2px 6px', margin:'0 2px', borderRadius:5,
+      background:'rgba(255,255,255,0.055)', border:'1px solid rgba(255,255,255,0.05)',
+      fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.32)', fontFamily:'inherit',
+    }}>{text}</span>
+  );
+
+  const top = results[0];
+  const rest = results.slice(1);
+
+  const rootStyle = {
+    position:'absolute', inset:0,
+    opacity: visible ? 1 : 0,
+    pointerEvents: visible ? 'auto' : 'none',
+    transition:'opacity 0.14s ease',
+  };
+
+  /* Без входа в soundcloud искать нечем: doSearch выходит на первой строке,
+     и вкладка выглядела как рабочая — можно было напечатать запрос и
+     получить «ничего не найдено», то есть вины поиска, хотя запрос не
+     уходил никуда. Показываем то же приглашение, что на вкладке
+     плейлистов и на экране артиста: иконка, одна фраза, кнопка входа.
+     Ранний return — хуков после useImperativeHandle в SearchView нет,
+     так что порядок вызовов не ломается. */
+  if (!scAuth) {
+    return (
+      <div style={rootStyle}>
+        <div style={{
+          display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+          minHeight:'calc(100vh - 180px)', gap:22, textAlign:'center', padding:'0 40px',
+        }}>
+          <div style={{
+            width:72, height:72, borderRadius:20,
+            background:'rgba(255,255,255,0.035)',
+            display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
+          }}>
+            <svg width="32" height="32" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35" strokeLinecap="round"/>
+            </svg>
+          </div>
+          <div style={{fontSize:'var(--fs-md)', color:'rgba(255,255,255,0.32)', lineHeight:1.6, maxWidth:340}}>
+            {T('sc_hint').split('\n').map((l, i) => <span key={i}>{l}{i === 0 && <br/>}</span>)}
+          </div>
+          <button onClick={onLogin} style={{
+            display:'flex', alignItems:'center', gap:8,
+            background:'rgba(255,85,0,0.1)', border:'none', borderRadius:10,
+            padding:'9px 18px', fontSize:'var(--fs-md)', fontWeight:500,
+            color:'rgba(255,130,60,0.85)', cursor:'pointer', fontFamily:'inherit',
+            transition:'background 0.15s',
+          }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,85,0,0.17)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,85,0,0.1)'; }}>
+            <SoundCloudIcon size={14} fill="rgba(255,130,60,0.9)"/>
+            {T('login_sc')}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div style={{
-      position:'absolute', inset:0,
-      opacity: visible ? 1 : 0,
-      pointerEvents: visible ? 'auto' : 'none',
-      transition:'opacity 0.14s ease',
-    }}>
-      {/* searchbar */}
+    <div style={rootStyle}>
+      {/* ── шапка ───────────────────────────────────────────────────────────
+          Одно поле в обоих состояниях: в покое оно крупное и стоит ниже,
+          с результатами — мелкое и прижато к верху. Переезжает не сам
+          элемент (два разных блока с разной вёрсткой, как раньше), а его
+          рамка: меняются только padding-top поля, кегль и радиус, и всё
+          это одним transition. Поэтому в момент перехода список не
+          прыгает — он всегда начинается с одной и той же точки. */}
       <div style={{
         position:'absolute', left:0, right:0,
-        top: hasResults ? '8%' : '36%',
+        top: idle ? '26%' : 22,
         transition:'top 0.42s cubic-bezier(0.22,1,0.36,1)',
-        padding:'0 52px', zIndex:2,
+        padding:'0 52px', zIndex:2, pointerEvents:'none',
       }}>
         <div style={{
-          position:'relative',
-          background:'rgba(255,255,255,0.05)',
-          borderRadius:18,
+          position:'relative', margin: idle ? '0 auto' : 0, maxWidth: idle ? 420 : '100%',
+          background: focused
+            ? 'rgba(255,255,255,0.075)'
+            : (hasResults || query.trim() ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.035)'),
+          /* Рамки нет ни в одном состоянии, включая фокус. Акцентная обводка
+             была единственной цветной линией на вкладке и читалась рамкой поля
+             ввода из чужого интерфейса — ровно то, за что уже ругали кнопку
+             лайка (см. комментарий в SearchTrackRow). Остаётся только фон:
+             он и говорит «здесь печатают», но не диктует форму. */
+          border:'1px solid transparent',
+          borderRadius: idle ? 18 : 14,
+          transition:'background 0.2s ease, border-radius 0.42s cubic-bezier(0.22,1,0.36,1), max-width 0.42s cubic-bezier(0.22,1,0.36,1)',
+          pointerEvents:'auto',
         }}>
-          <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
-            viewBox="0 0 24 24" style={{position:'absolute', left:22, top:'50%', translate:'0 -50%', pointerEvents:'none', color:'rgba(255,255,255,0.3)'}}>
-            <circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35" strokeLinecap="round"/>
+          <svg width={idle ? 18 : 14} height={idle ? 18 : 14} fill="none" stroke="currentColor"
+            strokeWidth="2.2" viewBox="0 0 24 24"
+            style={{
+              position:'absolute', left: idle ? 22 : 16, top:'50%', translate:'0 -50%',
+              pointerEvents:'none', flexShrink:0,
+              color: focused ? 'rgba(255,255,255,0.42)' : 'rgba(255,255,255,0.24)',
+              transition:'color 0.2s ease',
+            }}>
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35" strokeLinecap="round"/>
           </svg>
           <input
             ref={inputRef}
-            value={query} onChange={handleInput}
-            placeholder={T('search_hinted')}
+            value={query}
+            onChange={handleInput}
+            onKeyDown={handleKey}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            placeholder={idle ? T('search_ph') : T('search_hinted')}
             style={{
               width:'100%', background:'transparent', border:'none', outline:'none',
-              padding:'15px 54px',
-              color:'#ededf4', fontSize: 'var(--fs-xl)', fontFamily:'inherit', textAlign:'center',
+              padding: idle ? '15px 52px' : '11px 44px 11px 42px',
+              color: idle ? '#ededf4' : 'rgba(255,255,255,0.86)',
+              fontSize: idle ? 'var(--fs-xl)' : 'var(--fs-sm)',
+              fontFamily:'inherit', textAlign:'center',
+              transition:'padding 0.42s cubic-bezier(0.22,1,0.36,1), font-size 0.42s cubic-bezier(0.22,1,0.36,1)',
             }}
           />
-          {loading && <div style={{position:'absolute', right:22, top:'50%', translate:'0 -50%', width:16, height:16, borderRadius:'50%', border:'2px solid rgba(255,255,255,0.15)', borderTopColor:'rgba(255,255,255,0.5)', animation:'spin 0.7s linear infinite'}}/>}
+          {/* крестик и спиннер делят одно место: пока идёт запрос, крестик
+              убирать нельзя — он отменяет ввод, а не запрос */}
+          {loading
+            ? <div style={{position:'absolute', right: idle ? 20 : 15, top:'50%', translate:'0 -50%',
+                width:14, height:14, borderRadius:'50%', pointerEvents:'none',
+                border:'2px solid rgba(255,255,255,0.14)', borderTopColor:'rgba(255,255,255,0.5)',
+                animation:'spin 0.7s linear infinite'}}/>
+            : query && (
+              <div onClick={clear} title={T('del')}
+                style={{
+                  position:'absolute', right: idle ? 18 : 13, top:'50%', translate:'0 -50%',
+                  width: idle ? 20 : 18, height: idle ? 20 : 18, borderRadius:'50%',
+                  display:'flex', alignItems:'center', justifyContent:'center',
+                  color:'rgba(255,255,255,0.28)', cursor:'pointer',
+                  transition:'background 0.15s, color 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background='rgba(255,255,255,0.08)'; e.currentTarget.style.color='rgba(255,255,255,0.6)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='rgba(255,255,255,0.28)'; }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  strokeWidth="2.4" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </div>
+            )}
         </div>
       </div>
 
-      {/* skeleton первой загрузки — до первых результатов */}
-      {!hasResults && loading && (
-        <div style={{position:'absolute', left:52, right:52, top:'calc(36% + 84px)'}}>
+      {/* ── покой: поле по центру, под ним история запросов ─────────────────
+          Раньше здесь была пустота до самого низа. Теперь то же пустое
+          место занято историей — она и есть ответ на «что тут вообще
+          делать», и она же убирает необходимость запоминать, что поиск
+          существует. */}
+      {idle && (
+        <div style={{
+          position:'absolute', left:0, right:0, top:'26%',
+          marginTop: idle ? 96 : 0,
+          padding:'0 52px', pointerEvents:'none',
+          transition:'margin-top 0.42s cubic-bezier(0.22,1,0.36,1)',
+        }}>
+          {recent.length > 0 && (
+            <div style={{maxWidth:420, margin:'0 auto', pointerEvents:'auto'}}>
+              <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:12}}>
+                <div style={{fontSize:'var(--fs-eyebrow)', letterSpacing:'0.12em', textTransform:'uppercase',
+                  color:'rgba(255,255,255,0.2)', fontWeight:500, flexShrink:0}}>
+                  {T('search_recent')}
+                </div>
+                <div style={{flex:1, height:1, background:'rgba(255,255,255,0.05)'}}/>
+                <div onClick={clearRecent} title={T('search_recent_clear')}
+                  style={{
+                    fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.22)',
+                    cursor:'pointer', padding:'3px 9px', borderRadius:999, flexShrink:0,
+                    transition:'color 0.15s, background 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.color='rgba(255,255,255,0.5)'; e.currentTarget.style.background='rgba(255,255,255,0.055)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.color='rgba(255,255,255,0.22)'; e.currentTarget.style.background='transparent'; }}>
+                  {T('search_recent_clear')}
+                </div>
+              </div>
+              <div style={{display:'flex', flexWrap:'wrap', gap:7}}>
+                {recent.map(q => (
+                  <div key={q} onClick={() => applyRecent(q)}
+                    style={{
+                      display:'flex', alignItems:'center', gap:7,
+                      padding:'7px 13px', borderRadius:999,
+                      background:'rgba(255,255,255,0.04)',
+                      color:'rgba(255,255,255,0.6)',
+                      fontSize:'var(--fs-sm)', cursor:'pointer',
+                      transition:'background 0.15s, color 0.15s',
+                      maxWidth:'100%',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background='rgba(255,255,255,0.08)'; e.currentTarget.style.color='rgba(255,255,255,0.85)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.04)'; e.currentTarget.style.color='rgba(255,255,255,0.6)'; }}>
+                    <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2"
+                      strokeLinecap="round" style={{flexShrink:0, opacity:0.5}} viewBox="0 0 24 24">
+                      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                    </svg>
+                    <span style={{overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{q}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div style={{
+            marginTop: recent.length > 0 ? 30 : 0, textAlign:'center',
+            fontSize:'var(--fs-md)', color:'rgba(255,255,255,0.24)', lineHeight:1.65,
+          }}>
+            {T('search_hint').split('\n').map((l, i) => <span key={i}>{l}{i === 0 && <br/>}</span>)}
+          </div>
+          <div style={{marginTop:16, textAlign:'center', fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.16)'}}>
+            {keycap('Ctrl')} {keycap('F')}
+          </div>
+        </div>
+      )}
+
+      {/* скелет первой загрузки — до первых результатов */}
+      {!idle && !hasResults && loading && (
+        <div style={{position:'absolute', left:52, right:52, top:'calc(22px + 56px)'}}>
           <SearchSkeleton/>
         </div>
       )}
 
       {/* пустой результат */}
-      {!hasResults && !loading && query.trim() && (
-        <div style={{position:'absolute', left:0, right:0, top:'calc(36% + 96px)', textAlign:'center'}}>
-          <svg width="26" height="26" fill="none" stroke="rgba(255,255,255,0.13)" strokeWidth="1.7" viewBox="0 0 24 24" style={{marginBottom:12}}>
-            <circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35" strokeLinecap="round"/>
-          </svg>
-          <div style={{fontSize: 'var(--fs-md)', color:'rgba(255,255,255,0.3)'}}>{T('not_found')}</div>
+      {!idle && !hasResults && !loading && query.trim() && (
+        <div style={{
+          position:'absolute', left:0, right:0, top:'calc(22px + 92px)', textAlign:'center',
+          padding:'0 52px',
+        }}>
+          <div style={{
+            width:64, height:64, borderRadius:20, margin:'0 auto 16px',
+            background:'rgba(255,255,255,0.03)',
+            display:'flex', alignItems:'center', justifyContent:'center',
+          }}>
+            <svg width="27" height="27" fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="1.7" viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35" strokeLinecap="round"/>
+            </svg>
+          </div>
+          <div style={{fontSize:'var(--fs-md)', color:'rgba(255,255,255,0.3)'}}>{T('not_found')}</div>
+          <div style={{
+            marginTop:14, display:'inline-flex', alignItems:'center', gap:8,
+            padding:'7px 14px', borderRadius:999, background:'rgba(255,255,255,0.04)',
+            fontSize:'var(--fs-sm)', color:'rgba(255,255,255,0.55)', cursor:'pointer',
+            transition:'background 0.15s, color 0.15s',
+          }}
+            onMouseEnter={e => { e.currentTarget.style.background='rgba(255,255,255,0.08)'; e.currentTarget.style.color='rgba(255,255,255,0.8)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.04)'; e.currentTarget.style.color='rgba(255,255,255,0.55)'; }}
+            onClick={clear}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2.2" strokeLinecap="round">
+              <polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>
+            </svg>
+            {T('search_ph')}
+          </div>
         </div>
       )}
 
-      {/* results */}
+      {/* ── результаты ────────────────────────────────────────────────────
+          Лучшее → исполнители → треки. Лучшее вынесено из списка треков,
+          чтобы один и тот же результат не печатался дважды; список
+          начинается со второго. */}
       {hasResults && (
-        <div onScroll={handleScroll}
+        <div ref={listRef} onScroll={handleScroll}
           className="scroll-thin"
           style={{
             position:'absolute', left:0, right:10,
-            top:'calc(8% + 76px)', bottom:0,
+            top: idle ? 0 : 'calc(22px + 56px)', bottom:0,
             overflowY:'auto', padding:'16px 52px 32px',
             /* ❌ был `willChange:'transform'`, хотя transform у этого
                элемента НИКОГДА не меняется — он просто скроллится.
@@ -6461,44 +6960,55 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
                бессмысленна: держала лишний слой на всю область
                результатов поиска на всё время её жизни. */
           }}>
+          {/* «Лучшее» и исполнители стоят друг ПОД ДРУГОМ, а не рядом.
+              Рядом они съедали бы ширину: карточке «лучшего» в колонке
+              340px имя трека обрезалось на втором-третьем слове, а ради
+              одного трека, который и так вынесен наверх, это плохой размен.
+              Широкая полоса — та же, что была на главной, и заголовок читается. */}
+          {top && (
+            <div style={{marginBottom:28}}>
+              <div style={{fontSize:'var(--fs-eyebrow)', letterSpacing:'0.12em', textTransform:'uppercase',
+                color:'rgba(255,255,255,0.22)', fontWeight:500, marginBottom:11}}>
+                {T('search_best')}
+              </div>
+              <SearchTopResult track={top}
+                isLiked={likedIds.has(top.id)}
+                onLike={() => onLike(top)}
+                onSelect={() => onSelectTrack(top, results)}
+                onPlay={() => onPlayTrack(top, results)}
+                isLoading={loadingTrackId === top.id}
+                isError={errorTrackId === top.id}
+                artHidden={heroId != null && top.id === heroId}
+                glowOff={glowOff}/>
+            </div>
+          )}
+
           {users.length > 0 && (
-            <div style={{marginBottom:22}}>
-              <div style={{fontSize: 'var(--fs-xs)',letterSpacing:'0.09em',textTransform:'uppercase',color:'rgba(255,255,255,0.22)',marginBottom:10}}>{T('artists')}</div>
-              <div style={{display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:10}}>
+            <div style={{marginBottom:28}}>
+              <div style={{fontSize:'var(--fs-eyebrow)', letterSpacing:'0.12em', textTransform:'uppercase',
+                color:'rgba(255,255,255,0.22)', fontWeight:500, marginBottom:9}}>
+                {T('artists')}
+              </div>
+              {/* Ровно четыре колонки, а не auto-fill: исполнителей в выдаче
+                  всегда ≤4, и при auto-fill на ~720px колонки выходили три —
+                  четвёртый падал на вторую строку и висел в ней один.
+                  Окно не изменяется размером (resizable:false), места хватает. */}
+              <div style={{display:'grid', gridTemplateColumns:'repeat(4, minmax(0, 1fr))', gap:10}}>
                 {users.slice(0, 4).map(u => (
-                  <div key={u.id}
-                    onClick={() => onArtistClick?.(u)}
-                    style={{
-                    display:'flex', alignItems:'center', gap:14,
-                    background:'rgba(255,255,255,0.04)',
-                    border:'1px solid rgba(255,255,255,0.03)',
-                    borderRadius:14, padding:'12px 16px',
-                    cursor:'pointer', transition:'background 0.15s, border-color 0.15s',
-                    minWidth:0,
-                  }}
-                    onMouseEnter={e => { e.currentTarget.style.background='rgba(255,255,255,0.075)'; e.currentTarget.style.borderColor='rgba(255,255,255,0.06)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background='rgba(255,255,255,0.04)'; e.currentTarget.style.borderColor='rgba(255,255,255,0.03)'; }}
-                  >
-                    {u.avatarUrl
-                      ? <img src={u.avatarUrl} loading="lazy" decoding="async" style={{width:42,height:42,borderRadius:'50%',objectFit:'cover',flexShrink:0}}/>
-                      : <div style={{width:42,height:42,borderRadius:'50%',background:'#111116',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-                          <svg width="20" height="20" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.6" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
-                        </div>
-                    }
-                    <div style={{minWidth:0, flex:1}}>
-                      <div style={{fontSize: 'var(--fs-md)', fontWeight:600, color:'rgba(255,255,255,0.9)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', letterSpacing:'-0.005em'}}>{u.username}</div>
-                      {u.followersCount > 0 && <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.36)', marginTop:3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{u.followersCount.toLocaleString()} {T('followers')}</div>}
-                    </div>
-                  </div>
+                  <SearchArtistCard key={u.id} user={u} onClick={() => onArtistClick?.(u)}/>
                 ))}
               </div>
             </div>
           )}
-          {results.length > 0 && (
+
+          {rest.length > 0 && (
             <div>
-              <div style={{fontSize: 'var(--fs-xs)',letterSpacing:'0.09em',textTransform:'uppercase',color:'rgba(255,255,255,0.22)',marginBottom:8}}>{T('tracks_label')}</div>
+              <div style={{fontSize:'var(--fs-eyebrow)', letterSpacing:'0.12em', textTransform:'uppercase',
+                color:'rgba(255,255,255,0.22)', fontWeight:500, marginBottom:8}}>
+                {T('tracks_label')}
+              </div>
               <AnimatePresence initial={false}>
-                {results.map(t => (
+                {rest.map(t => (
                   <SearchTrackRow key={t.id} track={t}
                     isLiked={likedIds.has(t.id)}
                     onLike={() => onLike(t)}
@@ -6506,10 +7016,17 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
                     onCoverClick={() => onPlayTrack(t, results)}
                     isLoading={loadingTrackId === t.id}
                     isError={errorTrackId === t.id}
+                    artHidden={heroId != null && t.id === heroId}
                     hideDividers={hideDividers}/>
                 ))}
               </AnimatePresence>
-              {loading && <div style={{textAlign:'center',color:'rgba(255,255,255,0.2)',padding:'16px 0',fontSize: 'var(--fs-sm)'}}>{T('loading')}</div>}
+              {loading && (
+                <div style={{display:'flex', justifyContent:'center', padding:'20px 0'}}>
+                  <div style={{width:15, height:15, borderRadius:'50%',
+                    border:'2px solid rgba(255,255,255,0.14)', borderTopColor:'rgba(255,255,255,0.45)',
+                    animation:'spin 0.7s linear infinite'}}/>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -9086,6 +9603,43 @@ const shuffleKeepRef    = useRef(false);
   selectTrackRef.current = selectTrack;
   const selectTrackStable = useCallback((t) => selectTrackRef.current(t), []);
 
+  /* Открыть трек из ВЫДАЧИ ПОИСКА в плеере — с тем же перелётом обложки,
+     что и на главной.
+     ⚠️ Раньше здесь был голый `setView('player')` без hero: из поиска трек
+     просто появлялся в плеере, и переход читался как мгновенный прыжок
+     между двумя вкладками. Теперь клон обложки отрывается от найденной
+     карточки и садится на место обложки плеера — как при клике по карточке
+     на главной.
+
+     Обложку ищем через `searchViewRef.findArt`, а не общим findArtEl: те же
+     data-sewer-art стоят на карточках главной и на строках экрана артиста,
+     и общий поиск отдал бы элемент из невидимой вкладки — клон улетел бы
+     из пустоты. Если обложки нет (трек ещё не отрисовался, список
+     перерисовывается), переход всё равно происходит, просто без анимации. */
+  const openSearchTrack = (t) => {
+    handleScTrackClick(t, -1);
+    const artEl = searchViewRef.current?.findArt?.(t.id);
+    const par   = playerArtRef.current?.getBoundingClientRect();
+    /* строка может быть за нижним краем списка — подкручиваем к ней, иначе
+       клон стартует из-под нижней кромки и перелёт выглядит обрезанным.
+       'nearest' двигает ровно настолько, чтобы элемент стал виден */
+    if (artEl) artEl.scrollIntoView({ block: 'nearest' });
+    if (artEl && par) {
+      const startRect = artEl.getBoundingClientRect();
+      setHero({
+        track: t,
+        startRect,
+        targetRect: { left: par.left, top: par.top, size: par.width },
+        corners: cssCorners(artEl),
+      });
+      setTimeout(() => setHeroExiting(true), HERO_DUR_MS - 80);
+    }
+    setHomeVisible(false);
+    setPlayerVisible(true);
+    setView('player');
+    setNavActive('library');
+  };
+
   /* клик по строке библиотеки. ⚠️ раньше это был инлайновый стрелочный
      проп прямо в JSX, то есть НОВАЯ функция на каждом рендере App.
      `TrackRow` обёрнут в React.memo, а `onContextMenu` в него приходит
@@ -10272,11 +10826,14 @@ const shuffleKeepRef    = useRef(false);
         <SearchView ref={searchViewRef} visible={view==='search'} scAuth={settings.soundcloudAuth||null}
           likedIds={likedIds} onLike={handleLike}
           onPlayTrack={(t, queue) => { searchQueueRef.current = queue || null; handleScTrackClick(t, -1); }}
-          onSelectTrack={(t, queue) => { searchQueueRef.current = queue || null; handleScTrackClick(t, -1); setHomeVisible(false); setPlayerVisible(true); setView('player'); setNavActive('library'); }}
+          onSelectTrack={(t, queue) => { searchQueueRef.current = queue || null; openSearchTrack(t); }}
           onResultsLoaded={handleSearchResultsLoaded}
           onArtistClick={handleOpenArtist}
           loadingTrackId={loadingTrackId} errorTrackId={errorTrackId}
-          hideDividers={HIDE_DIVIDERS}/>
+          hideDividers={HIDE_DIVIDERS}
+          heroId={hero && !heroExiting ? hero.track.id : null}
+          glowOff={settings.accentMode==='off' || settings.ambientGlow === false}
+          onLogin={() => { setSettingsSec('account'); handleNav('settings'); }}/>
         <ArtistView artist={artistView} visible={view==='artist'} onClose={handleCloseArtist} scAuth={settings.soundcloudAuth||null} artistCacheRef={artistCacheRef}
           hideDividers={HIDE_DIVIDERS} glowOff={settings.accentMode==='off' || settings.ambientGlow === false}
           likedIds={likedIds} onLike={handleLike}
