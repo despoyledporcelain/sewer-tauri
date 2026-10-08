@@ -7744,6 +7744,22 @@ const shuffleKeepRef    = useRef(false);
   const volumeRef         = useRef(0.7);
   const settingsRef       = useRef({});
   const crossfadeRafRef   = useRef(null);
+  /* ── Настоящий кроссфейд (две деки) ───────────────────────────────────
+     crossfadeRafRef выше — это СТАРЫЙ fade (тишина в конце трека + тишина
+     в начале следующего). Настоящее перекрытие двумя деками живёт в своих
+     ref'ах и намеренно их не делит: handleSeek гасит crossfadeRafRef, и если
+     бы кроссфейд писал туда же, seek посреди перекрытия навсегда оставил бы
+     уходящую деку на ненулевой громкости. */
+  const xfadeRafRef     = useRef(null);   // rAF-цикл громкости двух дек
+  const deckBRef        = useRef(null);   // второй <audio> — «standby»
+  const deckBHlsRef     = useRef(null);   // hls-инстанс второй деки
+  const outgoingRef     = useRef(null);   // { audio, hls } — уходящая дека
+  const xfadeRef        = useRef(null);   // { from, to, t0, dur, ... } — идущее перекрытие
+  const xfadePrimeRef   = useRef(null);   // предзагруженный следующий трек
+  /* очередь/режим нужны peek'у следующего трека, а он крутится из setInterval
+     с пустым списком deps — читать state он не увидит, поэтому зеркалим */
+  const shuffleRef      = useRef(false);
+  const repeatRef       = useRef('off');
   /* Узел обложки карточки в сетке — для hero (вперёд и назад). Кеш ref'ов берём
      ТОЛЬКО если узел живой: React вешает ref в null при размонтировании, но
      после перестановки списка (сортировка, оптимистичный лайк, догрузка
@@ -7767,6 +7783,8 @@ const shuffleKeepRef    = useRef(false);
   volumeRef.current    = volume;
   scPlayingTrackRef.current = scPlayingTrack;
   playlistActiveRef.current = playlistActive;
+  shuffleRef.current = shuffle;
+  repeatRef.current  = repeat;
   settingsRef.current  = settings;
   /* `trackIdx === -1` — «трек не выбран». Раньше индекс начинался с нуля, и
      `tracks[trackIdx]` отдавал первый файл папки ещё до всякого клика: в
@@ -8050,22 +8068,13 @@ const shuffleKeepRef    = useRef(false);
     audio.volume = volume;
     audioRef.current = audio;
 
-    const onTime  = () => {
-      if (!audio.duration) return;
-      progressRef.current = audio.currentTime / audio.duration;
-      discordProgressRef.current = progressRef.current;
-      // crossfade fade-out: плавно убираем громкость в конце трека
-      const cf = settingsRef.current?.crossfade || 0;
-      if (cf > 0) {
-        const remaining = audio.duration - audio.currentTime;
-        if (remaining <= cf && remaining > 0) {
-          audio.volume = Math.max(0, volumeRef.current * (remaining / cf));
-        } else if (remaining > cf && audio.volume !== volumeRef.current) {
-          audio.volume = volumeRef.current; // восстанавливаем если seek после fade
-        }
-      }
-    };
-    const onEnded = () => handleNextRef.current?.();
+    /* ⚠️ Обработчики общие для ОБЕИХ дек, а не только для первой. Проверка
+       «эта дека вообще текущая» обязательна: уходящая дека во время
+       перекрытия продолжает слать timeupdate, и без фильтра она перетирала
+       progressRef у следующего трека — шкала и полоса в дискорде прыгали
+       назад на каждом кадре кроссфейда. */
+    const onTime  = handleDeckTime(audio);
+    const onEnded = handleDeckEnded(audio);
     audio.addEventListener('timeupdate', onTime);
     audio.addEventListener('ended',      onEnded);
 
@@ -8076,6 +8085,16 @@ const shuffleKeepRef    = useRef(false);
       audio.src = '';
       destroyHls();
       cancelAnimationFrame(crossfadeRafRef.current);
+      cancelAnimationFrame(xfadeRafRef.current);
+      /* вторая дека жила своей жизнью и про этот cleanup ничего не знала:
+         на размонтировании оставался висящий hls и играющий <audio> */
+      if (deckBRef.current) {
+        deckBRef.current.pause();
+        deckBRef.current.src = '';
+      }
+      if (deckBHlsRef.current) { try { deckBHlsRef.current.destroy(); } catch {} }
+      if (outgoingRef.current?.hls) { try { outgoingRef.current.hls.destroy(); } catch {} }
+      deckBRef.current = deckBHlsRef.current = outgoingRef.current = xfadeRef.current = null;
     };
   }, []);
 
@@ -8113,6 +8132,11 @@ const shuffleKeepRef    = useRef(false);
       audio.play().catch(() => setIsPlaying(false));
     } else {
       cancelAnimationFrame(crossfadeRafRef.current);
+      /* Пауза посреди перекрытия: уходящая дека встаёт на паузу и
+         выбрасывается, следующая остаётся текущей. Раньше её просто не
+         трогали — она продолжала играть в наушниках после того, как
+         кнопка показала паузу. */
+      if (xfadeRef.current || outgoingRef.current || xfadePrimeRef.current) abortCrossfade();
       if (!trackSwitchingRef.current) audio.volume = volumeRef.current;
       audio.pause();
     }
@@ -8120,14 +8144,32 @@ const shuffleKeepRef    = useRef(false);
 
   /* громкость */
   useEffect(() => {
-    if (audioRef.current) audioRef.current.volume = volume;
+    /* Во время перекрытия обе деки живут по своей кривой, и их громкость
+       пересчитывает rAF из volumeRef на каждом кадре. Присваивать полную
+       громкость audioRef здесь нельзя — входящая дека отсахнёт в тишину
+       ровно на один кадр и щёлкнет. */
+    const xf = xfadeRef.current;
+    if (xf) {
+      const g = xfadeGains(xf, performance.now());
+      if (xf.from) xf.from.volume = g.out * volume;
+      xf.to.volume = g.in * volume;
+    } else if (audioRef.current) {
+      audioRef.current.volume = volume;
+    }
   }, [volume]);
 
   /* live-применение громкости при драге слайдера — без ререндера App.
      state коммитится один раз на mouseup */
   const handleVolumeLive = useCallback((v) => {
-    if (audioRef.current) audioRef.current.volume = v;
     volumeRef.current = v;
+    const xf = xfadeRef.current;
+    if (xf) {
+      const g = xfadeGains(xf, performance.now());
+      if (xf.from) xf.from.volume = g.out * v;
+      xf.to.volume = g.in * v;
+    } else if (audioRef.current) {
+      audioRef.current.volume = v;
+    }
   }, []);
 
   /* коммит (mouseup): state + запись в settings, чтобы громкость помнилась
@@ -8489,6 +8531,10 @@ const shuffleKeepRef    = useRef(false);
   }
 
   function handleNext() {
+    /* Идёт перекрытие? Тогда следующий трек уже играет и УЖЕ стал текущим —
+       handleNext ниже сдвинул бы очередь ещё на раз. Отменяем перекрытие с
+       откатом позиции, чтобы этот самый вызов корректно взял «следующий». */
+    if (xfadeRef.current) abortCrossfade({ revertQueue: true });
     if (repeat === 'one') {
       const audio = audioRef.current;
       if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
@@ -8570,6 +8616,9 @@ const shuffleKeepRef    = useRef(false);
   handleNextRef.current = handleNext;
 
   function handlePrev() {
+    /* см. handleNext: откатываем перекрытие, иначе «назад»
+       посреди стыка прыгнет через два трека */
+    if (xfadeRef.current) abortCrossfade({ revertQueue: true });
     if (progressRef.current > 0.05) {
       progressRef.current = 0;
       if (audioRef.current) audioRef.current.currentTime = 0;
@@ -8615,6 +8664,11 @@ const shuffleKeepRef    = useRef(false);
     progressRef.current = v;
     discordProgressRef.current = v;
     cancelAnimationFrame(crossfadeRafRef.current); // отменяем fade если был
+    /* Перемотка посреди перекрытия: обе деки надо остановить, иначе ушедшая
+       продолжит играть на прежней позиции (звук идёт не с той точки, где
+       стоит шкала). Позицию в очереди не откатываем — следующий трек к
+       этому моменту уже текущий по-настоящему. */
+    if (xfadeRef.current || outgoingRef.current) abortCrossfade();
     const audio = audioRef.current;
     if (audio?.duration) {
       audio.currentTime = v * audio.duration;
@@ -9393,6 +9447,405 @@ const shuffleKeepRef    = useRef(false);
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
   }
 
+  /* ══ Настоящий кроссфейд для SoundCloud ═════════════════════════════════
+     Старый fade (startFadeIn + fade-out в timeupdate) — это «тишина в конце,
+     потом тишина в начале». Перекрытия в нём нет, и для SC это особенно
+     слышно: handleNext успевает ещё раз сходить в сеть за CDN-ссылкой
+     (scFetch по streamUrl/hlsUrl), поэтому в месте стыка выходит 0.5–2с
+     настоящей тишины.
+
+     Здесь треки играют ДВУМЯ деками одновременно. Схема:
+       1) за XFADE_PRIME_LEAD секунд до конца резолвим URL следующего трека и
+          монтируем его на деку B (hls начинает тянуть сегменты) — play() в
+          момент стыка обязан сработать мгновенно, а не после сети;
+       2) в последние cf секунд включаем play() деки B, МЕНЯЕМ деки местами
+          (audioRef перестаёт указывать на уходящий трек — с этого момента
+          шкала, перемотка и дискорд едут по следующему треку) и крутим rAF,
+          на котором громкость идёт по равномощностной кривой cos/sin;
+       3) ушедшая дека молчит (ended у неё игнорируется) и разбирается.
+
+     Если префетч не успел или play() запрещён — тихо откатываемся на старый
+     путь, хуже не становится. */
+
+  const XFADE_PRIME_LEAD = 10;
+  const XFADE_MIN_MS     = 600;
+
+  /* Равномощностная кривая: g_out = cos(π/2·t), g_in = sin(π/2·t).
+     Сумма квадратов постоянна, поэтому в середине перекрытия оба трека
+     складываются в ту же мощность, что и по одному. На линейной кривой
+     (как в старом fade) середина проваливается вниз — на слух это «яма». */
+  function xfadeGain(t) {
+    const k = Math.min(1, Math.max(0, t)) * (Math.PI / 2);
+    return { out: Math.cos(k), in: Math.sin(k) };
+  }
+  /* Те же коэффициенты для любого момента перекрытия. Используется в rAF,
+     в эффекте громкости и при драге ползунка — кривую нельзя дублировать,
+     иначе правки в одном месте разъезжаются с остальными. */
+  function xfadeGains(xf, now) {
+    return xfadeGain((now - xf.t0) / xf.dur);
+  }
+
+  /* Список, по которому играет SC-очередь. Порядок веток повторяет
+     handleScTrackClick — иначе префетч тянул бы не тот трек. */
+  function scQueueList() {
+    return stationQueueRef.current || playlistQueueRef.current
+      || searchQueueRef.current
+      || (searchRef.current ? filteredScRef.current : scTracksRef.current);
+  }
+
+  /* Кто играет следующим. НИЧЕГО не меняет — только читает. Коммит позиции
+     в shuffle-порядке делает сам startCrossfade. */
+  function peekNextSc() {
+    const list = scQueueList();
+    const cur  = scPlayingTrackRef.current;
+    if (!cur || !list.length) return null;
+    const r = repeatRef.current;
+    if (shuffleRef.current) {
+      const order = scShuffleOrderRef.current;
+      const ni = scShuffleIdxRef.current + 1;
+      if (ni >= 0 && ni < order.length) {
+        const t = list.find(x => x.id === order[ni]);
+        if (t) return { track: t, shuffleIdx: ni, shuffleOrder: null };
+      }
+      if (r === 'all') {
+        const fresh = buildScShuffle(list, null);
+        const t = list.find(x => x.id === fresh[0]);
+        if (t) return { track: t, shuffleIdx: 0, shuffleOrder: fresh };
+      }
+      return null;
+    }
+    const ni = list.findIndex(t => t.id === cur.id) + 1;
+    if (ni >= 0 && ni < list.length) return { track: list[ni], shuffleIdx: null, shuffleOrder: null };
+    if (r === 'all' && list.length) return { track: list[0], shuffleIdx: null, shuffleOrder: null };
+    return null;
+  }
+
+  /* Резолв CDN-ссылки. Вынесено из handleScTrackClick, чтобы префетч и
+     обычное переключение шли через один и тот же код.
+
+     Ошибку сети глотаем и возвращаем null. Раньше scFetch мог отклониться и
+     уронить handleScTrackClick целиком — спиннер загрузки оставался на
+     экране навсегда. Для префетча это тем более важно: необработанный reject
+     оставил бы prime без url, и кроссфейд молча выключился бы до конца трека. */
+  async function resolveScUrl(t) {
+    const auth = scAuthRef.current;
+    if (!auth) return null;
+    try {
+      let url = null, isHls = false;
+      if (t.streamUrl) {
+        const res = await window.electronAPI.scFetch(t.streamUrl, auth.token, auth.clientId);
+        if (res?.data?.url) url = res.data.url;
+      }
+      if (!url && t.hlsUrl) {
+        const res = await window.electronAPI.scFetch(t.hlsUrl, auth.token, auth.clientId);
+        if (res?.data?.url) { url = res.data.url; isHls = true; }
+      }
+      return url ? { url, isHls } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function ensureDeckB() {
+    if (deckBRef.current) return deckBRef.current;
+    const b = new Audio();
+    b.preload = 'auto';
+    b.volume = 0;
+    b.addEventListener('timeupdate', handleDeckTime(b));
+    b.addEventListener('ended',      handleDeckEnded(b));
+    deckBRef.current = b;
+    return b;
+  }
+
+  /* Обработчики дека. Общие для обеих деок, поэтому принимают свой элемент
+     и отличают «меня забыли» от «мне нельзя трогать шкалу». */
+  function handleDeckTime(audio) {
+    return () => {
+      /* уходящая дека шкалой не управляет: иначе прогресс-бар и полоса
+         в дискорде откатывались бы назад на каждом её timeupdate */
+      if (audioRef.current !== audio) return;
+      if (!audio.duration) return;
+      progressRef.current = audio.currentTime / audio.duration;
+      discordProgressRef.current = progressRef.current;
+      /* Старый fade-out — только когда настоящего перекрытия нет. Иначе он
+         погасил бы ВХОДЯЩУЮ деку: у неё в начале remaining большой, но
+         ровно в момент подмены audioRef она ещё считалась старой. */
+      const cf = settingsRef.current?.crossfade || 0;
+      if (cf > 0 && !xfadeRef.current) {
+        const remaining = audio.duration - audio.currentTime;
+        if (remaining <= cf && remaining > 0) {
+          audio.volume = Math.max(0, volumeRef.current * (remaining / cf));
+        } else if (remaining > cf && audio.volume !== volumeRef.current) {
+          audio.volume = volumeRef.current; // восстанавливаем если seek после fade
+        }
+      }
+    };
+  }
+
+  function handleDeckEnded(audio) {
+    return () => {
+      /* Уходящая дека доиграла. Не зовём handleNext — иначе перескочим
+         трек: следующий уже играет, он и есть текущий. Просто заканчиваем
+         перекрытие (на всякий случай: если окно не доделалось). */
+      if (outgoingRef.current?.audio === audio) { finishCrossfade(); return; }
+      handleNextRef.current?.();
+    };
+  }
+
+  /* Стадия 1: заранее резолвим и монтируем следующий трек. */
+  async function primeNextSc(curId) {
+    const next = peekNextSc();
+    if (!next) return;
+    const b = ensureDeckB();
+    if (!b) return;
+    const prime = { forId: curId, trackId: next.track.id, url: null, isHls: false, failed: false };
+    xfadePrimeRef.current = prime;
+    const r = await resolveScUrl(next.track);
+    /* Пока шли запросы, могли сменить трек, ползунок или уйти из плейера —
+       тогда prime уже никому не нужен, а смонтированный hls надо убить. */
+    if (xfadePrimeRef.current !== prime) return;
+    if (!r) { prime.failed = true; return; }
+    prime.url = r.url; prime.isHls = r.isHls;
+    if (r.isHls && typeof Hls !== 'undefined' && Hls.isSupported()) {
+      const hls = new Hls();
+      deckBHlsRef.current = hls;
+      hls.loadSource(r.url);
+      hls.attachMedia(b);          // с этого момента hls.js сам тянет буфер
+    } else {
+      b.src = r.url;
+      b.load();
+    }
+  }
+
+  /* Стадия 2: включаем вторую деку и пускаем перекрытие. */
+  function startCrossfade(peek, prime) {
+    const cur = audioRef.current;
+    const b   = deckBRef.current;
+    const cf  = settingsRef.current?.crossfade || 0;
+    const curTrack = scPlayingTrackRef.current;
+    if (!cur || !b || !cf || !prime?.url || !curTrack) return false;
+    /* Окно перекрытия не должно быть длиннее, чем осталось уходящего
+       трека: иначе ровно в момент его 'ended' fade ещё не закончен. */
+    const remainMs = Math.max(XFADE_MIN_MS, (cur.duration - cur.currentTime) * 1000);
+    const t0 = performance.now();
+    /* currentTime у ещё неготового элемента бросает InvalidStateError в части
+       движков — деку мы чаще всего запускаем сразу после load(), не дожидаясь
+       метаданных. Ноль там и так стоит у нового элемента. */
+    try { b.currentTime = 0; } catch {}
+    b.volume = 0;
+
+    /* Коммитим позицию в shuffle-порядке: следующий трек становится текущим
+       уже сейчас. Откатить придётся, если переключение отменят (см.
+       abortCrossfade) — без этого «вперёд» посреди перекрытия съедал бы
+       два трека сразу. */
+    const xf = {
+      from: cur, to: b, t0, dur: Math.min(cf * 1000, remainMs),
+      prevShuffleIdx: scShuffleIdxRef.current,
+      prevShuffleOrder: scShuffleOrderRef.current,
+      /* для отката, если вторую деку запустить не дадут */
+      prevTrack: curTrack, prevProgress: progressRef.current,
+    };
+    if (peek.shuffleIdx != null) {
+      scShuffleIdxRef.current = peek.shuffleIdx;
+      if (peek.shuffleOrder) scShuffleOrderRef.current = peek.shuffleOrder;
+    }
+
+    /* Подмена дек. audioRef теперь указывает на входящий трек — ProgressBar
+       читает его currentTime каждый кадр и сам поедет по новому треку. */
+    outgoingRef.current = { audio: cur, hls: hlsRef.current };
+    hlsRef.current      = deckBHlsRef.current;
+    deckBHlsRef.current = null;
+    audioRef.current    = b;
+    xfadeRef.current    = xf;
+    xfadePrimeRef.current = null;
+    trackSwitchingRef.current = true;
+
+    const resolved = { ...peek.track, resolvedUrl: prime.url };
+    setScPlayingTrack(resolved);
+    setScPlayingIdx(scTracksRef.current.indexOf(peek.track));
+    progressRef.current = 0;
+    discordProgressRef.current = 0;
+
+    const run = (now) => {
+      const x = xfadeRef.current;
+      if (!x || x !== xf) return;         // перекрытие отменили
+      const g = xfadeGains(x, now);
+      const v = volumeRef.current;
+      if (x.from) x.from.volume = g.out * v;
+      x.to.volume = g.in * v;
+      if (g.in < 1) { xfadeRafRef.current = requestAnimationFrame(run); return; }
+      finishCrossfade();
+    };
+    xfadeRafRef.current = requestAnimationFrame(run);
+
+    b.play().catch(() => revertCrossfade());
+    return true;
+  }
+
+  /* play() второй деки не разрешили (autoplay-политика webview). К этому
+     моменту деки уже поменяны местами и UI уже показывает следующий трек,
+     поэтому «просто отменить» мало — надо вернуть и звук, и карточку. */
+  function revertCrossfade() {
+    const xf = xfadeRef.current;
+    if (!xf) return;
+    cancelAnimationFrame(xfadeRafRef.current);
+    xfadeRafRef.current = 0;
+    xfadeRef.current = null;
+
+    /* hls ВХОДЯЩЕГО трека уже переехал в hlsRef. Убиваем его: он иначе
+       остался бы жить на деке, которая сейчас уходит обратно в standby, и
+       молча тянул бы сегменты. */
+    if (hlsRef.current) { try { hlsRef.current.destroy(); } catch {} }
+    hlsRef.current = null;
+
+    const o = outgoingRef.current;
+    outgoingRef.current = null;
+    if (o) {
+      /* Уходящая дека всё это время ИГРАЛА — её не глушим, наоборот:
+         возвращаем её в бой на прежней позиции. */
+      audioRef.current = o.audio;
+      hlsRef.current = o.hls || null;
+      o.audio.volume = volumeRef.current;
+      if (o.audio.paused) o.audio.play().catch(() => setIsPlaying(false));
+    }
+    xfadePrimeRef.current = null;
+    if (deckBRef.current && deckBRef.current !== audioRef.current) {
+      deckBRef.current.pause();
+      try { deckBRef.current.src = ''; } catch {}
+    }
+    scShuffleIdxRef.current   = xf.prevShuffleIdx;
+    scShuffleOrderRef.current = xf.prevShuffleOrder;
+    xfadePrimeRef.current = null;
+    trackSwitchingRef.current = false;
+    setScPlayingTrack(xf.prevTrack);
+    progressRef.current = xf.prevProgress;
+    discordProgressRef.current = xf.prevProgress;
+  }
+
+  function finishCrossfade() {
+    /* Вызывается и из конца rAF-кривой, и из 'ended' уходящей деки — то
+       есть потенциально дважды. Второй вызов обязан быть полным no-op: иначе
+       он сбросил бы громкость треку, который в этот момент уже сам
+       проигрывается (например, начался fade-in после ручного переключения). */
+    if (!xfadeRef.current) return;
+    cancelAnimationFrame(xfadeRafRef.current);
+    xfadeRafRef.current = 0;
+    xfadeRef.current = null;
+    const o = outgoingRef.current;
+    outgoingRef.current = null;
+    if (o) {
+      o.audio.pause();
+      o.audio.src = '';
+      if (o.hls) { try { o.hls.destroy(); } catch {} }
+    }
+    trackSwitchingRef.current = false;
+    if (audioRef.current && audioRef.current.volume !== volumeRef.current) {
+      audioRef.current.volume = volumeRef.current;
+    }
+  }
+
+  /* Отмена перекрытия. revertQueue=true для путей, которые СРАЗУ переключат
+     трек (next/prev/клик по строке): очередь возвращается на шаг назад,
+     иначе следующий peek увидит уже сдвинутую позицию. Для паузы/seek
+     откатывать нечего — следующий трек остаётся текущим по-настоящему. */
+  function abortCrossfade({ revertQueue = false } = {}) {
+    cancelAnimationFrame(xfadeRafRef.current);
+    xfadeRafRef.current = 0;
+    const xf = xfadeRef.current;
+    xfadeRef.current = null;
+    const o = outgoingRef.current;
+    outgoingRef.current = null;
+    if (o) {
+      o.audio.pause();
+      o.audio.src = '';
+      if (o.hls) { try { o.hls.destroy(); } catch {} }
+    }
+    if (xf && revertQueue) {
+      scShuffleIdxRef.current   = xf.prevShuffleIdx;
+      scShuffleOrderRef.current = xf.prevShuffleOrder;
+    }
+    /* Сбрасываем standby-деку БЕЗУСЛОВНО, даже если перекрытие не шло.
+       Префетч живёт в фоне до 12 секунд, и всё это время на деке висит
+       смонтированный hls. Если за это время трек переключили по клику,
+       handleScTrackClick повесит на тот же элемент hls.loadSource() и
+       audio.src = ... — два источника на один <audio>, и начинается каша. */
+    if (deckBHlsRef.current) { try { deckBHlsRef.current.destroy(); } catch {} }
+    deckBHlsRef.current = null;
+    if (deckBRef.current && deckBRef.current !== audioRef.current) {
+      deckBRef.current.pause();
+      try { deckBRef.current.src = ''; } catch {}
+    }
+    xfadePrimeRef.current = null;
+    trackSwitchingRef.current = false;
+  }
+
+  /* Тик расписания. Крутится всегда, пока играет SC-трек: интервал в 250мс
+     дёшево, зато окно перекрытия нельзя пропустить — оно идёт по currentTime
+     элемента, а не по таймеру. */
+  function xfadeTick() {
+    const cf = settingsRef.current?.crossfade || 0;
+    if (cf <= 0) return;
+    const cur = audioRef.current;
+    const curTrack = scPlayingTrackRef.current;
+    if (!cur || !curTrack) return;
+    /* repeat-one — это перезапуск того же трека, кроссфейдить нечего */
+    if (repeatRef.current === 'one') return;
+    /* Перекрытие уже идёт — крутим rAF, ничего трогать нельзя */
+    if (xfadeRef.current) return;
+    /* hls-стрим иногда отдаёт duration = Infinity (плейлист ещё не разобран).
+       Без подпорки окно не открылось бы никогда и кроссфейд молча
+       не работал бы на части треков. */
+    const dur = (isFinite(cur.duration) && cur.duration > 0)
+      ? cur.duration
+      : (curTrack.duration || 0);
+    if (!dur) return;
+    const remaining = dur - cur.currentTime;
+
+    if (remaining <= cf) {
+      const prime = xfadePrimeRef.current;
+      if (prime && !prime.failed && prime.url) {
+        const peek = peekNextSc();
+        if (peek && peek.track.id === prime.trackId && startCrossfade(peek, prime)) return;
+      }
+      return;   // префетча нет — старый fade доиграет, потом handleNext
+    }
+    /* Окно для префетча. Ниже 6с ждать бессмысленно: сеть всё равно не
+       успеет, и второй play() придётся уже в стык. */
+    const primeAt = Math.max(cf + XFADE_PRIME_LEAD, 6);
+    if (remaining <= primeAt) {
+      const prime = xfadePrimeRef.current;
+      if (prime && (prime.forId !== curTrack.id || prime.failed)) {
+        /* Префетч не подошёл: либо переключили трек, либо ссылка не
+           разрешилась. Сбрасываем и НЕ пробуем снова на этом треке: тик идёт
+           каждые 250мс, и повтор на каждый чих сети превратился бы в
+           4 запроса в секунду. На этом переходе просто отработает старый
+           fade — тишины будет столько же, сколько была раньше. */
+        if (deckBHlsRef.current) { try { deckBHlsRef.current.destroy(); } catch {} }
+        deckBHlsRef.current = null;
+        xfadePrimeRef.current = null;
+      } else if (!prime) {
+        /* Догрузка бесконечной ленты: без неё очередь кончится и кроссфейд
+           выключится на середине альбома. Условия те же, что в handleNext. */
+        const list = scQueueList();
+        if (searchQueueRef.current) {
+          if (shuffleRef.current) {
+            const left = scShuffleOrderRef.current.length - 1 - scShuffleIdxRef.current;
+            if (left <= 3) searchViewRef.current?.loadMore();
+          } else if (list.findIndex(t => t.id === curTrack.id) + 1 >= list.length - 3) {
+            searchViewRef.current?.loadMore();
+          }
+        }
+        primeNextSc(curTrack.id);
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (!isPlaying || !scPlayingTrack) return;
+    const id = setInterval(xfadeTick, 250);
+    return () => clearInterval(id);
+  }, [isPlaying, scPlayingTrack?.id]);
+
   async function handleScTrackClick(scTrack, idx, autoSkip = false, skipCount = 0, direction = 1) {
     /* Токен запроса. handleScTrackClick делает await'ы (streamUrl, потом HLS),
        и без guard'а два быстрых клика давали гонку: первый запрос резолвился
@@ -9400,6 +9853,10 @@ const shuffleKeepRef    = useRef(false);
        кликнули. Сейчас устаревший запрос просто выходит. */
     const req = ++scReqRef.current;
     const stale = () => req !== scReqRef.current;
+    /* Явное переключение отменяет идущее перекрытие и сбрасывает префетч:
+       он сделан для ДРУГОГО следующего трека. Откатывать позицию очереди
+       не нужно — ниже для ручного клика она и так пересобирается по shuffle. */
+    if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
     trackSwitchingRef.current = true;
     setScPlayingIdx(idx);
     progressRef.current = 0;
@@ -9469,22 +9926,16 @@ const shuffleKeepRef    = useRef(false);
       return;
     }
 
-    let resolvedUrl = null;
-    let isHls = false;
-
-    if (scTrack.streamUrl) {
-      const res = await window.electronAPI.scFetch(scTrack.streamUrl, auth.token, auth.clientId);
-      if (stale()) return;
-      if (res.data?.url) resolvedUrl = res.data.url;
-    }
-    if (!resolvedUrl && scTrack.hlsUrl) {
-      const res = await window.electronAPI.scFetch(scTrack.hlsUrl, auth.token, auth.clientId);
-      if (stale()) return;
-      if (res.data?.url) { resolvedUrl = res.data.url; isHls = true; }
-    }
+    /* Резолв CDN-ссылки вынесен в resolveScUrl: префетч кроссфейда обязан
+       идти ровно тем же кодом, иначе один из путей однажды начнёт брать
+       другую ветку (progressive/hls) и кроссфейд будет стыковать не то. */
+    const r = await resolveScUrl(scTrack);
     /* успел протухнуть, пока грузили: не снимаем индикатор загрузки и не
        трогаем markError — этим занимается тот запрос, который актуален */
     if (stale()) return;
+
+    const resolvedUrl = r?.url || null;
+    const isHls = !!r?.isHls;
 
     if (!resolvedUrl) {
       trackSwitchingRef.current = false;
