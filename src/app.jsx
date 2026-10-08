@@ -1338,10 +1338,13 @@ const STRINGS = {
     nav_local:'Локальная библиотека', nav_settings:'Настройки',
     player_pick:'Выбери трек',
     card_window:'Окно',
-    mica_accent_lock:'Материал окна несовместим с подсветкой акцента: при его включении акцент выключается. Чтобы вернуть подсветку, сначала выключите материал окна.',
+    /* ⚠️ Три строки текста в этой плашке были абзацем на весь ряд. Правило
+       «что именно несовместимо» осталось, порядок действий («сначала выключи
+       материал») убран: он виден прямо на тумблере, который гасит акцент. */
+    mica_accent_lock:'Материал окна несовместим с подсветкой акцента: пока включён он, акцент выключен.',
     mica:'Материал окна',
     mica_only_win11:'только Windows 11',
-    mica_sub:'Фон становится полупрозрачным, и сквозь него видно материал системы — как в приложениях Windows 11. Скругление окна при этом пропадает: материал ложится на весь прямоугольник. Нужен Windows 11.',
+    mica_sub:'Фон становится полупрозрачным, и сквозь него видно материал системы. Скругление окна при этом пропадает.',
     mica_unsupported:'Система не поддерживает материал окна — нужен Windows 11',
     unavailable:'недоступен',
     off:'выкл', sec:'с',
@@ -1353,15 +1356,18 @@ const STRINGS = {
     sec_playback:'Воспроизведение', sec_appearance:'Оформление',
     sec_system:'Система', sec_about:'О приложении',
     settings_title:'Настройки',
-    card_audio:'Аудио',
-    autoplay:'Автовоспроизведение', autoplay_sub:'Следующий трек запускается автоматически',
-    default_repeat:'Повтор по умолчанию',
+    /* ❌ УДАЛЕНЫ `card_audio`, `lyrics_sources`, `accent_title`, `card_discord`,
+       `accent_off_title`. Все пять были надзаголовками карточек, которые
+       называли то же самое, что уже написано в навигации слева или в
+       выбранном сегменте: «Аккаунт / Аккаунт», «Акцент и свечение / Акцент»,
+       «От обложки / От обложки». Два одинаковых заголовка подряд — это шум,
+       а не структура. `default_repeat` тоже был без единого обращения. */
     crossfade:'Кроссфейд', crossfade_sub:'Плавное перекрытие треков',
     /* ❌ УДАЛЕНЫ ключи `card_interface`, `hide_dividers`, `hide_dividers_sub` —
        карточка «Интерфейс» была из одного тумблера разделителей, он убран,
        а поведение зафиксировано константой HIDE_DIVIDERS */
     discord_rpc:'Discord Rich Presence', discord_rpc_sub:'Показывать текущий трек в Discord',
-    card_discord:'Discord',
+    /* ❌ card_discord — см. список удалённых надзаголовков выше */
     discord_timestamp:'Таймстамп',
     discord_ts_progress:'Прогресс', discord_ts_elapsed:'Прошло', discord_ts_none:'Нет',
     discord_on_pause:'При паузе',
@@ -1371,7 +1377,9 @@ const STRINGS = {
     discord_st_connecting:'Подключение к Discord…',
     discord_st_connected:'Discord подключён',
     discord_st_lost:'Соединение с Discord потеряно, переподключаемся…',
-    card_account:'Аккаунт', card_language:'Язык интерфейса', language_label:'Язык', language_sub:'Язык элементов управления',
+    card_account:'Аккаунт', card_language:'Язык интерфейса', language_label:'Язык',
+    /* ❌ language_sub убран вместе с самим рядом: подпись «Язык» и пояснение
+       «Язык элементов управления» говорили одно и то же двумя строками */
     card_startup:'Запуск',
     start_windows:'Запускать при старте Windows', minimize_tray:'Сворачивать в трей',
     card_local:'Локальная музыка', music_folder:'Папка с музыкой', no_folder:'Не выбрана',
@@ -1437,16 +1445,16 @@ const STRINGS = {
     pl_in:'убрать из плейлиста', pl_out:'добавить в плейлист', pl_in_loading:'проверяем…',
     pl_add_err:'не удалось добавить трек', pl_list_err:'не удалось загрузить плейлисты',
     ed_title_ph:'Название плейлиста', ed_art_pick:'Выбрать обложку', ed_art_err:'не удалось загрузить обложку',
-    accent_title:'Акцент и свечение', accent_sub:'Свечения и цвет активных элементов интерфейса',
+    accent_sub:'Свечения и цвет активных элементов интерфейса',
     accent_default:'По умолчанию', accent_lavender:'Лавандовый', accent_mint:'Мятный', accent_rose:'Розовый', accent_amber:'Янтарный', accent_cover:'От обложки',
     accent_cover_sub:'Динамически меняется под обложку трека',
     accent_seg_off:'Выкл', accent_seg_color:'Цвет',
-    accent_off_title:'Свечения выключены', accent_off_sub:'Фоновые свечения скрыты, акцент — статичный серый',
+    accent_off_sub:'Фоновые свечения скрыты, акцент — статичный серый',
     art_glow:'Мягкое свечение за обложкой', art_glow_sub:'Цветное пятно вокруг обложки в плеере. Меньше нагрузки на видеокарту, чем настоящее размытие',
     sec_lyrics:'Текст песен',
     sec_discord:'Discord',
     shuffle_all:'Случайно', shuffle_empty:'Нечего перемешивать',
-    lyrics_sources:'Источники текста', lyrics_sources_sub:'Сверху вниз — в этом порядке ищется текст песни',
+    lyrics_sources_sub:'Сверху вниз — в этом порядке ищется текст песни',
     lyrics_off:'Выключенные', lyrics_synced:'синхронный',
     lyrics_up:'Выше по списку', lyrics_down:'Ниже по списку',
     lyrics_back:'вернуться к трекам',
@@ -1463,10 +1471,11 @@ const STRINGS = {
     nav_local:'Local library', nav_settings:'Settings',
     player_pick:'Pick a track',
     card_window:'Window',
-    mica_accent_lock:'Window material is incompatible with accent glow: enabling it turns the accent off. Turn the material off first to get the accent back.',
+    /* см. ru — текст ужат до одной строки */
+    mica_accent_lock:'Window material is incompatible with the accent glow: while it is on, the accent is off.',
     mica:'Window material',
     mica_only_win11:'Windows 11 only',
-    mica_sub:'The background turns translucent and the system material shows through, like in Windows 11 apps. The window loses its rounded corners — the material covers the whole rectangle. Requires Windows 11.',
+    mica_sub:'The background turns translucent and the system material shows through. The window loses its rounded corners.',
     mica_unsupported:'This system does not support window material — needs Windows 11',
     unavailable:'unavailable',
     off:'off', sec:'s',
@@ -1478,13 +1487,11 @@ const STRINGS = {
     sec_playback:'Playback', sec_appearance:'Appearance',
     sec_system:'System', sec_about:'About',
     settings_title:'Settings',
-    card_audio:'Audio',
-    autoplay:'Autoplay', autoplay_sub:'Next track plays automatically',
-    default_repeat:'Default repeat',
+    /* ❌ removed card_audio, autoplay, autoplay_sub, default_repeat,
+       card_discord, lyrics_sources, accent_title, accent_off_title — см. ru */
     crossfade:'Crossfade', crossfade_sub:'Smooth overlap between tracks',
     /* ❌ removed card_interface, hide_dividers, hide_dividers_sub — см. ru */
     discord_rpc:'Discord Rich Presence', discord_rpc_sub:'Show current track in Discord',
-    card_discord:'Discord',
     discord_timestamp:'Timestamp',
     discord_ts_progress:'Progress', discord_ts_elapsed:'Elapsed', discord_ts_none:'None',
     discord_on_pause:'On pause',
@@ -1494,7 +1501,8 @@ const STRINGS = {
     discord_st_connecting:'Connecting to Discord…',
     discord_st_connected:'Discord connected',
     discord_st_lost:'Lost connection to Discord, reconnecting…',
-    card_account:'Account', card_language:'Interface language', language_label:'Language', language_sub:'Language of UI elements',
+    card_account:'Account', card_language:'Interface language', language_label:'Language',
+    /* ❌ language_sub — см. ru */
     card_startup:'Startup',
     start_windows:'Launch at Windows startup', minimize_tray:'Minimize to tray',
     card_local:'Local music', music_folder:'Music folder', no_folder:'Not selected',
@@ -1560,16 +1568,16 @@ const STRINGS = {
     pl_in:'remove from playlist', pl_out:'add to playlist', pl_in_loading:'checking…',
     pl_add_err:'could not add the track', pl_list_err:'could not load playlists',
     ed_title_ph:'Playlist name', ed_art_pick:'Choose cover', ed_art_err:'cover upload failed',
-    accent_title:'Accent & glow', accent_sub:'Glow effects and the color of active interface elements',
+    accent_sub:'Glow effects and the color of active interface elements',
     accent_default:'Default', accent_lavender:'Lavender', accent_mint:'Mint', accent_rose:'Rose', accent_amber:'Amber', accent_cover:'From cover',
     accent_cover_sub:'Dynamically follows the current track artwork',
     accent_seg_off:'Off', accent_seg_color:'Color',
-    accent_off_title:'Glow disabled', accent_off_sub:'Background glows hidden, accent is flat gray',
+    accent_off_sub:'Background glows hidden, accent is flat gray',
     art_glow:'Soft glow behind artwork', art_glow_sub:'Colored halo around the cover in the player. Cheaper for the GPU than a real blur',
     sec_lyrics:'Lyrics',
     sec_discord:'Discord',
     shuffle_all:'Shuffle', shuffle_empty:'Nothing to shuffle',
-    lyrics_sources:'Lyrics sources', lyrics_sources_sub:'Top to bottom — lyrics are searched in this order',
+    lyrics_sources_sub:'Top to bottom - lyrics are searched in this order',
     lyrics_off:'Turned off', lyrics_synced:'synced',
     lyrics_up:'Move up', lyrics_down:'Move down',
     lyrics_back:'back to tracks',
@@ -4124,22 +4132,262 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
   );
 }
 
+/* ── примитивы настроек ───────────────────────────────────────────────────── */
+/* Модульный уровень, не тело SettingsView. Раньше Card, Row и Toggle были
+   объявлены внутри SettingsView, а значит пересоздавались на каждом рендере
+   (те же грабли, что описаны у TrackContextMenu) и ещё передавались в
+   LyricsSettings и ClearCacheCard пропсами. Здесь они общие, и у всех рядов
+   одна геометрия вместо пяти копий.
+
+   Язык экрана сжат до двух контролов: тумблер (булево) и сегменты
+   (выбор из нескольких). Раньше их было пять видов — тумблер, чипсы таймстампа,
+   сегменты акцента, крупные кнопки языка, квадратный степпер, — и каждый со
+   своим радиусом, отступом и цветом. */
+
+/* Значения цветов настроек. Собраны здесь, потому что раньше один и тот же
+   серый писался по двадцати раз инлайном в восьми местах, и любая правка
+   тона означала вычитку всего SettingsView. Прозрачности, а не hex: поверх
+   материала окна подложки складываются с тем, что видно сквозь окно. */
+const SN = {
+  panel: 'rgba(255,255,255,0.032)',  /* подложка группы настроек */
+  line:  'rgba(255,255,255,0.05)',   /* разделитель, когда HIDE_DIVIDERS выключен */
+  hi:    'rgba(255,255,255,0.78)',   /* подпись строки */
+  mid:   'rgba(255,255,255,0.46)',   /* вторичный текст, значение */
+  dim:   'rgba(255,255,255,0.3)',    /* пояснение под строкой */
+  faint: 'rgba(255,255,255,0.2)',    /* надзаголовок группы */
+  fill:  'rgba(255,255,255,0.05)',   /* заливка кнопки/сегмента в покое */
+};
+
+/* Иконки разделов инлайном, а не картинками из public/assets. Те — разно­
+   весная дутона с цветом, и их приходилось выбеливать фильтром
+   `brightness(0) invert(1)`, из-за чего выбранный пункт нельзя было покрасить
+   в акцент: белым оставалась и иконка, и подпись. Один штрих 1.7px у всех
+   шести — и цвет достаётся из currentColor. */
+function SettingsIcon({ size = 15, children }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"
+      style={{ display: 'block', flexShrink: 0 }}>{children}</svg>
+  );
+}
+
+/* Группа настроек. `title` необязателен: у первой карточки раздела он
+   дублировал бы пункт боковой навигации, поэтому там его не передают. */
+function Card({ title, children, style }) {
+  return (
+    <div style={{ marginBottom: 20, ...style }}>
+      {title && (
+        <div style={{
+          fontSize: 'var(--fs-eyebrow)', letterSpacing: '0.1em', textTransform: 'uppercase',
+          color: SN.faint, marginBottom: 9, paddingLeft: 3,
+        }}>{title}</div>
+      )}
+      <div style={{ background: SN.panel, borderRadius: 14, overflow: 'hidden' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* Строка настройки: подпись и пояснение слева, контрол справа.
+   `dim` гасит всю строку целиком — так помечаются пункты, которые сейчас
+   не применимы (материал окна гасит подсветку акцента). */
+function Row({ label, sub, badge, children, last, dim }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+      padding: '13px 16px',
+      borderBottom: (last || HIDE_DIVIDERS) ? 'none' : `1px solid ${SN.line}`,
+      opacity: dim ? 0.4 : 1, transition: 'opacity 0.22s ease',
+    }}>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          fontSize: 'var(--fs-md)', color: SN.hi, lineHeight: 1.3,
+        }}>
+          {label}
+          {badge}
+        </div>
+        {sub && (
+          /* Ограничение ширины держит строку в читаемых 65 знаках: колонка
+             узкая, и без него длинный абзац уходил в две-три строки. В px,
+             а не в ch — на 11px Proxima Soft один ch около 5.5px, и 44ch
+             давали 240px, то есть вдвое уже того, что нужно. */
+          <div style={{
+            fontSize: 'var(--fs-xs)', color: SN.dim, marginTop: 3,
+            lineHeight: 1.45, maxWidth: 360,
+          }}>{sub}</div>
+        )}
+      </div>
+      {children && (
+        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 7 }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Мелкая плашка рядом с подписью: ограничения и метки. */
+function Badge({ children }) {
+  return (
+    <span style={{
+      fontSize: 'var(--fs-eyebrow)', letterSpacing: '0.08em', textTransform: 'uppercase',
+      color: SN.mid, background: SN.fill,
+      padding: '2px 6px', borderRadius: 5, whiteSpace: 'nowrap', flexShrink: 0,
+    }}>{children}</span>
+  );
+}
+
+/* Тумблер. Включённое состояние — заливка акцентом: раньше трек был
+   `rgba(255,255,255,0.5)`, то есть тем же серым, что и галочка рядом, и
+   «включено» читалось только по форме. Заливка акцентом работает и при
+   режиме «от обложки»: appAccent поднят по светлоте до 110 (см. App), так
+   что тёмная обложка не даёт чёрный тумблер.
+   `disabled` гасит только курсор и клик: гасить ещё и заливку нельзя —
+   строка вокруг уже приглушена через Row dim, и две прозрачности подряд
+   уронили бы тумблер в невидимость. */
+function Switch({ on, onChange, disabled }) {
+  return (
+    <div role="switch" aria-checked={!!on} aria-disabled={disabled || undefined}
+      onClick={() => { if (!disabled) onChange(!on); }}
+      style={{
+        width: 36, height: 21, borderRadius: 11, flexShrink: 0, position: 'relative',
+        cursor: disabled ? 'default' : 'pointer',
+        background: on ? 'var(--accent)' : 'rgba(255,255,255,0.11)',
+        boxShadow: on ? '0 0 10px rgba(var(--accent-rgb),0.28)' : 'none',
+        transition: 'background 0.24s ease, box-shadow 0.24s ease',
+      }}>
+      <div style={{
+        position: 'absolute', top: 3.5, width: 14, height: 14, borderRadius: '50%',
+        background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+        left: on ? 19 : 3.5,
+        transition: 'left 0.24s cubic-bezier(0.32,0.72,0,1)',
+      }}/>
+    </div>
+  );
+}
+
+/* Сегменты: выбор из двух-трёх вариантов. Пилл ездит по `layoutId`, поэтому
+   переключение не мигает. Активный сегмент — подложка акцентом плюс
+   светлая подпись: сам акцент в текст не пускаем, он приглушён и на мелком
+   кегле теряется, зато подложка работает на любой светлоте. */
+function Segmented({ value, options, onChange, disabled, id, stretch }) {
+  return (
+    <div style={{
+      display: stretch ? 'flex' : 'inline-flex',
+      gap: 2, padding: 3, borderRadius: 11, background: 'rgba(255,255,255,0.04)',
+      opacity: disabled ? 0.4 : 1, pointerEvents: disabled ? 'none' : 'auto',
+      transition: 'opacity 0.2s ease',
+    }}>
+      {options.map(({ v, label, icon }) => {
+        const active = value === v;
+        return (
+          <div key={v} onClick={() => { if (active) return; onChange(v); }}
+            style={{
+              position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              gap: 6, padding: '6px 13px', borderRadius: 9, cursor: 'pointer',
+              flex: stretch ? 1 : undefined,
+              color: active ? 'rgba(255,255,255,0.92)' : SN.mid,
+              transition: 'color 0.18s ease',
+            }}>
+            {active && (
+              <motion.div layoutId={id}
+                transition={{ type: 'spring', stiffness: 420, damping: 34, mass: 0.7 }}
+                style={{
+                  position: 'absolute', inset: 0, borderRadius: 9,
+                  background: 'rgba(var(--accent-rgb),0.15)',
+                  boxShadow: 'inset 0 0 0 1px rgba(var(--accent-rgb),0.22)',
+                }}/>
+            )}
+            <span style={{
+              position: 'relative', display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 'var(--fs-sm)', fontWeight: active ? 600 : 500, whiteSpace: 'nowrap',
+            }}>{icon}{label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* Кнопка. Три тона: спокойная, главная и опасная. Раньше на экране было пять
+   разных кнопок — свой радиус, отступ и цвет у входа, выхода, очистки кэша,
+   выбора папки и удаления. */
+function Btn({ children, tone = 'quiet', onClick, disabled, title }) {
+  const T = {
+    quiet:  { bg: SN.fill,                            hov: 'rgba(255,255,255,0.09)', fg: SN.mid },
+    accent: { bg: 'rgba(var(--accent-rgb),0.12)',      hov: 'rgba(var(--accent-rgb),0.2)',  fg: 'var(--accent)' },
+    danger: { bg: 'rgba(255,84,84,0.09)',              hov: 'rgba(255,84,84,0.17)',      fg: 'rgba(255,110,100,0.92)' },
+    /* вход в soundcloud оранжевым: это не «главное действие раздела», это
+       бренд площадки, и путать его с акцентом интерфейса не надо */
+    brand:  { bg: 'rgba(255,85,0,0.11)',               hov: 'rgba(255,85,0,0.19)',       fg: 'rgba(255,140,60,0.92)' },
+  }[tone];
+  return (
+    <div role="button" title={title} onClick={disabled ? undefined : onClick}
+      style={{
+        background: T.bg, color: T.fg, fontSize: 'var(--fs-sm)', fontWeight: 500,
+        padding: '6px 14px', borderRadius: 9, flexShrink: 0,
+        cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1,
+        transition: 'background 0.15s, color 0.15s, opacity 0.15s',
+      }}
+      onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = T.hov; }}
+      onMouseLeave={e => { if (!disabled) e.currentTarget.style.background = T.bg; }}
+    >{children}</div>
+  );
+}
+
+/* Степпер числовой настройки. Раньше был свёрстан прямо в строке и не умел
+   показывать, что уже на минимуме: − жал бесконечно. */
+function Stepper({ value, onChange, step = 5, min = 0, label }) {
+  const btn = (dir, glyph) => {
+    const edge = dir < 0 ? value <= min : false;
+    return (
+      <div onClick={() => { if (!edge) onChange(value + dir * step); }}
+        style={{
+          width: 26, height: 26, borderRadius: 8, display: 'flex', alignItems: 'center',
+          justifyContent: 'center', cursor: edge ? 'default' : 'pointer',
+          background: SN.fill,
+          color: edge ? 'rgba(255,255,255,0.14)' : SN.mid,
+          fontSize: 15, lineHeight: 1, paddingBottom: 2,
+          transition: 'background 0.15s, color 0.15s',
+        }}
+        onMouseEnter={e => { if (!edge) e.currentTarget.style.background = 'rgba(255,255,255,0.09)'; }}
+        onMouseLeave={e => { if (!edge) e.currentTarget.style.background = SN.fill; }}
+      >{glyph}</div>
+    );
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      {btn(-1, '−')}
+      {/* tabular-nums: без него цифры прыгают по ширине и счётчик дёргается
+         на каждом шаге, потому что окно неприлично узкое и не меняет размер */}
+      <span style={{
+        minWidth: 48, textAlign: 'center', fontSize: 'var(--fs-md)', color: SN.hi,
+        fontVariantNumeric: 'tabular-nums',
+      }}>{label}</span>
+      {btn(1, '+')}
+    </div>
+  );
+}
+
 /* ── CrossfadeSlider ─────────────────────────────────────────────────────── */
 function CrossfadeSlider({ value, onChange }) {
   const t = useLang();
-  const trackRef    = useRef(null);
+  const hitRef    = useRef(null);   /* зона захвата указателя */
+  const fillRef   = useRef(null);   /* сама полоса: по ней считаем значение */
   const onChangeRef = useRef(onChange);
   const valueRef    = useRef(value);
   onChangeRef.current = onChange;
   valueRef.current    = value;
 
   const calcVal = (clientX) => {
-    const rect = trackRef.current.getBoundingClientRect();
+    const rect = fillRef.current.getBoundingClientRect();
     return Math.round(Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * 12);
   };
 
   useEffect(() => {
-    const el = trackRef.current;
+    const el = hitRef.current;
     const onWheel = e => {
       e.preventDefault();
       onChangeRef.current(Math.max(0, Math.min(12, valueRef.current + (e.deltaY > 0 ? -1 : 1))));
@@ -4148,12 +4396,20 @@ function CrossfadeSlider({ value, onChange }) {
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  const pct = ((value || 0) / 12) * 100;
+  const v   = value || 0;
+  const pct = (v / 12) * 100;
 
   return (
-    <div style={{display:'flex', alignItems:'center', gap:12}}>
-      <div ref={trackRef}
-        style={{width:150, height:24, display:'flex', alignItems:'center', cursor:'ew-resize', userSelect:'none', touchAction:'none'}}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+      {/* hitRef шире полосы на 6px с каждой стороны: ручка в крайних
+         положениях наполовину уезжает за трек, и без этих полей кликнуть по
+         ней у края было нельзя. Значение считаем по fillRef, а не по зоне
+         захвата, иначе крайнее положение давало бы 11 вместо 12 */}
+      <div ref={hitRef}
+        style={{
+          width: 156, padding: '0 6px', display: 'flex', alignItems: 'center',
+          cursor: 'ew-resize', touchAction: 'none',
+        }}
         onPointerDown={e => {
           e.currentTarget.setPointerCapture(e.pointerId);
           onChangeRef.current(calcVal(e.clientX));
@@ -4165,59 +4421,53 @@ function CrossfadeSlider({ value, onChange }) {
         onPointerUp={e => {
           e.currentTarget.releasePointerCapture(e.pointerId);
         }}>
-        <div style={{width:'100%', height:6, borderRadius:3, background:'rgba(255,255,255,0.07)', position:'relative', overflow:'hidden'}}>
+        <div ref={fillRef}
+          style={{ width: '100%', height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.08)', position: 'relative' }}>
           <div style={{
-            position:'absolute', left:0, top:0, height:'100%',
-            width:`${pct}%`, borderRadius:3,
-            background:'#c8c8c8',
-            boxShadow: pct > 0 ? '0 0 8px rgba(178,178,178,0.45)' : 'none',
+            position: 'absolute', left: 0, top: 0, height: '100%',
+            width: `${pct}%`, borderRadius: 3, background: 'var(--accent)',
+            boxShadow: pct > 0 ? '0 0 10px rgba(var(--accent-rgb),0.4)' : 'none',
+          }}/>
+          {/* Ручка. Её не было: голая полоса с курсором ew-resize читалась как
+             индикатор, а не как то, что тянут. */}
+          <div style={{
+            position: 'absolute', left: `${pct}%`, top: '50%',
+            width: 12, height: 12, marginTop: -6, marginLeft: -6, borderRadius: '50%',
+            background: '#fff', boxShadow: '0 1px 4px rgba(0,0,0,0.45)',
           }}/>
         </div>
       </div>
-      <span style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.32)', minWidth:28, textAlign:'right'}}>
-        {value === 0 ? t('off') : `${value} ${t('sec')}`}
-      </span>
+      <span style={{
+        fontSize: 'var(--fs-sm)', color: SN.dim, minWidth: 30, textAlign: 'right',
+        fontVariantNumeric: 'tabular-nums',
+      }}>{v === 0 ? t('off') : `${v} ${t('sec')}`}</span>
     </div>
   );
 }
 
 /* ── ClearCacheCard ───────────────────────────────────────────────────────── */
-function ClearCacheCard({ Card, Row, onClearCoversCache, onClearLikesCache }) {
+function ClearCacheCard({ onClearCoversCache, onClearLikesCache }) {
   const t = useLang();
-  const [confirmCovers, setConfirmCovers] = useState(false);
-  const [confirmLikes,  setConfirmLikes]  = useState(false);
-  const btn = (label, onClick) => (
-    <div onClick={onClick} style={{fontSize: 'var(--fs-sm)', color:'rgba(255,80,80,0.8)', cursor:'pointer', background:'rgba(255,80,80,0.08)', borderRadius:7, padding:'5px 14px'}}>
-      {label}
-    </div>
-  );
-  const cancel = (fn) => (
-    <div onClick={fn} style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.45)', cursor:'pointer', background:'rgba(255,255,255,0.055)', borderRadius:7, padding:'5px 14px'}}>
-      {t('cancel')}
-    </div>
+  const [confirm, setConfirm] = useState(null);
+  /* один confirm на оба кэша вместо двух: подтверждение относится к строке,
+     а не к карточке, и два независимых флага держали в состоянии то, что
+     всегда нужно не больше одного */
+  const row = (label, sub, key, action, last) => (
+    <Row label={label} sub={sub} last={last}>
+      {confirm === key ? (
+        <>
+          <Btn onClick={() => setConfirm(null)}>{t('cancel')}</Btn>
+          <Btn tone="danger" onClick={() => { action(); setConfirm(null); }}>{t('del')}</Btn>
+        </>
+      ) : (
+        <Btn onClick={() => setConfirm(key)}>{t('clear')}</Btn>
+      )}
+    </Row>
   );
   return (
     <Card title={t('cache')}>
-      <Row label={t('covers_cache')} sub={t('covers_cache_sub')}>
-        {confirmCovers ? (
-          <div style={{display:'flex', gap:8, flexShrink:0}}>
-            {cancel(()=>setConfirmCovers(false))}
-            {btn(t('del'), ()=>{ onClearCoversCache(); setConfirmCovers(false); })}
-          </div>
-        ) : (
-          <div onClick={()=>setConfirmCovers(true)} style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.45)', cursor:'pointer', background:'rgba(255,255,255,0.055)', borderRadius:7, padding:'5px 14px'}}>{t('clear')}</div>
-        )}
-      </Row>
-      <Row label={t('likes_cache')} sub={t('likes_cache_sub')} last>
-        {confirmLikes ? (
-          <div style={{display:'flex', gap:8, flexShrink:0}}>
-            {cancel(()=>setConfirmLikes(false))}
-            {btn(t('del'), ()=>{ onClearLikesCache(); setConfirmLikes(false); })}
-          </div>
-        ) : (
-          <div onClick={()=>setConfirmLikes(true)} style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.45)', cursor:'pointer', background:'rgba(255,255,255,0.055)', borderRadius:7, padding:'5px 14px'}}>{t('clear')}</div>
-        )}
-      </Row>
+      {row(t('covers_cache'), t('covers_cache_sub'), 'covers', onClearCoversCache)}
+      {row(t('likes_cache'), t('likes_cache_sub'), 'likes', onClearLikesCache, true)}
     </Card>
   );
 }
@@ -4228,24 +4478,24 @@ function ClearCacheCard({ Card, Row, onClearCoversCache, onClearLikesCache }) {
    пересоздавался бы на каждом рендере (см. TrackContextMenu) */
 function SourceArrows({ i, count, onMove, upTitle, downTitle }) {
   return (
-    <div style={{display:'flex', flexDirection:'column', gap:1, flexShrink:0}}>
+    <div className="lyr-arrows" style={{ display: 'flex', flexDirection: 'column', gap: 1, flexShrink: 0 }}>
       {[-1, 1].map(dir => {
         const edge = i + dir < 0 || i + dir >= count;
         return (
           <div key={dir} onClick={() => { if (!edge) onMove(i, dir); }}
             title={dir < 0 ? upTitle : downTitle}
             style={{
-              width:18, height:12, borderRadius:4,
-              display:'flex', alignItems:'center', justifyContent:'center',
+              width: 18, height: 12, borderRadius: 4,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
               cursor: edge ? 'default' : 'pointer',
-              color: edge ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.24)',
-              transition:'color 0.15s, background 0.15s',
+              color: edge ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.45)',
+              transition: 'color 0.15s, background 0.15s',
             }}
-            onMouseEnter={e => { if (!edge) e.currentTarget.style.color = 'rgba(255,255,255,0.72)'; }}
-            onMouseLeave={e => { e.currentTarget.style.color = edge ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.24)'; }}>
+            onMouseEnter={e => { if (!edge) e.currentTarget.style.color = 'rgba(255,255,255,0.85)'; }}
+            onMouseLeave={e => { e.currentTarget.style.color = edge ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.45)'; }}>
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"
-              style={{transform: dir < 0 ? 'none' : 'rotate(180deg)'}}>
+              style={{ transform: dir < 0 ? 'none' : 'rotate(180deg)' }}>
               <path d="m6 15 6-6 6 6"/>
             </svg>
           </div>
@@ -4255,7 +4505,7 @@ function SourceArrows({ i, count, onMove, upTitle, downTitle }) {
   );
 }
 
-function LyricsSettings({ settings, onSettings, Card, Toggle }) {
+function LyricsSettings({ settings, onSettings }) {
   const t = useLang();
   const on = cleanLyricsSources(settings.lyricsSources);
   /* порядок берётся из МАССИВА НАСТРОЕК, а не из реестра LYRICS_SOURCES.
@@ -4267,7 +4517,7 @@ function LyricsSettings({ settings, onSettings, Card, Toggle }) {
     .filter(Boolean);
   const enabled  = byOrder(on);
   const disabled = byOrder(LYRICS_SOURCE_IDS.filter(id => !on.includes(id)));
-  const div = HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.045)';
+  const line = HIDE_DIVIDERS ? 'none' : `1px solid ${SN.line}`;
 
   const write  = next => onSettings(s => ({ ...s, lyricsSources: next }));
   const toggle = id => write(on.includes(id) ? on.filter(x => x !== id) : [...on, id]);
@@ -4280,58 +4530,50 @@ function LyricsSettings({ settings, onSettings, Card, Toggle }) {
   };
 
   return (
-    <Card title={t('lyrics_sources')}>
+    <Card>
       <div style={{
-        padding:'13px 20px 11px',
-        fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.28)', lineHeight:1.45,
+        padding: '14px 16px 13px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45,
       }}>{t('lyrics_sources_sub')}</div>
 
       {enabled.map((s, i) => (
-        <div key={s.id} style={{
-          display:'flex', alignItems:'center', gap:11, padding:'10px 16px 10px 12px',
-          borderBottom: (disabled.length || i === enabled.length - 1) ? div : 'none',
+        <div key={s.id} className="lyr-row" style={{
+          display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px 10px 12px',
+          borderBottom: (disabled.length || i === enabled.length - 1) ? line : 'none',
         }}>
           <SourceArrows i={i} count={enabled.length} onMove={move}
             upTitle={t('lyrics_up')} downTitle={t('lyrics_down')}/>
-          <div style={{flex:1, minWidth:0, display:'flex', alignItems:'center', gap:8}}>
-            <span style={{fontSize:'var(--fs-md)', color:'rgba(255,255,255,0.75)'}}>{s.label}</span>
-            {s.synced && (
-              <span style={{
-                fontSize:'var(--fs-eyebrow)', letterSpacing:'0.06em', textTransform:'uppercase',
-                color:'rgba(255,255,255,0.26)', padding:'2px 6px', borderRadius:5,
-                background:'rgba(255,255,255,0.05)', flexShrink:0,
-              }}>{t('lyrics_synced')}</span>
-            )}
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 'var(--fs-md)', color: SN.hi }}>{s.label}</span>
+            {s.synced && <Badge>{t('lyrics_synced')}</Badge>}
           </div>
-          <Toggle value onChange={() => toggle(s.id)}/>
+          <Switch on onChange={() => toggle(s.id)}/>
         </div>
       ))}
 
       {enabled.length === 0 && (
         <div style={{
-          padding:'2px 20px 14px', fontSize:'var(--fs-xs)',
-          color:'rgba(255,255,255,0.22)', lineHeight:1.45,
+          padding: '2px 16px 15px', fontSize: 'var(--fs-xs)', color: SN.faint, lineHeight: 1.45,
         }}>{t('lyrics_all_off')}</div>
       )}
 
       {disabled.length > 0 && (
         <>
           <div style={{
-            padding:'12px 20px 4px',
-            fontSize:'var(--fs-eyebrow)', letterSpacing:'0.09em', textTransform:'uppercase',
-            color:'rgba(255,255,255,0.2)',
+            padding: '12px 16px 5px',
+            fontSize: 'var(--fs-eyebrow)', letterSpacing: '0.1em', textTransform: 'uppercase',
+            color: SN.faint,
           }}>{t('lyrics_off')}</div>
           {disabled.map((s, i) => (
             <div key={s.id} style={{
-              display:'flex', alignItems:'center', gap:11, padding:'10px 20px',
-              borderBottom: i === disabled.length - 1 ? 'none' : div,
+              display: 'flex', alignItems: 'center', gap: 12, padding: '9px 16px',
+              borderBottom: i === disabled.length - 1 ? 'none' : line,
             }}>
               {/* место под стрелки, чтобы названия выключенных не съезжали влево */}
-              <div style={{width:18, flexShrink:0}}/>
-              <span style={{flex:1, minWidth:0, fontSize:'var(--fs-md)', color:'rgba(255,255,255,0.3)'}}>
+              <div style={{ width: 18, flexShrink: 0 }}/>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--fs-md)', color: SN.mid }}>
                 {s.label}
               </span>
-              <Toggle value={false} onChange={() => toggle(s.id)}/>
+              <Switch on={false} onChange={() => toggle(s.id)}/>
             </div>
           ))}
         </>
@@ -4371,246 +4613,174 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     setPill({ top: er.top - pr.top, height: er.height });
   }, [sec]);
 
-  /* k — ключ в settings. либо вместо него явные value/onChange:
-     тумблер поверх не-булевой настройки (порядок источников текста) */
-  const Toggle = ({ k, value, onChange }) => {
-    const on = value !== undefined ? !!value : !!settings[k];
-    return (
-      <div style={{
-        width:38, height:22, borderRadius:11, cursor:'pointer', flexShrink:0,
-        background: on ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.1)',
-        position:'relative', transition:'background 0.22s ease',
-      }} onClick={() => onChange !== undefined ? onChange(!on) : set(k, !on)}>
-        <div style={{
-          position:'absolute', top:4, width:14, height:14, borderRadius:'50%',
-          background:'#fff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)',
-          left: on ? 20 : 4,
-          transition:'left 0.22s cubic-bezier(0.4,0,0.2,1)',
-        }}/>
-      </div>
-    );
-  };
-
-  const Row = ({ label, sub, children, last }) => (
-    <div style={{
-      display:'flex', alignItems:'center', justifyContent:'space-between',
-      padding:'13px 20px',
-      borderBottom: (last || !!HIDE_DIVIDERS) ? 'none' : '1px solid rgba(255,255,255,0.045)',
-    }}>
-      <div>
-        <div style={{fontSize: 'var(--fs-md)', color:'rgba(255,255,255,0.75)'}}>{label}</div>
-        {sub && <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.28)', marginTop:2}}>{sub}</div>}
-      </div>
-      {children}
-    </div>
-  );
-
-  const Card = ({ title, children }) => (
-    <div style={{marginBottom:18}}>
-      {title && <div style={{
-        fontSize: 'var(--fs-xs)', letterSpacing:'0.09em', textTransform:'uppercase',
-        color:'rgba(255,255,255,0.25)', marginBottom:8, paddingLeft:4,
-      }}>{title}</div>}
-      <div style={{
-        background:'rgba(255,255,255,0.034)',
-        borderRadius:13, overflow:'hidden',
-      }}>{children}</div>
-    </div>
-  );
-
+  /* Иконки разделов. Набор из assets разношёрстный и цветной, поэтому раньше
+     их приходилось выбеливать фильтром — и выбранный пункт нельзя было
+     покрасить в акцент. Теперь это штриховые иконки на currentColor, и
+     активный пункт красится целиком: и иконка, и подпись. */
   const SECS = [
     { id:'account',  label:t('card_account'),
-      icon:<SoundCloudIcon size={14} fill="rgba(255,255,255,0.5)"/> },
+      icon:<SoundCloudIcon size={14} fill="currentColor"/> },
     { id:'playback', label:t('sec_playback'),
-      icon:<img src="../assets/vosproizvedenie.png" style={{width:15,height:15,filter:'brightness(0) invert(1)',display:'block'}}/> },
+      icon:<SettingsIcon><path d="M4 9.5h3L11.5 6v12L7 14.5H4z"/><path d="M15 9.2a4 4 0 0 1 0 5.6"/><path d="M17.6 6.6a7.6 7.6 0 0 1 0 10.8"/></SettingsIcon> },
     { id:'lyrics',   label:t('sec_lyrics'),
-      icon:<img src="../assets/textt.png" style={{width:15,height:15,filter:'brightness(0) invert(1)',display:'block'}}/> },
+      icon:<SettingsIcon><path d="M4.5 6.5h15"/><path d="M4.5 12h15"/><path d="M4.5 17.5h9"/></SettingsIcon> },
     { id:'discord',  label:t('sec_discord'),
-      icon:<DiscordIcon size={15} fill="rgba(255,255,255,0.5)"/> },
+      icon:<DiscordIcon size={15} fill="currentColor"/> },
     { id:'appearance', label:t('sec_appearance'),
-      icon:<img src="../assets/theme.png" style={{width:15,height:15,filter:'brightness(0) invert(1)',display:'block'}}/> },
+      icon:<SettingsIcon><circle cx="12" cy="12" r="8.2"/><path d="M12 3.8a8.2 8.2 0 0 1 0 16.4z" fill="currentColor" stroke="none"/></SettingsIcon> },
     { id:'system',   label:t('sec_system'),
-      icon:<img src="../assets/system.png" style={{width:15,height:15,filter:'brightness(0) invert(1)',display:'block'}}/> },
+      icon:<SettingsIcon><path d="M4 8.5h9"/><path d="M18.5 8.5H20"/><path d="M4 15.5h4"/><path d="M13.5 15.5H20"/><circle cx="15.2" cy="8.5" r="2.3"/><circle cx="10.2" cy="15.5" r="2.3"/></SettingsIcon> },
     { id:'about',    label:t('sec_about'),
-      icon:<img src="../assets/about.png" style={{width:15,height:15,filter:'brightness(0) invert(1)',display:'block'}}/> },
+      icon:<SettingsIcon><circle cx="12" cy="12" r="8.4"/><path d="M12 11.2v5.4"/><path d="M12 7.8v.6"/></SettingsIcon> },
   ];
 
   const content = {
+    /* Без надзаголовка у первой карточки: раздел уже назван в навигации, и
+       два одинаковых слова подряд читались как сбой. */
     account: (
-      <Card title={t('card_account')}>
+      <Card>
         {scAuth ? (
-          <div style={{display:'flex', alignItems:'center', gap:14, padding:'16px'}}>
+          <div style={{ display:'flex', alignItems:'center', gap:13, padding:'14px 16px' }}>
             <div style={{
-              width:46, height:46, borderRadius:14, flexShrink:0, overflow:'hidden',
-              background:'rgba(178,178,178,0.06)',
-              display:'flex', alignItems:'center', justifyContent:'center',
-              color:'var(--accent)',
+              width: 40, height: 40, borderRadius: 13, flexShrink: 0, overflow: 'hidden',
+              background: 'rgba(255,255,255,0.05)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: SN.dim,
             }}>
               {scAuth.avatarUrl
-                ? <img src={scAuth.avatarUrl} style={{width:'100%',height:'100%',objectFit:'cover'}}/>
-                : <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+                ? <img src={scAuth.avatarUrl} style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
+                : <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
               }
             </div>
-            <div style={{flex:1, minWidth:0}}>
-              <div style={{fontSize: 'var(--fs-lg)', fontWeight:600, letterSpacing:'-0.015em', color:'rgba(255,255,255,0.85)',
-                whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{scAuth.username || t('unknown')}</div>
-              <div style={{fontSize: 'var(--fs-eyebrow)', color:'rgba(255,255,255,0.26)', letterSpacing:'0.08em', textTransform:'uppercase', marginTop:3}}>soundcloud</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{
+                fontSize: 'var(--fs-md)', fontWeight: 600, color: 'rgba(255,255,255,0.88)',
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+              }}>{scAuth.username || t('unknown')}</div>
+              <div style={{
+                fontSize: 'var(--fs-eyebrow)', color: SN.dim, letterSpacing: '0.09em',
+                textTransform: 'uppercase', marginTop: 3,
+              }}>soundcloud</div>
             </div>
-            <button onClick={onScLogout} style={{
-              background:'rgba(255,255,255,0.04)', border:'none',
-              borderRadius:9, padding:'7px 16px', flexShrink:0,
-              fontSize: 'var(--fs-sm)', fontWeight:500, color:'rgba(255,255,255,0.5)',
-              cursor:'pointer', fontFamily:'inherit',
-              transition:'background 0.15s, color 0.15s',
-            }}
-              onMouseEnter={e=>{ e.currentTarget.style.background='rgba(255,255,255,0.07)'; e.currentTarget.style.color='rgba(255,255,255,0.75)'; }}
-              onMouseLeave={e=>{ e.currentTarget.style.background='rgba(255,255,255,0.04)'; e.currentTarget.style.color='rgba(255,255,255,0.5)'; }}
-            >{t('logout')}</button>
+            <Btn onClick={onScLogout}>{t('logout')}</Btn>
           </div>
         ) : (
-          <div style={{padding:'16px'}}>
-            <div style={{display:'flex', alignItems:'center', gap:14, marginBottom:14}}>
+          <div style={{ padding: '14px 16px 16px' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:13, marginBottom: 13 }}>
               <div style={{
-                width:46, height:46, borderRadius:14, flexShrink:0,
-                background:'rgba(255,85,0,0.07)',
-                display:'flex', alignItems:'center', justifyContent:'center',
+                width: 40, height: 40, borderRadius: 13, flexShrink: 0,
+                background: 'rgba(255,85,0,0.08)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
-                <SoundCloudIcon size={24} fill="rgba(255,100,20,0.65)"/>
+                <SoundCloudIcon size={21} fill="rgba(255,100,20,0.6)"/>
               </div>
-              <div style={{flex:1, minWidth:0}}>
-                <div style={{fontSize: 'var(--fs-md)', fontWeight:600, letterSpacing:'-0.015em', color:'rgba(255,255,255,0.6)', marginBottom:4}}>{t('sc_not_connected')}</div>
-                <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.26)', lineHeight:1.55}}>{t('sc_hint').split('\n').map((l,i)=><span key={i}>{l}{i===0&&<br/>}</span>)}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: 'var(--fs-md)', fontWeight: 600,
+                  color: 'rgba(255,255,255,0.62)', marginBottom: 3,
+                }}>{t('sc_not_connected')}</div>
+                <div style={{
+                  fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.5,
+                }}>{t('sc_hint').split('\n').map((l, i) => <span key={i}>{l}{i === 0 && <br/>}</span>)}</div>
               </div>
             </div>
-            {scError && <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,80,60,0.7)', marginBottom:10}}>{scError}</div>}
-            <button onClick={scLogin} disabled={scLoading} style={{
-              background: scLoading ? 'rgba(255,85,0,0.06)' : 'rgba(255,85,0,0.1)',
-              border:'none', borderRadius:10, padding:'9px 22px',
-              fontSize: 'var(--fs-sm)', fontWeight:500,
-              color: scLoading ? 'rgba(255,130,60,0.4)' : 'rgba(255,130,60,0.85)',
-              cursor: scLoading ? 'default' : 'pointer', fontFamily:'inherit',
-              transition:'background 0.15s, color 0.15s',
-            }}
-              onMouseEnter={e=>{ if(!scLoading) e.currentTarget.style.background='rgba(255,85,0,0.17)'; }}
-              onMouseLeave={e=>{ e.currentTarget.style.background=scLoading?'rgba(255,85,0,0.06)':'rgba(255,85,0,0.1)'; }}
-            >{scLoading ? t('opening_browser') : t('login_browser')}</button>
+            {scError && (
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'rgba(255,90,70,0.75)', marginBottom: 11 }}>
+                {scError}
+              </div>
+            )}
+            <Btn tone="brand" onClick={scLogin} disabled={scLoading}>
+              {scLoading ? t('opening_browser') : t('login_browser')}
+            </Btn>
           </div>
         )}
       </Card>
     ),
     playback: (
-      <Card title={t('card_audio')}>
+      <Card>
         <Row label={t('crossfade')} sub={t('crossfade_sub')} last>
           <CrossfadeSlider value={settings.crossfade} onChange={v=>set('crossfade', v)}/>
         </Row>
       </Card>
     ),
     lyrics: (
-      <LyricsSettings settings={settings} onSettings={onSettings} Card={Card} Toggle={Toggle}/>
+      <LyricsSettings settings={settings} onSettings={onSettings}/>
     ),
     appearance: (<>
-      <Card title={t('accent_title')}>
-        <div style={{padding:'14px 16px 16px'}}>
-          <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.32)', marginBottom:14, lineHeight:1.4}}>
-            {t('accent_sub')}
-          </div>
-          {/* Подсветка акцента и материал окна несовместимы: DWM рисует мику под
-              окном, а акцент — это свет OUR OWN слоя над ней, и они бьют по
-              одному и тому же. Поэтому при включённом материале сегменты
-              заблокированы, а не просто гаснут: иначе можно было бы включить
-              материал, потом тыкнуть «Цвет» и снова получить несовместимую
-              комбинацию. Гасит акцент сам тумблер материала. */}
-          {/* Плашка замка. Раньше монтировалась и размонтировалась по `micaOn`, то
-              есть появлялась скачком. Теперь всегда в дереве и раскрывается
-              transition — как аккордеон discord ниже, из той же логики и по
-              той же причине: пересборка блока дёргает всё, что под ним, а
-              высота у этой плашки меняется с 0. */}
+      <Card>
+        <div style={{ padding:'14px 16px 0', fontSize:'var(--fs-xs)', color: SN.dim, lineHeight:1.45 }}>
+          {t('accent_sub')}
+        </div>
+        {/* Подсветка акцента и материал окна несовместимы: DWM рисует мику под
+            окном, а акцент — это свет OUR OWN слоя над ней, и они бьют по
+            одному и тому же. Поэтому при включённом материале сегменты
+            заблокированы, а не просто гаснут: иначе можно было бы включить
+            материал, потом тыкнуть «Цвет» и снова получить несовместимую
+            комбинацию. Гасит акцент сам тумблер материала. */}
+        {/* Плашка замка. Всегда в дереве и раскрывается transition — как
+            аккордеон discord ниже: пересборка блока дёргает всё под ним, а
+            высота у плашки меняется с 0. */}
+        <div style={{
+          display:'flex', gap:8, overflow:'hidden',
+          margin: micaOn ? '12px 16px 0' : 0,
+          padding: micaOn ? '8px 11px' : 0,
+          maxHeight: micaOn ? 120 : 0,
+          opacity: micaOn ? 1 : 0,
+          transform: micaOn ? 'translateY(0)' : 'translateY(-4px)',
+          pointerEvents: micaOn ? 'auto' : 'none',
+          /* ⚠️ Рамку задаём именно здесь, а не через `borderWidth` рядом с
+             `border` ниже. React ставит стили по порядку ключей, а шорткат
+             `border` идёт ПОСЛЕ и обнуляет ширину обратно в 1px: плашка в
+             свёрнутом виде занимала 2px высоты, то есть место в разметке,
+             хоть и была невидимой. */
+          border: micaOn ? `1px solid ${SN.line}` : 'none',
+          transition:'max-height 0.32s cubic-bezier(0.22,1,0.36,1), opacity 0.2s ease,'
+            + 'margin 0.32s ease, padding 0.32s ease, transform 0.32s ease',
+          borderRadius:9, background:'rgba(255,255,255,0.028)',
+          fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.34)', lineHeight:1.45,
+        }}>
           <div style={{
-            display:'flex', gap:8, overflow:'hidden',
-            marginBottom: micaOn ? 12 : 0,
-            padding: micaOn ? '9px 11px' : '0',
-            maxHeight: micaOn ? 120 : 0,
-            opacity: micaOn ? 1 : 0,
-            transform: micaOn ? 'translateY(0)' : 'translateY(-4px)',
-            pointerEvents: micaOn ? 'auto' : 'none',
-            /* ⚠️ Рамку задаём именно здесь, а не через `borderWidth` рядом с
-               `border` ниже. React ставит стили по порядку ключей, а шорткат
-               `border` идёт ПОСЛЕ и обнуляет ширину обратно в 1px: плашка в
-               свёрнутом виде занимала 2px высоты, то есть место в разметке,
-               хоть и была невидимой. */
-            border: micaOn ? '1px solid rgba(255,255,255,0.04)' : 'none',
-            transition:'max-height 0.32s cubic-bezier(0.22,1,0.36,1), opacity 0.2s ease,'
-              + 'margin-bottom 0.32s ease, padding 0.32s ease, transform 0.32s ease',
-            borderRadius:9, background:'rgba(255,255,255,0.028)',
-            fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.34)', lineHeight:1.45,
-          }}>
-            <div style={{
-              width:6, height:6, borderRadius:'50%', marginTop:5, flexShrink:0,
-              background:'var(--accent)', opacity: micaOn ? 0.7 : 0,
-              transition:'opacity 0.24s ease 0.06s',
-            }}/>
-            <div>{t('mica_accent_lock')}</div>
-          </div>
-          {(() => {
-            const mode = settings.accentMode || 'color';
-            const preset = ACCENT_PRESETS[settings.accentPreset] ? settings.accentPreset : 'default';
-            const segIcon = paths => (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths}</svg>
-            );
-            const SEGS = [
-              ['off',   t('accent_seg_off'),   segIcon(<><path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></>)],
-              ['color', t('accent_seg_color'), segIcon(<path d="M12 2.7s6.3 6.8 6.3 11.1a6.3 6.3 0 1 1-12.6 0C5.7 9.5 12 2.7 12 2.7z"/>)],
-              ['cover', t('accent_cover'),     segIcon(<><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="m21 16-5-5-4.5 4.5"/></>)],
-            ];
-            return (
-              <>
-                {/* сегмент Выкл | Цвет | От обложки — пилл плавно ездит между опциями */}
-                <LayoutGroup>
-                  <div style={{
-                    display:'flex', gap:3, padding:3, borderRadius:11,
-                    background:'rgba(255,255,255,0.035)',
-                    /* блокировка целиком, а не только у сегментов: пока активен
-                       только «выкл», гасить остальные бессмысленно */
-                    opacity: micaOn ? 0.4 : 1,
-                    pointerEvents: micaOn ? 'none' : 'auto',
-                    transition:'opacity 0.2s ease',
-                  }}>
-                    {SEGS.map(([id, label, icon]) => {
-                      const active = mode === id;
-                      return (
-                        <div key={id}
-                          /* клик по УЖЕ активной вкладке — полный no-op. раньше
-                             onSettings звал с новым объектом, палитра и
-                             сохранение перезапускались впустую */
-                          onClick={() => { if (active) return; onSettings(s => ({ ...s, accentMode: id })); }}
-                          style={{position:'relative', flex:1, display:'flex', alignItems:'center', justifyContent:'center',
-                            padding:'8px 0', borderRadius:9, cursor:'pointer', userSelect:'none',
-                            color: active ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.38)',
-                            transition:'color 0.18s ease'}}>
-                          {active && (
-                            <motion.div layoutId="accentSegPill"
-                              transition={{ type:'spring', stiffness:420, damping:34, mass:0.7 }}
-                              style={{position:'absolute', inset:0, borderRadius:9, background:'rgba(255,255,255,0.07)'}}/>
-                          )}
-                          <span style={{position:'relative', display:'flex', alignItems:'center', gap:6, fontSize: 'var(--fs-xs)',
-                            fontWeight: active ? 600 : 500}}>{icon}{label}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </LayoutGroup>
-                {/* Контекстный блок под выбранным режимом.
+            width:6, height:6, borderRadius:'50%', marginTop:5, flexShrink:0,
+            background:'var(--accent)', opacity: micaOn ? 0.7 : 0,
+            transition:'opacity 0.24s ease 0.06s',
+          }}/>
+          <div>{t('mica_accent_lock')}</div>
+        </div>
+        {(() => {
+          const mode = settings.accentMode || 'color';
+          const preset = ACCENT_PRESETS[settings.accentPreset] ? settings.accentPreset : 'default';
+          const segIcon = paths => (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths}</svg>
+          );
+          const SEGS = [
+            ['off',   t('accent_seg_off'),   segIcon(<><path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></>)],
+            ['color', t('accent_seg_color'), segIcon(<path d="M12 2.7s6.3 6.8 6.3 11.1a6.3 6.3 0 1 1-12.6 0C5.7 9.5 12 2.7 12 2.7z"/>)],
+            ['cover', t('accent_cover'),     segIcon(<><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="m21 16-5-5-4.5 4.5"/></>)],
+          ];
+          return (
+            <>
+              {/* сегмент Выкл | Цвет | От обложки. Тот же Segment, что у
+                  таймстампа discord и у языка: раньше сегменты, чипсы и
+                  кнопки языка были тремя разными контролами с разными
+                  радиусами и отступами. Пилл ездит по layoutId и переезжает
+                  между опциями, `stretch` растягивает их на ширину колонки. */}
+              <div style={{ padding:'14px 16px 0' }}>
+                <Segmented stretch id="accentSegPill" value={mode} disabled={micaOn}
+                  onChange={id => onSettings(s => ({ ...s, accentMode: id }))}
+                  options={SEGS.map(([v, label, icon]) => ({ v, label, icon }))}/>
+              </div>
+                {/* Контекст под выбранным режимом.
                     ⚠️ Здесь стояли `key={mode}` и `animation:'fadeInUp'`, и
                     оба были причиной рывка при первом входе в настройки.
                     `key` перемонтировал блок при смене режима, а высота у
                     режимов разная (палитра — пять образцов, «выкл» — одна
-                    короткая карточка), так что перемонтирование дёргало всё,
+                    короткая плашка), так что перемонтирование дёргало всё,
                     что ниже. Сама анимация тут лишняя: переключение сегмента
                     уже показывает пилл на layoutId. */}
-                <div style={{marginTop:16}}>
+                <div style={{ padding: '16px 16px 0' }}>
                   {mode === 'color' && (
-                    <div style={{display:'flex', flexWrap:'wrap', gap:10}}>
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
                       {[
                         ['default',  t('accent_default')],
                         ['lavender', t('accent_lavender')],
@@ -4621,31 +4791,36 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
                         const c = ACCENT_PRESETS[key];
                         const active = preset === key;
                         return (
-                          <div key={key}
+                          <div key={key} title={label}
                             /* тот же принцип: повторный клик по выбранному
                                образцу не перезапускает палитру и запись */
                             onClick={() => { if (active) return; onSettings(s => ({ ...s, accentMode:'color', accentPreset:key })); }}
                             style={{
-                              display:'flex', flexDirection:'column', alignItems:'center', gap:6,
+                              display:'flex', flexDirection:'column', alignItems:'center', gap:7,
                               cursor:'pointer', padding:'8px 6px', borderRadius:10,
-                              flex:'1 0 70px',
-                              background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
+                              flex:'1 0 72px',
+                              background: active ? 'rgba(255,255,255,0.055)' : 'transparent',
                               transition:'background 0.18s',
                             }}
-                            onMouseEnter={e => { if (!active) e.currentTarget.style.background='rgba(255,255,255,0.035)'; }}
+                            onMouseEnter={e => { if (!active) e.currentTarget.style.background='rgba(255,255,255,0.03)'; }}
                             onMouseLeave={e => { if (!active) e.currentTarget.style.background='transparent'; }}
                           >
                             <div style={{
-                              width:32, height:32, borderRadius:'50%',
+                              width:28, height:28, borderRadius:'50%',
                               background:`rgb(${c.r},${c.g},${c.b})`,
+                              /* кольцо вокруг выбранного образца — двухслойное:
+                                 внутреннее кольцо цвета фона отделяет его от
+                                 соседей, внешнее подтверждает выбор. Раньше
+                                 было одно кольцо и цветной ореол, и выбранный
+                                 цвет на подложке карточки терялся */
                               boxShadow: active
-                                ? `0 0 0 2px #07070a, 0 0 0 4px rgba(${c.r},${c.g},${c.b},0.9), 0 0 18px rgba(${c.r},${c.g},${c.b},0.55)`
-                                : `0 2px 8px rgba(${c.r},${c.g},${c.b},0.25)`,
+                                ? `0 0 0 2px rgba(10,10,14,0.9), 0 0 0 3.5px rgba(${c.r},${c.g},${c.b},0.95)`
+                                : `0 2px 6px rgba(${c.r},${c.g},${c.b},0.22)`,
                               transition:'box-shadow 0.22s',
                             }}/>
                             <div style={{
                               fontSize: 'var(--fs-xs)', fontWeight: active ? 600 : 500,
-                              color: active ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.45)',
+                              color: active ? 'rgba(255,255,255,0.92)' : SN.mid,
                               transition:'color 0.18s',
                             }}>{label}</div>
                           </div>
@@ -4653,83 +4828,26 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
                       })}
                     </div>
                   )}
+                  {/* «От обложки» и «Выкл» раньше показывали карточку с
+                      заголовком, который просто повторял уже выбранный
+                      сегмент. Осталось по одной строке: живой образец цвета
+                      либо объяснение, что именно выключено. */}
                   {mode === 'cover' && (
-                    <div onClick={() => onSettings(s => ({ ...s, accentMode:'cover' }))}
-                      style={{
-                        position:'relative',
-                        display:'flex', alignItems:'center', gap:14,
-                        padding:'12px 14px', borderRadius:12, cursor:'pointer',
-                        background:'rgba(255,255,255,0.05)',
-                        border:'1px solid transparent',
-                        transition:'background 0.2s',
-                        overflow:'hidden',
-                      }}
-                    >
-                      {/* rainbow border ring */}
+                    <div style={{ display:'flex', alignItems:'center', gap:11 }}>
                       <div style={{
-                        position:'absolute', inset:0, borderRadius:12,
-                        padding:1.5,
+                        width:26, height:26, borderRadius:8, flexShrink:0,
                         background:'conic-gradient(from 0deg, #ff8fb1, #ffb164, #ffeb6b, #82dcc3, #9b7dff, #ff8fb1)',
-                        WebkitMask:'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)',
-                        WebkitMaskComposite:'xor', maskComposite:'exclude',
-                        pointerEvents:'none',
-                      }}/>
-                      <div style={{
-                        width:38, height:38, borderRadius:'50%',
-                        background:'conic-gradient(from 0deg, #ff8fb1, #ffb164, #ffeb6b, #82dcc3, #9b7dff, #ff8fb1)',
-                        boxShadow:`0 0 22px rgba(${appAccent.r},${appAccent.g},${appAccent.b},0.55)`,
-                        flexShrink:0,
-                        display:'flex', alignItems:'center', justifyContent:'center',
+                        boxShadow:`0 0 16px rgba(${appAccent.r},${appAccent.g},${appAccent.b},0.45)`,
                         transition:'box-shadow 0.4s',
-                      }}>
-                        {/* palette icon */}
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(7,7,10,0.85)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 0-4-4h-2a2 2 0 0 1-2-2v-2a4 4 0 0 0-2-2z"/>
-                          <circle cx="6.5" cy="11.5" r="1"/><circle cx="9.5" cy="7.5" r="1"/><circle cx="14.5" cy="7.5" r="1"/><circle cx="17.5" cy="11.5" r="1"/>
-                        </svg>
-                      </div>
-                      <div style={{flex:1, minWidth:0}}>
-                        <div style={{fontSize: 'var(--fs-md)', fontWeight:600, color:'rgba(255,255,255,0.95)', letterSpacing:'-0.005em'}}>
-                          {t('accent_cover')}
-                        </div>
-                        <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.38)', marginTop:2}}>
-                          {t('accent_cover_sub')}
-                        </div>
-                      </div>
-                      {/* live swatch preview */}
-                      <div style={{
-                        width:14, height:14, borderRadius:'50%',
-                        background:`rgb(${appAccent.r},${appAccent.g},${appAccent.b})`,
-                        boxShadow:`0 0 12px rgba(${appAccent.r},${appAccent.g},${appAccent.b},0.7)`,
-                        transition:'background 0.4s, box-shadow 0.4s',
-                        flexShrink:0,
                       }}/>
+                      <div style={{ fontSize:'var(--fs-xs)', color: SN.dim, lineHeight:1.45 }}>
+                        {t('accent_cover_sub')}
+                      </div>
                     </div>
                   )}
                   {mode === 'off' && (
-                    <div style={{
-                      display:'flex', alignItems:'center', gap:14,
-                      padding:'12px 14px', borderRadius:12,
-                      background:'rgba(255,255,255,0.025)', border:'1px solid rgba(255,255,255,0.04)',
-                    }}>
-                      <div style={{
-                        width:38, height:38, borderRadius:'50%', background:'rgba(255,255,255,0.05)',
-                        display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
-                        color:'rgba(255,255,255,0.35)',
-                      }}>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>
-                        </svg>
-                      </div>
-                      <div style={{flex:1, minWidth:0}}>
-                        <div style={{fontSize: 'var(--fs-md)', fontWeight:600, color:'rgba(255,255,255,0.6)', letterSpacing:'-0.005em'}}>
-                          {t('accent_off_title')}
-                        </div>
-                        <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.3)', marginTop:2, lineHeight:1.5}}>
-                          {t('accent_off_sub')}
-                        </div>
-                      </div>
+                    <div style={{ fontSize:'var(--fs-xs)', color: SN.dim, lineHeight:1.45 }}>
+                      {t('accent_off_sub')}
                     </div>
                   )}
                 </div>
@@ -4737,27 +4855,14 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             );
           })()}
 
-          {/* тумблер пятна за обложкой — в этой же карточке, а не в «Интерфейсе» */}
-          <div style={{
-            display:'flex', alignItems:'center', justifyContent:'space-between', gap:12,
-            marginTop:16, paddingTop:14,
-            /* инлайн, а не через константу `div`: она объявлена в
-               LyricsSettings, в SettingsView её нет (ReferenceError) */
-            borderTop: HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.045)',
-            opacity: settings.accentMode === 'off' ? 0.4 : 1,
-            transition:'opacity 0.2s ease',
-          }}>
-            <div style={{minWidth:0}}>
-              <div style={{fontSize: 'var(--fs-md)', color:'rgba(255,255,255,0.75)'}}>
-                {t('art_glow')}
-              </div>
-              <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.28)', marginTop:2, lineHeight:1.45}}>
-                {t('art_glow_sub')}
-              </div>
-            </div>
-            <Toggle k="ambientGlow"/>
-          </div>
-        </div>
+          {/* Тумблер пятна за обложкой — в этой же карточке, а не в «Интерфейсе».
+            Полноширинная строка: он отделяет блок выбора режима от края
+            карточки, а не висит на общей подложке с палитрой. */}
+        <Row label={t('art_glow')} sub={t('art_glow_sub')} last
+          dim={settings.accentMode === 'off'}>
+          <Switch on={!!settings.ambientGlow} disabled={settings.accentMode === 'off'}
+            onChange={v => set('ambientGlow', v)}/>
+        </Row>
       </Card>
       {/* ❌ УДАЛЕНА карточка «Интерфейс» с тумблером «Отключить разделители».
            Тумблер убран по просьбе, а поведение оставлено включённым: разделители
@@ -4767,25 +4872,15 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
            иначе ключ остался бы в settings.json и мог вернуть разделители
            обратно из старого файла настроек. */}
       <Card title={t('card_window')}>
-        <Row label={
-            /* Плашка «только Windows 11» прямо у названия. Материал окна —
-               единственная функция в настройках, которая на другой системе
-               не просто не работает, а молча ничего не делает: DWM на Windows 10
-               и на 11 ниже 22H2 принимает атрибут и не рисует его. Поэтому
-               ограничение видно до переключения, а не после. */
-            <span style={{display:'flex', alignItems:'center', gap:8}}>
-              <span>{t('mica')}</span>
-              <span style={{
-                fontSize:'var(--fs-eyebrow)', letterSpacing:'0.08em',
-                textTransform:'uppercase', color:'rgba(255,255,255,0.34)',
-                background:'rgba(255,255,255,0.055)',
-                border:'1px solid rgba(255,255,255,0.05)', borderRadius:5,
-                padding:'2px 6px', flexShrink:0, whiteSpace:'nowrap',
-              }}>{t('mica_only_win11')}</span>
-            </span>
-          } sub={t('mica_sub')} last>
-          <Toggle k="windowEffect"
-            value={micaOn}
+        <Row
+          /* Плашка «только Windows 11» прямо у названия. Материал окна —
+             единственная функция в настройках, которая на другой системе
+             не просто не работает, а молча ничего не делает: DWM на Windows 10
+             и на 11 ниже 22H2 принимает атрибут и не рисует его. Поэтому
+             ограничение видно до переключения, а не после. */
+          label={<>{t('mica')}<Badge>{t('mica_only_win11')}</Badge></>}
+          sub={t('mica_sub')} last>
+          <Switch on={micaOn}
             onChange={v => onSettings(s => {
               const next = { ...s, windowEffect: v ? 'mica' : 'off' };
               /* материал окна несовместим с подсветкой акцента (см. карточку
@@ -4800,150 +4895,87 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
       </Card>
     </>),
     /* секция discord вынесена из оформления: это интеграция, а не вид */
-    discord: (<>
-      <Card title={t('card_discord')}>
+    discord: (
+      <Card>
         <Row label={t('discord_rpc')} sub={t('discord_rpc_sub')} last={!settings.discordRpc}>
-          <Toggle k="discordRpc"/>
+          <Switch on={!!settings.discordRpc} onChange={v => set('discordRpc', v)}/>
         </Row>
+        {/* Раскрывающийся блок. Раньше он лежал вложенной карточкой с отступом
+            и скруглением — читался как отдельный экран внутри экрана. Теперь
+            это подряд идущие строки на одной подложке, и единственный намёк на
+            уровень — чуть более светлая заливка: пунктов внутри нет, они все
+            принадлежат тумблеру выше. */}
         <div style={{
           maxHeight: settings.discordRpc ? 400 : 0,
           opacity: settings.discordRpc ? 1 : 0,
           overflow: 'hidden',
+          background: 'rgba(255,255,255,0.022)',
           transition: 'max-height 0.38s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease',
         }}>
-          <div style={{
-            margin:'0 14px 14px',
-            background:'rgba(255,255,255,0.028)',
-            borderRadius:10,
-            overflow:'hidden',
-          }}>
-            {/* статус подключения. без него «RPC включён, но ничего не видно»
-               и «Discord не запущен» выглядят одинаково — а это разные вещи,
-               и чинить их надо по-разному (перезапустить клиент vs ждать) */}
-            {(() => {
-              const map = {
-                connected:   { c:'#4ade80', t:t('discord_st_connected')   },
-                connecting:  { c:'#fbbf24', t:t('discord_st_connecting')  },
-                disconnected:{ c:'#fbbf24', t:t('discord_st_lost')        },
-                off:         { c:'rgba(255,255,255,0.25)', t:t('discord_st_off') },
-              }[discordStatus] || { c:'rgba(255,255,255,0.25)', t:t('discord_st_off') };
-              const live = discordStatus === 'connected';
-              return (
+          {/* статус подключения. без него «RPC включён, но ничего не видно»
+             и «Discord не запущен» выглядят одинаково — а это разные вещи,
+             и чинить их надо по-разному (перезапустить клиент vs ждать) */}
+          {(() => {
+            const map = {
+              connected:   { c:'#4ade80', t:t('discord_st_connected')   },
+              connecting:  { c:'#fbbf24', t:t('discord_st_connecting')  },
+              disconnected:{ c:'#fbbf24', t:t('discord_st_lost')        },
+              off:         { c:'rgba(255,255,255,0.25)', t:t('discord_st_off') },
+            }[discordStatus] || { c:'rgba(255,255,255,0.25)', t:t('discord_st_off') };
+            const live = discordStatus === 'connected';
+            return (
+              <div style={{
+                display:'flex', alignItems:'center', gap:9, padding:'11px 16px',
+              }}>
                 <div style={{
-                  display:'flex', alignItems:'center', gap:8,
-                  padding:'10px 14px',
-                  borderBottom: HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.04)',
-                }}>
-                  <div style={{
-                    width:6, height:6, borderRadius:'50%', background:map.c, flexShrink:0,
-                    boxShadow: live ? `0 0 0 3px rgba(74,222,128,0.14)` : 'none',
-                  }}/>
-                  <div style={{fontSize:'var(--fs-xs)', color: live ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.3)'}}>{map.t}</div>
-                </div>
-              );
-            })()}
-            {/* таймстамп */}
-            <div style={{
-              display:'flex', alignItems:'center', justifyContent:'space-between',
-              padding:'11px 14px',
-              borderBottom: HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.04)',
-            }}>
-              <div style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.5)'}}>{t('discord_timestamp')}</div>
-              <div style={{display:'flex', gap:4, flexShrink:0}}>
-                {[
-                  {v:'progress', l:t('discord_ts_progress')},
-                  {v:'elapsed',  l:t('discord_ts_elapsed')},
-                  {v:'none',     l:t('discord_ts_none')},
-                ].map(({v,l}) => {
-                  const active = (settings.discordTimestamp||'progress') === v;
-                  return (
-                    <div key={v} onClick={()=>{ if (active) return; set('discordTimestamp',v); }} style={{
-                      fontSize: 'var(--fs-xs)', fontWeight:500, letterSpacing:'0.03em',
-                      padding:'4px 11px', borderRadius:7, cursor:'pointer', userSelect:'none',
-                      background: active ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.04)',
-                      color: active ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.3)',
-                      border: active ? '1px solid rgba(255,255,255,0.14)' : '1px solid transparent',
-                      transition:'background 0.15s, color 0.15s, border-color 0.15s',
-                    }}
-                      onMouseEnter={e=>{ if(!active) e.currentTarget.style.background='rgba(255,255,255,0.07)'; }}
-                      onMouseLeave={e=>{ if(!active) e.currentTarget.style.background='rgba(255,255,255,0.04)'; }}
-                    >{l}</div>
-                  );
-                })}
+                  width:6, height:6, borderRadius:'50%', background:map.c, flexShrink:0,
+                  boxShadow: live ? '0 0 0 3px rgba(74,222,128,0.14)' : 'none',
+                }}/>
+                <div style={{ fontSize:'var(--fs-xs)', color: live ? SN.mid : SN.dim }}>{map.t}</div>
               </div>
-            </div>
-            {/* при паузе */}
-            <div style={{
-              display:'flex', alignItems:'center', justifyContent:'space-between',
-              padding:'11px 14px',
-              borderBottom: HIDE_DIVIDERS ? 'none' : '1px solid rgba(255,255,255,0.04)',
-            }}>
-              <div style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.5)'}}>{t('discord_on_pause')}</div>
-              <div style={{display:'flex', gap:4, flexShrink:0}}>
-                {[
-                  {v:'show', l:t('discord_pause_show')},
-                  {v:'hide', l:t('discord_pause_hide')},
-                ].map(({v,l}) => {
-                  const active = (settings.discordPause||'show') === v;
-                  return (
-                    <div key={v} onClick={()=>{ if (active) return; set('discordPause',v); }} style={{
-                      fontSize: 'var(--fs-xs)', fontWeight:500, letterSpacing:'0.03em',
-                      padding:'4px 11px', borderRadius:7, cursor:'pointer', userSelect:'none',
-                      background: active ? 'rgba(255,255,255,0.13)' : 'rgba(255,255,255,0.04)',
-                      color: active ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.3)',
-                      border: active ? '1px solid rgba(255,255,255,0.14)' : '1px solid transparent',
-                      transition:'background 0.15s, color 0.15s, border-color 0.15s',
-                    }}
-                      onMouseEnter={e=>{ if(!active) e.currentTarget.style.background='rgba(255,255,255,0.07)'; }}
-                      onMouseLeave={e=>{ if(!active) e.currentTarget.style.background='rgba(255,255,255,0.04)'; }}
-                    >{l}</div>
-                  );
-                })}
-              </div>
-            </div>
-            {/* обложка */}
-            <div style={{
-              display:'flex', alignItems:'center', justifyContent:'space-between',
-              padding:'11px 14px',
-            }}>
-              <div>
-                <div style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.5)'}}>{t('discord_cover')}</div>
-                <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,255,255,0.22)', marginTop:2}}>{t('discord_cover_sub')}</div>
-              </div>
-              <Toggle k="discordCover"/>
-            </div>
-          </div>
+            );
+          })()}
+          <Row label={t('discord_timestamp')}>
+            <Segmented id="segDiscordTs" value={settings.discordTimestamp||'progress'}
+              onChange={v => set('discordTimestamp', v)}
+              options={[
+                { v:'progress', label:t('discord_ts_progress') },
+                { v:'elapsed',  label:t('discord_ts_elapsed') },
+                { v:'none',     label:t('discord_ts_none') },
+              ]}/>
+          </Row>
+          <Row label={t('discord_on_pause')}>
+            <Segmented id="segDiscordPause" value={settings.discordPause||'show'}
+              onChange={v => set('discordPause', v)}
+              options={[
+                { v:'show', label:t('discord_pause_show') },
+                { v:'hide', label:t('discord_pause_hide') },
+              ]}/>
+          </Row>
+          <Row label={t('discord_cover')} sub={t('discord_cover_sub')} last>
+            <Switch on={!!settings.discordCover} onChange={v => set('discordCover', v)}/>
+          </Row>
         </div>
       </Card>
-    </>),
+    ),
     system: (<>
       <Card title={t('card_language')}>
-        <Row label={t('language_label')} sub={t('language_sub')} last>
-          <div style={{display:'flex', gap:6, flexShrink:0}}>
-            {['RU','EN'].map(lang => {
-              const active = (settings.language || 'RU') === lang;
-              return (
-                <div key={lang} onClick={() => set('language', lang)} style={{
-                  fontSize: 'var(--fs-sm)', fontWeight:500, letterSpacing:'0.04em',
-                  padding:'5px 18px', borderRadius:8, cursor:'pointer',
-                  userSelect:'none',
-                  background: active ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)',
-                  color: active ? 'rgba(255,255,255,0.88)' : 'rgba(255,255,255,0.3)',
-                  border: active ? '1px solid rgba(255,255,255,0.15)' : '1px solid transparent',
-                  transition:'background 0.15s, color 0.15s, border-color 0.15s',
-                }}
-                  onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(255,255,255,0.07)'; }}
-                  onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
-                >{lang}</div>
-              );
-            })}
-          </div>
+        {/* без пояснения: подпись «Язык» и пояснение «Язык элементов управления»
+           говорили одно и то же двумя строками */}
+        <Row label={t('language_label')} last>
+          <Segmented id="segLang" value={settings.language||'RU'}
+            onChange={v => set('language', v)}
+            options={[{ v:'RU', label:'RU' }, { v:'EN', label:'EN' }]}/>
         </Row>
       </Card>
-      <ClearCacheCard Card={Card} Row={Row} onClearCoversCache={onClearCoversCache} onClearLikesCache={onClearLikesCache}/>
+      <ClearCacheCard onClearCoversCache={onClearCoversCache} onClearLikesCache={onClearLikesCache}/>
       <Card title={t('card_startup')}>
-        <Row label={t('start_windows')}><Toggle k="startWithWindows"/></Row>
-        <Row label={t('minimize_tray')} last><Toggle k="minimizeToTray"/></Row>
+        <Row label={t('start_windows')}>
+          <Switch on={!!settings.startWithWindows} onChange={v => set('startWithWindows', v)}/>
+        </Row>
+        <Row label={t('minimize_tray')} last>
+          <Switch on={!!settings.minimizeToTray} onChange={v => set('minimizeToTray', v)}/>
+        </Row>
       </Card>
       <Card title={t('card_local')}>
         <Row label={t('music_folder')}
@@ -4952,61 +4984,35 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
               ? '...' + settings.musicFolder.slice(-42)
               : settings.musicFolder
             : t('no_folder')}>
-          <div style={{display:'flex', gap:8, flexShrink:0}}>
-            {settings.musicFolder && (
-              <div
-                onClick={() => onClearFolder()}
-                style={{
-                  fontSize: 'var(--fs-sm)', color:'rgba(255,80,80,0.7)', cursor:'pointer',
-                  background:'rgba(255,80,80,0.07)',
-                  borderRadius:7, padding:'5px 14px',
-                  transition:'background 0.15s',
-                }}
-              >{t('remove')}</div>
-            )}
-            <div
-              onClick={async () => {
-                const folder = await window.electronAPI.selectMusicFolder();
-                if (folder) { set('musicFolder', folder); onScanTracks(folder); }
-              }}
-              style={{
-                fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.5)', cursor:'pointer',
-                background:'rgba(255,255,255,0.055)',
-                borderRadius:7, padding:'5px 14px',
-                transition:'background 0.15s',
-              }}
-            >{t('choose')}</div>
-          </div>
+          {settings.musicFolder && <Btn tone="danger" onClick={() => onClearFolder()}>{t('remove')}</Btn>}
+          <Btn onClick={async () => {
+            const folder = await window.electronAPI.selectMusicFolder();
+            if (folder) { set('musicFolder', folder); onScanTracks(folder); }
+          }}>{t('choose')}</Btn>
         </Row>
         <Row label={t('min_dur')} sub={t('min_dur_sub')} last>
-          <div style={{display:'flex', alignItems:'center', gap:8, flexShrink:0}}>
-            <div onClick={()=>set('minDuration', Math.max(0,(settings.minDuration??30)-5))}
-              style={{width:28,height:28,borderRadius:8,background:'rgba(255,255,255,0.055)',
-                display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',
-                fontSize: 'var(--fs-lg)',color:'rgba(255,255,255,0.5)',userSelect:'none',transition:'background 0.15s'}}
-              onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.09)'}
-              onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.055)'}>−</div>
-            <span style={{fontSize: 'var(--fs-md)',color:'rgba(255,255,255,0.75)',minWidth:42,textAlign:'center'}}>
-              {settings.minDuration??30} {t('secs')}
-            </span>
-            <div onClick={()=>set('minDuration', (settings.minDuration??30)+5)}
-              style={{width:28,height:28,borderRadius:8,background:'rgba(255,255,255,0.055)',
-                display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',
-                fontSize: 'var(--fs-lg)',color:'rgba(255,255,255,0.5)',userSelect:'none',transition:'background 0.15s'}}
-              onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.09)'}
-              onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.055)'}>+</div>
-          </div>
+          <Stepper value={settings.minDuration ?? 30} min={0}
+            onChange={v => set('minDuration', v)}
+            label={`${settings.minDuration ?? 30} ${t('secs')}`}/>
         </Row>
       </Card>
     </>),
     about: (
       <Card>
-        <Row label={t('version')}><span style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)'}}>1.0.0</span></Row>
-        <Row label={t('repository')}><span
-          onClick={()=>window.open('https://github.com/despoyledporcelain/sewer-tauri','_blank','noopener')}
-          title="https://github.com/despoyledporcelain/sewer-tauri"
-          style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)', cursor:'pointer'}}>despoyledporcelain/sewer-tauri</span></Row>
-        <Row label={t('stack')} last><span style={{fontSize: 'var(--fs-sm)', color:'rgba(255,255,255,0.3)'}}>Tauri v2 · Rust · React</span></Row>
+        <Row label={t('version')}>
+          <span style={{ fontSize: 'var(--fs-sm)', color: SN.mid, fontVariantNumeric: 'tabular-nums' }}>1.0.0</span>
+        </Row>
+        <Row label={t('repository')}>
+          {/* ссылка: раньше это был блок текста, у которого прочерк курсора
+             выдавал, что он кликабельный, — теперь это кнопка, и видно сразу */}
+          <Btn title="https://github.com/despoyledporcelain/sewer-tauri"
+            onClick={() => window.open('https://github.com/despoyledporcelain/sewer-tauri','_blank','noopener')}>
+            GitHub
+          </Btn>
+        </Row>
+        <Row label={t('stack')} last>
+          <span style={{ fontSize: 'var(--fs-sm)', color: SN.mid }}>Tauri v2 · Rust · React</span>
+        </Row>
       </Card>
     ),
   };
@@ -5025,45 +5031,58 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     }}>
       {/* левая навигация */}
       <div style={{
-        width:214, flexShrink:0, height:'100%',
-        padding:'36px 14px 24px',
+        width:200, flexShrink:0, height:'100%',
+        padding:'34px 12px 20px',
         display:'flex', flexDirection:'column',
-        background:'transparent',
       }}>
         <div style={{
           fontSize: 'var(--fs-xl)', fontWeight:600, letterSpacing:'-0.025em',
-          color:'rgba(255,255,255,0.85)', marginBottom:26, paddingLeft:10,
+          color:'rgba(255,255,255,0.85)', marginBottom:24, paddingLeft:11,
         }}>{t('settings_title')}</div>
-        <div style={{display:'flex', flexDirection:'column', gap:2, position:'relative'}}>
+        <div style={{ display:'flex', flexDirection:'column', gap:1, position:'relative' }}>
+          {/* Пилл выбранного раздела. Заливка акцентом вместо общего серого:
+              выбранный пункт теперь виден и по цвету, а не только по насыщенности
+              подписи, и совпадает с подсветкой сегментов справа. */}
           <div style={{
             position:'absolute', left:0, right:0, borderRadius:9, pointerEvents:'none',
-            background:'rgba(255,255,255,0.07)',
+            background:'rgba(var(--accent-rgb),0.12)',
+            boxShadow:'inset 0 0 0 1px rgba(var(--accent-rgb),0.16)',
             top: pill.top, height: pill.height,
-            transition:'top 0.24s cubic-bezier(0.45,0,0.55,1), height 0.24s cubic-bezier(0.45,0,0.55,1)',
+            transition:'top 0.26s cubic-bezier(0.4,0,0.2,1), height 0.26s cubic-bezier(0.4,0,0.2,1)',
           }}/>
-          {SECS.map(s => (
-            <div key={s.id} ref={el => secRefs.current[s.id] = el} style={{
-              display:'flex', alignItems:'center', gap:10,
-              padding:'9px 12px', borderRadius:9, cursor:'pointer',
-              background:'transparent',
-              color: sec===s.id ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.38)',
-              transition:'color 0.18s',
-              position:'relative', zIndex:1,
-            }} onClick={()=>setSec(s.id)}>
-              {s.icon}
-              <span style={{fontSize: 'var(--fs-md)', fontWeight: sec===s.id ? 500 : 400}}>{s.label}</span>
-            </div>
-          ))}
+          {SECS.map(s => {
+            const active = sec === s.id;
+            return (
+              <div key={s.id} ref={el => secRefs.current[s.id] = el}
+                style={{
+                  display:'flex', alignItems:'center', gap:10,
+                  padding:'9px 11px', borderRadius:9, cursor:'pointer',
+                  color: active ? 'var(--accent)' : 'rgba(255,255,255,0.38)',
+                  transition:'color 0.18s ease',
+                  position:'relative', zIndex:1,
+                }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.color = 'rgba(255,255,255,0.66)'; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.color = 'rgba(255,255,255,0.38)'; }}
+                onClick={() => setSec(s.id)}>
+                {/* иконка гаснет отдельно от подписи: иначе невыбранные пункты
+                    выглядят так же тяжело, как выбранный */}
+                <span style={{ opacity: active ? 1 : 0.75, transition:'opacity 0.18s ease' }}>{s.icon}</span>
+                <span style={{ fontSize: 'var(--fs-md)', fontWeight: active ? 500 : 400 }}>{s.label}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
 
       {/* правый контент */}
-      <div style={{flex:1, overflowY:'auto', padding:'36px 40px'}}>
+      <div className="scroll-thin" style={{ flex:1, minWidth:0, overflowY:'auto', padding:'34px 36px 40px' }}>
         {/* Заголовок раздела над контентом удалён: он дублировал название
            слева в навигации, и оба менялись синхронно — при переключении
-           раздела читались два одинаковых слова подряд. Верхний отступ
-           остался прежним (36px в padding), чтобы контент не прыгнул вверх */}
-        <div style={{maxWidth:480}}>
+           раздела читались два одинаковых слова подряд.
+           Ширину подняли с 480 до 520: строка «Папка с музыкой» держит путь,
+           а «Кроссфейд» — ползунок с подписью, и на 480 колонка ужимала
+           пояснения до переноса через три строки. */}
+        <div key={sec} style={{ maxWidth:520, animation:'setIn 0.24s ease' }}>
           {content[sec]}
         </div>
       </div>

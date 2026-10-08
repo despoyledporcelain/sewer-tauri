@@ -283,6 +283,16 @@
   @keyframes stEq { 0%, 100% { transform:scaleY(0.35); } 50% { transform:scaleY(1); } }
   .track-row { background:none; transition:background 0.15s ease; }
   .track-row:not(.active):hover { background:rgba(255,255,255,0.03); }
+  /* строка источника текста песни: стрелки порядка приглушены и раскрываются
+     при наведении. Раньше они стояли в каждой строке одинаково заметные и
+     превращали список из пяти пунктов в пять пар кнопок. */
+  .lyr-arrows { opacity:0.3; transition:opacity 0.18s ease; }
+  .lyr-row:hover .lyr-arrows { opacity:1; }
+  /* смена раздела настроек. ТОЛЬКО прозрачность: панель — предок
+     `layoutId`-пилла сегментов, а framer меряет его через getBoundingClientRect,
+     вместе с transform предка. С translateY пилл перепроецируется и дёргается
+     на первом кадре (тот же грабли, что описаны в SettingsView). */
+  @keyframes setIn { from { opacity:0 } to { opacity:1 } }
   /* редактор плейлиста: hover обложки и карандаш у названия */
   div:hover > .pl-art-hover { opacity:1; }
   .pl-title-edit:hover .pl-title-pencil { opacity:1; }
