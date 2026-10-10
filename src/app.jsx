@@ -1723,7 +1723,7 @@ const STRINGS = {
     bg_sub_mica:'Материал окна рисует свой фон — свой поверх него класть нельзя',
     card_look:'Свечение и форма',
     glow_strength:'Сила свечений', glow_strength_sub:'Общий множитель для пятна за обложкой, линии у края окна, подсветки лайков и ореолов тумблеров',
-    ui_radius:'Скругление', ui_radius_sub:'Углы окна и карточек в настройках',
+    ui_radius:'Скругление', ui_radius_sub:'Углы карточек в настройках. Углы самого окна рисует система',
     ui_grain:'Зерно', ui_grain_sub:'Мелкая шумность поверх фона. Убирает бандинг на градиентах',
     ui_vignette:'Виньетка', ui_vignette_sub:'Затемнение по краям окна',
     card_theme_code:'Код темы', theme_code_sub:'Тема — обычный объект. Его можно скопировать и прислать кому угодно, а оттуда вставить сюда',
@@ -1870,7 +1870,7 @@ const STRINGS = {
     bg_sub_mica:'Window material paints its own background — nothing can be layered on top',
     card_look:'Glow and shape',
     glow_strength:'Glow strength', glow_strength_sub:'One global multiplier for the artwork halo, the window top line, like-button flares and switch glows',
-    ui_radius:'Corner radius', ui_radius_sub:'Window corners and settings cards',
+    ui_radius:'Corner radius', ui_radius_sub:'Corners of the settings cards. The window corners are drawn by the system',
     ui_grain:'Grain', ui_grain_sub:'Fine noise over the background. Hides banding in gradients',
     ui_vignette:'Vignette', ui_vignette_sub:'Darkens the edges of the window',
     card_theme_code:'Theme code', theme_code_sub:'A theme is a plain object. Copy it and send it to anyone, then paste it back here',
@@ -5665,7 +5665,7 @@ appearance: (<>
           {t('glow_strength_sub')}
         </div>
         <MiniSlider label={t('ui_radius')} value={th.radius} min={0} max={28} step={1}
-          display={`${th.radius}px`} disabled={micaOn} onChange={v => setTh({ radius: v })}/>
+          display={`${th.radius}px`} onChange={v => setTh({ radius: v })}/>
         <div style={{ padding: '0 16px 11px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
           {t('ui_radius_sub')}
         </div>

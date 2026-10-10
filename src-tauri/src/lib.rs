@@ -130,6 +130,19 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            /* DWM пересчитывает цвет рамки при активации окна, и после
+               включённого материала (он сбрасывает DWMWA_BORDER_COLOR при
+               установке — см. backdrop::apply) система успевает вернуть рамку
+               по умолчанию: белую в неактивном, чёрную в активном. Поэтому на
+               каждом фокусе рамку снимаем заново. Вызов идемпотентный и дешёвый,
+               окно приходит в фокус часто, но это один DwmSetWindowAttribute. */
+            if matches!(event, WindowEvent::Focused(_)) {
+                /* on_window_event отдаёт &Window, а backdrop работает с
+                   &WebviewWindow (нужен hwnd). Берём нужное окно по label. */
+                if let Some(w) = window.get_webview_window(window.label()) {
+                    backdrop::hide_border(&w);
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 /* Только главное окно. Обработчик глобальный, а окон в
                    приложении два: второе — окно входа soundcloud, и его
