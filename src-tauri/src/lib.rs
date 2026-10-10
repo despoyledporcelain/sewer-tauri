@@ -48,6 +48,22 @@ fn http_client() -> reqwest::Client {
         .expect("http client")
 }
 
+/* ⚠️ Про имя в tauri.conf.json. Приложение зовётся «seWer» (заголовок окна,
+   подпись трея, тексты), но `productName` там остался «seWer Tauri» — и это
+   обязательно, а не недосмотр.
+
+   NSIS берёт имя программы для установки из `productName`, а НЕ из
+   `identifier`. Это имя становится сразу тремя вещами: папкой установки
+   (`%LOCALAPPDATA%\seWer Tauri`), ключом `Uninstall` в реестре и именем
+   .exe-инсталлятора. По ключу установщик находит предыдущую копию и заменяет
+   её. Стоило переименовать `productName` в «seWer» — установщик поставил бы
+   вторую копию в другую папку, а старая осталась бы жить рядом.
+
+   По той же причине `identifier` возвращён к `com.sewer.tauri`: с ним
+   установщик узнаёт прежнюю сборку, а запись автозапуска в реестре остаётся
+   по тому же ключу и не плодит нового. Настройки лежат в
+   `%APPDATA%\sewer-tauri` (захардкожено в settings.rs, см. там), поэтому
+   переименование их не тронуло. */
 fn minimize_to_tray() -> bool {
     settings::load_settings()
         .get("minimizeToTray")
@@ -189,7 +205,7 @@ pub fn run() {
             set_window_effect,
         ])
         .run(tauri::generate_context!())
-        .expect("seWer Prism: запуск tauri");
+        .expect("seWer: запуск tauri");
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -199,11 +215,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let items: [&dyn IsMenuItem<tauri::Wry>; 3] = [&open, &sep, &quit];
     let menu = Menu::with_items(app, &items)?;
 
-    /* id трея — служебный, его видит только сам tauri; главное в нём то,
-       что он не должен совпадать с id трея другой копии, иначе запущенные
-       рядом «seWer Tauri» и «seWer Prism» делили бы один трей */
-    let mut builder = TrayIconBuilder::with_id("sewer-prism")
-        .tooltip("seWer Prism")
+    /* id трея — служебный, его видит только сам tauri. Возвращён к «sewer-tauri»
+       от оригинальной сборки: новая ставится поверх старой (тот же
+       identifier), и если бы id остался «sewer-prism», старая копия, если
+       она ещё где-то запущена, делила бы с новой один трей иконку */
+    let mut builder = TrayIconBuilder::with_id("sewer-tauri")
+        .tooltip("seWer")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main(app),

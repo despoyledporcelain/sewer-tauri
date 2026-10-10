@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "seWer Prism",
+  "productName": "seWer Tauri",
   "version": "1.1.0",
-  "identifier": "com.sewer.prism",
+  "identifier": "com.sewer.tauri",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "seWer Prism",
+        "title": "seWer",
         "width": 900,
         "height": 700,
         "resizable": false,
