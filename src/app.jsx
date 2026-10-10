@@ -17,6 +17,9 @@ import { fileSrc } from './bridge.js'
 window.addEventListener('keydown', e => { if (e.key === 'Tab') e.preventDefault(); });
 
 /* ── accent presets ──────────────────────────────────────────────────────── */
+/* Пять быстрых образцов. Остались как «шорткаты» внутри полного пикера
+   цвета: сам акцент давно произвольный, а эти — то, что хочется достать в
+   одно нажатие. Хранятся как rgb, потому что приходят в appAccent напрямую. */
 const ACCENT_PRESETS = {
   default:  { r: 178, g: 178, b: 178 },
   lavender: { r: 155, g: 125, b: 255 },
@@ -24,6 +27,257 @@ const ACCENT_PRESETS = {
   rose:     { r: 255, g: 145, b: 175 },
   amber:    { r: 255, g: 178, b: 100 },
 };
+
+/* ── тема: разбор цвета ────────────────────────────────────────────────────
+   Пикер рисует квадрат насыщенности×светлоты и полосу оттенка, то есть
+   думает в HSV, а фон собирается в градиент из тех же чисел и уходит в CSS
+   строкой. Поэтому конвертации живут здесь, модулем, а не внутри
+   компонента настроек: ими пользуются и пикер, и пресеты, и экспорт. */
+
+const clampNum = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+const rgbToHex = (r, g, b) => '#' + [r, g, b]
+  .map(v => clampNum(Math.round(v), 0, 255).toString(16).padStart(2, '0')).join('');
+
+function hexToRgb(h) {
+  const s = String(h || '').trim().replace(/^#/, '');
+  const full = s.length === 3 ? s[0] + s[0] + s[1] + s[1] + s[2] + s[2] : s;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return null;
+  const n = parseInt(full, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+/* мусорный hex из старого settings.json не должен ронять тему: подставляем
+   запасной цвет и едем дальше */
+const hexOr = (h, fallback) => (hexToRgb(h) ? h : fallback);
+
+function rgbToHsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d) {
+    if (mx === r)      h = ((g - b) / d) % 6;
+    else if (mx === g) h = (b - r) / d + 2;
+    else               h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s: mx ? (d / mx) * 100 : 0, v: mx * 100 };
+}
+
+function hsvToRgb(h, s, v) {
+  h = ((h % 360) + 360) % 360;
+  s = clampNum(s, 0, 100) / 100;
+  v = clampNum(v, 0, 100) / 100;
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  const t = h < 60  ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x]
+          : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return { r: Math.round((t[0] + m) * 255), g: Math.round((t[1] + m) * 255), b: Math.round((t[2] + m) * 255) };
+}
+
+const hexToHsv = h => { const c = hexToRgb(h) || { r: 178, g: 178, b: 178 }; return rgbToHsv(c.r, c.g, c.b); };
+
+/* Случайный цвет для «удиви меня». Оттенок берём целиком, а насыщенность и
+   светлоту — из узких «вкусных» диапазонов: если крутить все три свободно,
+   половина розырков выходит грязно-жёлтой или почти чёрной, и результат
+   выглядит как поломка, а не как сюрприз. */
+function randomVividHex() {
+  const c = hsvToRgb(Math.random() * 360, 58 + Math.random() * 34, 72 + Math.random() * 24);
+  return rgbToHex(c.r, c.g, c.b);
+}
+/* тёмный фон в том же настроении — hue слегка сдвинут, светлота убита */
+function randomDeepHex() {
+  const c = hsvToRgb(Math.random() * 360, 34 + Math.random() * 40, 7 + Math.random() * 10);
+  return rgbToHex(c.r, c.g, c.b);
+}
+
+/* ── тема ──────────────────────────────────────────────────────────────────
+   Настройка целиком: акцент, фон, свечение, форма, зерно. Раньше «оформление»
+   умело только переключить пять заранее заданных цветов и режим «от
+   обложки» — то есть покрасить интерфейс можно было ровно пятью способами. */
+
+const THEME_BG_MODES = ['default', 'color', 'gradient', 'cover'];
+
+const THEME_DEFAULT = {
+  accent:      '#b2b2b2',
+  accent2:     '#9b7dff',
+  accentGrad:  false,        /* линия у верхнего края: accent → accent2 */
+  bgMode:      'default',
+  bgColor:     '#07070a',
+  bgColor2:    '#1b1030',
+  bgAngle:     145,
+  glowStrength: 1,           /* множитель всех свечений, 0…2 */
+  radius:      12,           /* скругление окна и карточек, px */
+  grain:       0.022,        /* сила зерна, до 0.25 */
+  vignette:    0.5,          /* затемнение краёв. дефолт низкий намеренно:
+                            на полной силе виньетка читалась тёмной рамкой
+                            по всему краю окна и портила скругление */
+  preset:      null,
+};
+
+/* Наборы. Каждый — это ровно те же поля, что у THEME_DEFAULT, поэтому
+   применение пресета это `cleanTheme({...THEME_DEFAULT, ...v})` и никакого
+   отдельного кода.
+
+   ⚠️ Тема со своим фоном обязана ставить `bgMode:'color'`, а не 'default' с
+   заполненным `bgColor`. Режим «Стандарт» — это ровно стоковый #07070a, и
+   effect фона при нём СНИМАЕТ --bg, а не пишет его. bgColor в пресете с
+   'default' молча игнорировался, и тема выглядела как «поменялся только
+   акцент». На этом попался «Лаванда»: её тёмно-фиолетовый фон не появлялся
+   никогда. То же было у «Карбона» и «Графита». */
+const THEME_PRESETS = [
+  { id:'noir', label:'Нуар', v:{
+    accent:'#b2b2b2', bgMode:'default', glowStrength:1, radius:12, grain:0.022 } },
+  { id:'carbon', label:'Карбон', v:{
+    accent:'#e6e6ef', bgMode:'color', bgColor:'#0b0b0e', glowStrength:0.75, radius:4, grain:0.07 } },
+  { id:'lavender', label:'Лаванда', v:{
+    accent:'#9b7dff', bgMode:'color', bgColor:'#0a0812', glowStrength:1.1, radius:18 } },
+  { id:'graphite', label:'Графит', v:{
+    accent:'#8ea3b8', bgMode:'color', bgColor:'#0a0c0f', glowStrength:0.7, radius:8, grain:0.04 } },
+  { id:'mint', label:'Мята', v:{
+    accent:'#82dcc3', bgMode:'gradient', bgColor:'#04120f', bgColor2:'#0c2f27', bgAngle:160,
+    glowStrength:1.05, radius:16 } },
+  { id:'rose', label:'Сакура', v:{
+    accent:'#ff91af', bgMode:'gradient', bgColor:'#150a10', bgColor2:'#3d1330', bgAngle:135,
+    glowStrength:1.1, radius:18 } },
+  { id:'amber', label:'Янтарь', v:{
+    accent:'#ffb164', bgMode:'gradient', bgColor:'#140d06', bgColor2:'#3a1c08', bgAngle:120, radius:14 } },
+  { id:'sunset', label:'Закат', v:{
+    accent:'#ff7a5c', accent2:'#ffd166', accentGrad:true, bgMode:'gradient',
+    bgColor:'#2a1030', bgColor2:'#8a2a1c', bgAngle:150, glowStrength:1.2, radius:20 } },
+  { id:'ocean', label:'Океан', v:{
+    accent:'#4cc9f0', accent2:'#4361ee', accentGrad:true, bgMode:'gradient',
+    bgColor:'#04121f', bgColor2:'#0a2f4a', bgAngle:200, glowStrength:1.1, radius:16 } },
+  /* Фон под обложку. Зерно здесь выключено намеренно: шум поверх
+     плавно ползущего градиента превращается в песочницу — он не
+     перерисовывается вместе с ним, и при смене трека фон едет, а зерно
+     остаётся на месте, и глаз это видит. */
+  { id:'cover', label:'Обложка', v:{
+    accent:'#7cf7ff', bgMode:'cover', glowStrength:1.15, radius:20, grain:0 } },
+];
+
+/* Набор по умолчанию и версия дефолтов.
+   `THEME_DEFAULTS_VERSION` — маркер одноразовой миграции. Без него смена
+   дефолта дошла бы только до чистых установок, а у того, кто уже запускал
+   плеер, остался бы старый дефолт из settings.json навсегда. При обновлении
+   до этой версии активная тема приводится к новому дефолту ОДИН раз:
+   папка музыки, логин soundcloud, переименования и список СВОИХ тем не
+   трогаются, так что ничего не теряется — кроме того, что тема сейчас
+   применена. */
+const THEME_DEFAULTS_VERSION = 2;
+function defaultTheme() {
+  const p = THEME_PRESETS.find(x => x.id === 'cover');
+  return cleanTheme({ ...THEME_DEFAULT, ...(p ? p.v : null) });
+}
+
+/* Число из settings.json: мусор, строки и NaN заменяем дефолтом и зажимаем
+   в диапазон. Всё, что приходит с диска, проходит через это — иначе один
+   битый grain=Nan уносил в invalid всё, что на нём висит. */
+const numOr = (v, d, a, b) => (Number.isFinite(+v) ? clampNum(+v, a, b) : d);
+
+function cleanTheme(raw) {
+  const t = { ...THEME_DEFAULT, ...(raw && typeof raw === 'object' ? raw : {}) };
+  t.accent      = hexOr(t.accent, THEME_DEFAULT.accent);
+  t.accent2     = hexOr(t.accent2, t.accent);
+  t.accentGrad  = !!t.accentGrad;
+  t.bgMode      = THEME_BG_MODES.includes(t.bgMode) ? t.bgMode : 'default';
+  t.bgColor     = hexOr(t.bgColor, THEME_DEFAULT.bgColor);
+  t.bgColor2    = hexOr(t.bgColor2, THEME_DEFAULT.bgColor2);
+  t.bgAngle     = Math.round(numOr(t.bgAngle, THEME_DEFAULT.bgAngle, 0, 360));
+  t.glowStrength = numOr(t.glowStrength, 1, 0, 2);
+  t.radius       = Math.round(numOr(t.radius, THEME_DEFAULT.radius, 0, 28));
+  t.grain        = numOr(t.grain, THEME_DEFAULT.grain, 0, 0.25);
+  t.vignette     = numOr(t.vignette, 1, 0, 1);
+  /* пресет держим только если он ещё существует — иначе в сетке не горит
+     ни одна карточка, а тема вполне может быть применена */
+  t.preset = THEME_PRESETS.some(p => p.id === t.preset) ? t.preset : null;
+  return t;
+}
+
+/* Свои темы. Живут рядом с theme в settings.userThemes — по тем же воротам,
+   что всё остальное: не массив, не строки, а {id, name, v}. Идентификатор
+   выдаёт счётчик + время, а не Math.random: при двух сохранениях подряд
+   случайные id почти не могут совпасть, но «почти» здесь означает
+   перетирание чужой темы, а стоимость проверки нулевая. */
+const MAX_USER_THEMES = 24;
+function newThemeId() {
+  return 'u' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+}
+function cleanUserThemes(arr) {
+  if (!Array.isArray(arr)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of arr) {
+    if (!raw || typeof raw !== 'object' || out.length >= MAX_USER_THEMES) continue;
+    const id = typeof raw.id === 'string' && raw.id && !seen.has(raw.id) ? raw.id : newThemeId();
+    seen.add(id);
+    const name = String(raw.name ?? '').slice(0, 24);
+    out.push({ id, name, v: cleanTheme(raw.v) });
+  }
+  return out;
+}
+
+/* Читаемый вид темы для «кода темы». Ключи в порядке THEME_DEFAULT — иначе
+   скопированный текст приходилось бы вычитывать по факту применения.
+   Всё лишнее (preset) убираем: метку «из набора» в чужой теме врёт. */
+function themeToJson(t) {
+  const o = {};
+  for (const k of Object.keys(THEME_DEFAULT)) {
+    if (k === 'preset') continue;
+    o[k] = Array.isArray(t[k]) ? t[k].slice() : t[k];
+  }
+  return JSON.stringify(o, null, 2);
+}
+
+/* Фон оболочки → строка CSS. Пишется в --bg-image и рисуется поверх
+   --bg-цвета, поэтому режим «цвет» и режим по умолчанию дают 'none'.
+
+   `rgb` — подстановка для превью плитки. В самом окне его не передают, и
+   тогда в градиент попадает `var(--accent-rgb)`, то есть ЖИВОЕ значение:
+   оно обновляется лерпом акцента, и фон едет за обложкой сам, без
+   отдельной анимации. Именно поэтому фон «под обложку» плавный: он не
+   перерисовывается по своему таймеру, а просто переиспользует тот же
+   цвет, что и всё остальное свечение. */
+function themeBgImage(t, rgb) {
+  if (t.bgMode === 'cover') {
+    /* Два пятна от одного цвета, а не одно: с одним пятном тёмный фон
+       читался бы как просто затемнение, а не как «обложка светится». */
+    return `radial-gradient(130% 100% at 18% 0%, rgba(${rgb || 'var(--accent-rgb)'},0.28) 0%, transparent 62%),`
+         + `radial-gradient(100% 85% at 86% 100%, rgba(${rgb || 'var(--accent-rgb)'},0.17) 0%, transparent 60%)`;
+  }
+  return t.bgMode === 'gradient'
+    ? `linear-gradient(${t.bgAngle}deg, ${t.bgColor}, ${t.bgColor2})`
+    : 'none';
+}
+/* «r, g, b» для подстановки в превью: там живого --accent-rgb нет, и под
+   него подставлялся бы глобальный акцент, из-за чего все плитки с этим
+   режимом показывали бы один и тот же фон */
+const rgbTriplet = hex => {
+  const c = hexToRgb(hex) || { r: 0, g: 0, b: 0 };
+  return `${c.r}, ${c.g}, ${c.b}`;
+};
+
+/* Имя своей темы по оттенку акцента. Автоматическое, потому что спрашивать
+   имя перед сохранением — лишний шаг, а «Тема 1 / Тема 2» ни о чём не
+   говорит. Оттенок — самый узнаваемый признак цвета, по нему список
+   читается. */
+const HUE_NAMES = {
+  ru: ['Красный', 'Оранжевый', 'Янтарный', 'Лаймовый', 'Зелёный', 'Изумрудный',
+       'Бирюзовый', 'Голубой', 'Синий', 'Индиго', 'Фиолетовый', 'Пурпурный', 'Розовый'],
+  en: ['Red', 'Orange', 'Amber', 'Lime', 'Green', 'Emerald',
+       'Teal', 'Sky', 'Blue', 'Indigo', 'Violet', 'Purple', 'Pink'],
+};
+function themeHueName(accent, lang) {
+  const en = lang === 'en';
+  const names = en ? HUE_NAMES.en : HUE_NAMES.ru;
+  const { h, s, v } = hexToHsv(accent);
+  /* Бледный и тёмный акцент называем иначе: серый «Голубой» вводит в
+     заблуждение сильнее, чем нейтральное «Пепел». */
+  if (v < 22) return en ? 'Charcoal' : 'Уголь';
+  if (s < 18) return en ? 'Ash' : 'Пепел';
+  return names[Math.round(h / 360 * names.length) % names.length];
+}
 
 /* ── lyrics sources ───────────────────────────────────────────────────────── */
 /* порядок в settings.lyricsSources — это порядок поиска, сверху вниз.
@@ -1341,7 +1595,7 @@ const STRINGS = {
     /* ⚠️ Три строки текста в этой плашке были абзацем на весь ряд. Правило
        «что именно несовместимо» осталось, порядок действий («сначала выключи
        материал») убран: он виден прямо на тумблере, который гасит акцент. */
-    mica_accent_lock:'Материал окна несовместим с подсветкой акцента: пока включён он, акцент выключен.',
+    mica_accent_lock:'Материал окна несовместим с подсветкой акцента и своим фоном: пока включён он, оба выключены.',
     mica:'Материал окна',
     mica_only_win11:'только Windows 11',
     mica_sub:'Фон становится полупрозрачным, и сквозь него видно материал системы. Скругление окна при этом пропадает.',
@@ -1451,6 +1705,30 @@ const STRINGS = {
     accent_seg_off:'Выкл', accent_seg_color:'Цвет',
     accent_off_sub:'Фоновые свечения скрыты, акцент — статичный серый',
     art_glow:'Мягкое свечение за обложкой', art_glow_sub:'Цветное пятно вокруг обложки в плеере. Меньше нагрузки на видеокарту, чем настоящее размытие',
+
+    /* ── редактор темы ── */
+    card_themes:'Темы', theme_sub:'Девять готовых сочетаний акцента, фона и свечений. Любую можно взять за основу и дописать руками',
+    theme_random:'Удиви меня', theme_reset:'Сбросить', theme_mine:'своя',
+    theme_mine_list:'Свои темы', theme_save:'Сохранить тему', theme_delete:'Удалить тему',
+    accent_random:'Случайный цвет',
+    accent_second:'Второй цвет', accent_second_sub:'Линия у верхнего края окна перетекает из акцента во второй цвет',
+    accent_quick:'Быстрый выбор',
+    card_bg:'Фон',
+    bg_seg_default:'Стандарт', bg_seg_color:'Цвет', bg_seg_gradient:'Градиент', bg_seg_cover:'Обложка',
+    bg_from:'Откуда', bg_to:'Куда', bg_angle:'Угол',
+    bg_sub_default:'Фон приложения: #07070a',
+    bg_sub_custom:'Фон залит во всё окно — под содержимым',
+    bg_sub_cover:'Фон едет за обложкой трека, плавно. Нужен живой акцент — включи его одной кнопкой',
+    bg_cover_turn_on:'Взять акцент тоже от обложки',
+    bg_sub_mica:'Материал окна рисует свой фон — свой поверх него класть нельзя',
+    card_look:'Свечение и форма',
+    glow_strength:'Сила свечений', glow_strength_sub:'Общий множитель для пятна за обложкой, линии у края окна, подсветки лайков и ореолов тумблеров',
+    ui_radius:'Скругление', ui_radius_sub:'Углы окна и карточек в настройках',
+    ui_grain:'Зерно', ui_grain_sub:'Мелкая шумность поверх фона. Убирает бандинг на градиентах',
+    ui_vignette:'Виньетка', ui_vignette_sub:'Затемнение по краям окна',
+    card_theme_code:'Код темы', theme_code_sub:'Тема — обычный объект. Его можно скопировать и прислать кому угодно, а оттуда вставить сюда',
+    theme_code_show:'Показать код', theme_code_copy:'Скопировать', theme_code_apply:'Применить',
+    theme_code_copied:'Скопировано', theme_code_bad:'Это не разбор темы',
     sec_lyrics:'Текст песен',
     sec_discord:'Discord',
     shuffle_all:'Случайно', shuffle_empty:'Нечего перемешивать',
@@ -1472,7 +1750,7 @@ const STRINGS = {
     player_pick:'Pick a track',
     card_window:'Window',
     /* см. ru — текст ужат до одной строки */
-    mica_accent_lock:'Window material is incompatible with the accent glow: while it is on, the accent is off.',
+    mica_accent_lock:'Window material is incompatible with the accent glow and a custom background: while it is on, both are off.',
     mica:'Window material',
     mica_only_win11:'Windows 11 only',
     mica_sub:'The background turns translucent and the system material shows through. The window loses its rounded corners.',
@@ -1574,6 +1852,30 @@ const STRINGS = {
     accent_seg_off:'Off', accent_seg_color:'Color',
     accent_off_sub:'Background glows hidden, accent is flat gray',
     art_glow:'Soft glow behind artwork', art_glow_sub:'Colored halo around the cover in the player. Cheaper for the GPU than a real blur',
+
+    /* ── theme editor ── */
+    card_themes:'Themes', theme_sub:'Nine ready-made combinations of accent, background and glow. Take one as a starting point and edit it by hand',
+    theme_random:'Surprise me', theme_reset:'Reset', theme_mine:'custom',
+    theme_mine_list:'Your themes', theme_save:'Save theme', theme_delete:'Delete theme',
+    accent_random:'Random color',
+    accent_second:'Second color', accent_second_sub:'The line at the very top of the window fades from the accent into the second color',
+    accent_quick:'Quick pick',
+    card_bg:'Background',
+    bg_seg_default:'Default', bg_seg_color:'Solid', bg_seg_gradient:'Gradient', bg_seg_cover:'Cover',
+    bg_from:'From', bg_to:'To', bg_angle:'Angle',
+    bg_sub_default:'Application background: #07070a',
+    bg_sub_custom:'Painted across the whole window, under the content',
+    bg_sub_cover:'The background follows the track artwork, smoothly. Needs a live accent — turn it on with one button',
+    bg_cover_turn_on:'Take the accent from the cover too',
+    bg_sub_mica:'Window material paints its own background — nothing can be layered on top',
+    card_look:'Glow and shape',
+    glow_strength:'Glow strength', glow_strength_sub:'One global multiplier for the artwork halo, the window top line, like-button flares and switch glows',
+    ui_radius:'Corner radius', ui_radius_sub:'Window corners and settings cards',
+    ui_grain:'Grain', ui_grain_sub:'Fine noise over the background. Hides banding in gradients',
+    ui_vignette:'Vignette', ui_vignette_sub:'Darkens the edges of the window',
+    card_theme_code:'Theme code', theme_code_sub:'A theme is a plain object. Copy it and send it to anyone, then paste it back here',
+    theme_code_show:'Show code', theme_code_copy:'Copy', theme_code_apply:'Apply',
+    theme_code_copied:'Copied', theme_code_bad:'That does not parse as a theme',
     sec_lyrics:'Lyrics',
     sec_discord:'Discord',
     shuffle_all:'Shuffle', shuffle_empty:'Nothing to shuffle',
@@ -1593,6 +1895,11 @@ const LangContext = React.createContext('ru');
 function useLang() {
   const lang = React.useContext(LangContext);
   return React.useCallback(key => STRINGS[lang]?.[key] ?? STRINGS.ru[key] ?? key, [lang]);
+}
+/* Язык как есть, без функции-переводчика. Нужен там, где значение
+   ПРОИЗВОДИТСЯ из языка, а не переводится: имя своей темы по оттенку. */
+function useLangCode() {
+  return React.useContext(LangContext);
 }
 
 function buildScShuffle(list, currentId) {
@@ -2429,6 +2736,11 @@ function AlbumArt({ track, instant, onReady }) {
       на 50% радиуса вместо 62%, и наружу остаётся читаемая альфа (~0.26) */
 function AmbientGlow({ visible, off }) {
   if (off) return null;
+  /* Прозрачности ступеней домножаются на --glow-strength, а не на opacity
+     самого элемента: opacity выше единицы обрезается движком, и ползунок
+     «сила свечений» в «Оформлении» не смог бы разогнать пятно ярче исходного.
+     Читать из css нельзя — фон собирается строкой здесь. */
+  const ga = k => `rgba(var(--accent-rgb), calc(${k} * var(--glow-strength, 1)))`;
   return (
     <div style={{
       /* Пятно не трогать: это ореол ЗА ОБЛОЖКОЙ, и его размер задан тут же
@@ -2445,7 +2757,7 @@ function AmbientGlow({ visible, off }) {
          обложки: 0.26 на 50% (ореол) оставлено как было, а на 70% вместо
          ~0.135 теперь ~0.068. без этого в просветах углов на секунду
          вспыхивало цветное пятно — glow-то как раз в этот момент гас. */
-      background: 'radial-gradient(circle closest-side at center, rgba(var(--accent-rgb),0.42) 0%, rgba(var(--accent-rgb),0.36) 25%, rgba(var(--accent-rgb),0.26) 50%, rgba(var(--accent-rgb),0.14) 62%, rgba(var(--accent-rgb),0.06) 72%, rgba(var(--accent-rgb),0.024) 82%, rgba(var(--accent-rgb),0.008) 91%, rgba(var(--accent-rgb),0.002) 97%, rgba(var(--accent-rgb),0) 100%)',
+      background: `radial-gradient(circle closest-side at center, ${ga(0.42)} 0%, ${ga(0.36)} 25%, ${ga(0.26)} 50%, ${ga(0.14)} 62%, ${ga(0.06)} 72%, ${ga(0.024)} 82%, ${ga(0.008)} 91%, ${ga(0.002)} 97%, ${ga(0)} 100%)`,
       opacity: visible ? 1 : 0, transition:'opacity 0.6s ease',
       willChange:'opacity', transform:'translateZ(0)',
       pointerEvents:'none', zIndex:0,
@@ -3249,11 +3561,9 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
 function VirtualTrackList({ items, activeId, loadingId, errorId, onClickItem, onContextMenuItem, scrollToActive, scrollTargetId }) {
   const ROW_H = 50;
   const BUFFER = 5;
-  const FADE = 18;
   const ref = useRef(null);
   const scrollRafRef = useRef(null);
   const [range, setRange] = useState({ start: 0, end: 30 });
-  const [edges, setEdges] = useState({ top: false, bottom: false });
 
   const updateRange = useCallback(() => {
     const el = ref.current;
@@ -3265,9 +3575,6 @@ function VirtualTrackList({ items, activeId, loadingId, errorId, onClickItem, on
     const start = Math.max(0, visibleStart - BUFFER);
     const end = Math.min(items.length, visibleEnd + BUFFER);
     setRange(prev => (prev.start === start && prev.end === end) ? prev : { start, end });
-    const topEdge = scrollTop > 4;
-    const botEdge = scrollTop + viewportH < el.scrollHeight - 4;
-    setEdges(prev => (prev.top === topEdge && prev.bottom === botEdge) ? prev : { top: topEdge, bottom: botEdge });
   }, [items.length]);
 
   const updateRangeRef = useRef(updateRange);
@@ -3303,13 +3610,17 @@ function VirtualTrackList({ items, activeId, loadingId, errorId, onClickItem, on
      transition по mask-image сверху запускал вторую интерполяцию градиента
      ровно в тот момент, когда список уже поехал. Здесь скроллер чистый,
      а края — обычная композиция с дешёвым transition по opacity. */
-  const edgeFade = {
-    position:'absolute', left:0, right:0, height: FADE,
-    pointerEvents:'none', zIndex:2,
-    transition:'opacity 0.2s ease',
-  };
-  const fadeTop = { ...edgeFade, top:0,    background:'linear-gradient(to bottom, var(--bg), transparent)', opacity: edges.top ? 1 : 0 };
-  const fadeBot = { ...edgeFade, bottom:0, background:'linear-gradient(to top,    var(--bg), transparent)', opacity: edges.bottom ? 1 : 0 };
+  /* Затенение по краям УБРАНО. Раньше здесь лежали два слоя
+     `linear-gradient(..., var(--bg), transparent)`, заливавшие верх и низ
+     списка цветом фона: список «растворялся под волоском». На своей панели
+     это выглядело правильно, но на ТЕМЕ — как грязное пятно: заливка шла
+     цветом --bg, то есть тем ПЛОСКИМ цветом, который стоит ПОД градиентом,
+     и поверх живого фона «под обложку» она читалась серой полосой поперёк
+     окна.
+
+     Плавность не пострадала: её обеспечивало отсутствие mask на скроллере
+     (комментарий выше), а не сами слои. Состояние `edges`, ради которого
+     пересчитывалось на каждом кадре скролла, ушло вместе с ними. */
 
   useEffect(() => {
     if (!scrollToActive || !ref.current) return;
@@ -3357,8 +3668,6 @@ function VirtualTrackList({ items, activeId, loadingId, errorId, onClickItem, on
         </div>
       </div>
     </div>
-    <div style={fadeTop}/>
-    <div style={fadeBot}/>
     </div>
   );
 }
@@ -3443,12 +3752,6 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
      ради одного триггера — самого факта «текст пришёл»; сама волна сделана на
      css-переходах в разметке строки, без rAF и без записи в dom */
   const [shown, setShown] = useState(false);
-  /* края храним в ref + чиним через счётчик: меняются они на каждом
-     скролле, а ререндер ради двух булевых значений не нужен — маска
-     применяется стилем, а состояние нужно только чтобы перерисовалось */
-  const [edgesTick, setEdgesTick] = useState(0);
-  const edgesRef = useRef({ top: false, bottom: false });
-  const forceEdges = useCallback(() => setEdgesTick(v => v + 1), []);
   lineRefs.current = [];
 
   /* порядок — из массива настроек, не из реестра (см. LyricsSettings) */
@@ -3465,20 +3768,18 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
      так что на трек приходится ровно одна волна, а не по кадру. */
   useEffect(() => { setShown(state?.status === 'ready' && !!lines?.length); }, [state, lines]);
 
-  /* Градиенты по краям контента — ОТДЕЛЬНЫМИ слоями поверх скроллера, а не
-     mask'ом на нём: маска заставляет chromium перерастрировать содержимое
-     в замаскированный слой на каждом кадре скролла, а transition по
-     mask-image запускал вторую интерполяцию градиента в момент, когда
-     список уже едет (то же, что в VirtualTrackList) */
-  const EDGE_FADE = 20;
-  const edges = edgesRef.current;
-  const edgeFade = {
-    position:'absolute', left:0, right:0, height: EDGE_FADE,
-    pointerEvents:'none', zIndex:2,
-    transition:'opacity 0.2s ease',
-  };
-  const fadeTop = { ...edgeFade, top:0,    background:'linear-gradient(to bottom, var(--bg), transparent)', opacity: edges.top ? 1 : 0 };
-  const fadeBot = { ...edgeFade, bottom:0, background:'linear-gradient(to top,    var(--bg), transparent)', opacity: edges.bottom ? 1 : 0 };
+  /* Затенение по краям убрано. Раньше здесь были два слоя
+     `linear-gradient(..., var(--bg), transparent)` поверх скроллера — список
+     «растворялся под волоском». На своей панели это выглядело правильно, но
+     на ТЕМЕ — как грязное пятно: заливка шла цветом --bg, то есть тем
+     плоским цветом, который стоит ПОД градиентом, и поверх живого фона
+     «под обложку» она читалась серой полосой поперёк панели.
+
+     Плавность скролла не пострадала: её обеспечивало отсутствие mask на
+     скроллере, а не сами слои. Индикацию «есть что прокрутить» теперь
+     даёт полоса прокрутки. Всё, что считало края (ref, счётчик,
+     ResizeObserver, две проверки в обработчике скролла), убрано вместе с
+     ними — иначе оно пересчитывалось на каждом кадре скролла впустую. */
 
   const scrollToActive = useCallback((smooth) => {
     const el   = bodyRef.current;
@@ -3494,29 +3795,18 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
      с середины прошлого трека выглядело бы как случайность */
   useEffect(() => {
     if (state?.status !== 'loading') return;
-    if (bodyRef.current) { bodyRef.current.scrollTop = 0; forceEdges() }
-  }, [state, forceEdges]);
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  }, [state]);
 
-  /* края пересчитываются не только на скролле: контент мог смениться,
-     панель открылась, окноresize */
+  /* Колесо прерывает автопрокрутку. Раньше этот эффект заодно пересчитывал
+     края для затенения; после её удаления от него осталась ровно эта одна
+     задача, и подписка живёт на scroll-interrupt, а не на каждый кадр. */
   useEffect(() => {
     if (!open) return;
     const el = bodyRef.current;
     if (!el) return;
-    const sync = () => {
-      const top = el.scrollTop > 4;
-      const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 4;
-      if (top !== edgesRef.current.top || bottom !== edgesRef.current.bottom) {
-        edgesRef.current = { top, bottom };
-        forceEdges();
-      }
-    };
-    sync();
-    const unbind = bindScrollInterrupt(el);   /* колесо прерывает ведение */
-    const ro = new ResizeObserver(sync);
-    ro.observe(el);
-    return () => { unbind(); ro.disconnect() };
-  }, [open, state, forceEdges]);
+    return bindScrollInterrupt(el);
+  }, [open]);
 
   /* при открытии — сразу к активной строке. плавно прокручивать через весь
      текст от начала смысла нет, это зрелищно и долго */
@@ -3536,18 +3826,6 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
   }, [activeLine, open, scrollToActive]);
 
   const onBodyScroll = useCallback(() => {
-    /* границы контента: по ним рисуем градиенты у краёв панели, вместо
-       постоянно висящей полосы. обе считаются напрямую из DOM — состояние
-       ради двух булевых значений перекладывать не нужно */
-    const el = bodyRef.current;
-    if (el) {
-      const top = el.scrollTop > 4;
-      const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 4;
-      if (top !== edgesRef.current.top || bottom !== edgesRef.current.bottom) {
-        edgesRef.current = { top, bottom };
-        forceEdges();
-      }
-    }
     if (Date.now() < autoUntilRef.current) return;  /* это наша автопрокрутка */
     userScrollRef.current = Date.now();
   }, []);
@@ -3766,9 +4044,6 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
             в верхней строке (вместо бывшей плашки «ТЕКСТ ПЕСНИ»), здесь
             ничего — иначе один и тот же список рисовался дважды. */}
       </div>
-      {/* градиенты по краям — индикация «есть что прокрутить» */}
-      <div style={fadeTop}/>
-      <div style={fadeBot}/>
       </div>
     </div>
   );
@@ -4172,7 +4447,9 @@ function SettingsIcon({ size = 15, children }) {
 }
 
 /* Группа настроек. `title` необязателен: у первой карточки раздела он
-   дублировал бы пункт боковой навигации, поэтому там его не передают. */
+   дублировал бы пункт боковой навигации, поэтому там его не передают.
+   Скругление берётся из --radius, то есть живёт тем же ползунком, что и
+   углы окна: раньше радиус был зашит в 14px и не поддавался ничему. */
 function Card({ title, children, style }) {
   return (
     <div style={{ marginBottom: 20, ...style }}>
@@ -4182,7 +4459,7 @@ function Card({ title, children, style }) {
           color: SN.faint, marginBottom: 9, paddingLeft: 3,
         }}>{title}</div>
       )}
-      <div style={{ background: SN.panel, borderRadius: 14, overflow: 'hidden' }}>
+      <div style={{ background: SN.panel, borderRadius: 'var(--radius, 14px)', overflow: 'hidden' }}>
         {children}
       </div>
     </div>
@@ -4239,6 +4516,311 @@ function Badge({ children }) {
   );
 }
 
+/* ── примитивы редактора темы ─────────────────────────────────────────────
+   Четыре контрола на весь раздел. Раньше здесь не было ничего, кроме пяти
+   кружков: произвольный цвет, число и фон произвольной формы нечем было
+   задать, поэтому всё это пришлось бы писать руками в каждом режиме. */
+
+/* Ползунок. Нативный input[type=range] вместо существующего CrossfadeSlider
+   сознательно: тот сделан под одну конкретную величину и ведёт себя как
+   мишень для колеса мыши, а здесь нужен обычный ряд настроек. Заливку
+   слева даёт --fill инлайном, саму дорожку красит css (.th-range). */
+function MiniSlider({ label, value, min, max, step = 1, onChange, display, disabled }) {
+  const pct = ((value - min) / (max - min)) * 100;
+  return (
+    <div style={{
+      padding: '12px 16px 14px', opacity: disabled ? 0.4 : 1,
+      transition: 'opacity 0.22s ease',
+    }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+        gap: 12, marginBottom: 9,
+      }}>
+        <span style={{ fontSize: 'var(--fs-md)', color: SN.hi }}>{label}</span>
+        <span style={{
+          fontSize: 'var(--fs-xs)', color: SN.mid, fontVariantNumeric: 'tabular-nums',
+        }}>{display ?? value}</span>
+      </div>
+      <input type="range" className="th-range" min={min} max={max} step={step}
+        value={value} disabled={disabled}
+        style={{ '--fill': `${clampNum(pct, 0, 100)}%` }}
+        onChange={e => onChange(+e.target.value)}/>
+    </div>
+  );
+}
+
+/* Квадрат насыщенности×светлоты и полоса оттенка. Тянуть можно мышью прямо
+   по элементу, без захвата: события висят на window, пока зажата кнопка, и
+   снимаются на pointerup. Оттенок живёт в ref, а не в пропсе, — иначе
+   движение по полосе оттенка подменяло бы насыщенность и светлоту, только
+   что выведенные квадратом, и кадр дёргался на каждом пикселе.
+
+   ⚠️ События мыши НЕ пишут в состояние напрямую — они копятся в позицию и
+   применяются раз в кадр. Это главная причина, по которой пикер когда-то
+   «перекрашивал всё приложение и лагал»: цвет лежит в настройках, те лежат
+   в App, и одно движение мыши пересобирало весь интерфейс. Мышь даёт больше
+   событий, чем кадров (до 240 в секунду на 100hz-мониторе, а браузер рисует
+   60), поэтому промежуточные позиции всё равно не показывались — только
+   тратили на перерисовку. */
+function ColorPad({ hex, onChange }) {
+  const padRef  = useRef(null);
+  const barRef  = useRef(null);
+  const [drag, setDrag] = useState(null);        /* 'pad' | 'hue' | null */
+  const hsv = hexToHsv(hex);
+  /* Обработчики движения живут в ref, а пересоздаются каждый рендер.
+     Раньше эффект подписки зависел от `hex`, и на каждое движение мыши он
+     переподписывался — за время между commit'ом и кадром указатель
+     успевал отдать пару pointermove в никуда, и протяжка дёргалась рывками.
+     Ссылка на ref даёт подписку один раз на всё время нажатия. */
+  const live = useRef(null);
+  live.current = { hex, onChange };
+  /* последнее событие мыши и номер кадра, на котором оно будет применено.
+     Позиция нужна целиком: пока ждём кадра, указатель может уйти дальше, и
+     применять надо ту, что свежее всего.
+     ⚠️ Режим (квадрат или полоса) берём из ref, а НЕ из e.target: во время
+     протяжки указатель ходит над всей страницей, и target у pointermove —
+     элемент под курсором, а не пикер. */
+  const pending = useRef(null);
+  const mode    = useRef('pad');
+  const frame   = useRef(0);
+
+  const flush = () => {
+    frame.current = 0;
+    const e = pending.current;
+    if (!e) return;
+    pending.current = null;
+    if (mode.current === 'pad') {
+      const el = padRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const x = clampNum((e.clientX - r.left) / r.width, 0, 1);
+      const y = clampNum((e.clientY - r.top) / r.height, 0, 1);
+      /* оттенок берём из ТЕКУЩЕГО значения, а не из замыкания: пока тянут по
+         квадрату, раз в кадр меняется насыщенность, и вчерашний оттенок в
+         замыкании дал бы палитру, уезжающую в другую часть круга */
+      const c = hsvToRgb(hexToHsv(live.current.hex).h, x * 100, (1 - y) * 100);
+      live.current.onChange(rgbToHex(c.r, c.g, c.b));
+    } else {
+      const el = barRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const x = clampNum((e.clientX - r.left) / r.width, 0, 1);
+      const cur = hexToHsv(live.current.hex);
+      const c = hsvToRgb(x * 360, cur.s, cur.v);
+      live.current.onChange(rgbToHex(c.r, c.g, c.b));
+    }
+  };
+
+  /* Позиция от указателя — кладём в очередь и просим кадр. Пока кадр не
+     пришёл, новые движения только перезаписывают позицию: применяется
+     ровно одна, последняя. */
+  const queue = (e, m) => {
+    if (m) mode.current = m;
+    pending.current = e;
+    if (!frame.current) frame.current = requestAnimationFrame(flush);
+  };
+
+  useEffect(() => {
+    if (!drag) return;
+    const move = e => queue(e);
+    const up   = () => {
+      /* Последнее движение не ждём следующего кадра: иначе цвет встал бы на
+         позицию указателя с задержкой в кадр после отпускания */
+      if (pending.current) {
+        cancelAnimationFrame(frame.current);
+        flush();
+      }
+      setDrag(null);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      if (frame.current) cancelAnimationFrame(frame.current);
+      frame.current = 0;
+      pending.current = null;
+    };
+  }, [drag]);
+
+  /* Стиль кружка, а не компонент: возвращать <div> здесь нельзя —
+     JSX-вызов развернулся бы в объект, и react попытался бы отрисовать
+     его как содержимое. */
+  const knobStyle = (x, y) => ({
+    position: 'absolute', left: x, top: y, width: 12, height: 12, marginLeft: -6, marginTop: -6,
+    borderRadius: '50%', background: hex, pointerEvents: 'none',
+    /* два кольца: внутреннее цвета фона отделяет кружок от пестрых участков
+       квадрата, внешнее — белое, иначе на светлом тоне его не видно */
+    boxShadow: '0 0 0 2px rgba(10,10,14,0.9), 0 0 0 3.5px rgba(255,255,255,0.85)',
+  });
+
+  return (
+    <div style={{ width: 148, flexShrink: 0 }}>
+      <div ref={padRef} onPointerDown={e => { e.preventDefault(); setDrag('pad'); queue(e, 'pad'); }}
+        style={{
+          position: 'relative', height: 108, borderRadius: 10, cursor: 'crosshair',
+          /* долгое свойство, а не шорткат background: ниже в том же объекте
+             стоит backgroundImage, и react при обновлении ругается на
+             смешение шортката с длинным (background сбрасывал бы картинку) */
+          backgroundColor: `hsl(${hsv.h}, 100%, 50%)`,
+          /* сверху — чёрный, снизу прозрачный: так светлота уезжает вниз */
+          backgroundImage: 'linear-gradient(to top, #000, transparent)',
+        }}>
+        <div style={{
+          position: 'absolute', inset: 0, borderRadius: 10, pointerEvents: 'none',
+          backgroundImage: 'linear-gradient(to right, #fff, transparent)',
+        }}/>
+        <div style={knobStyle(`${hsv.s}%`, `${100 - hsv.v}%`)}/>
+      </div>
+      <div ref={barRef} onPointerDown={e => { e.preventDefault(); setDrag('hue'); queue(e, 'hue'); }}
+        style={{
+          position: 'relative', height: 14, marginTop: 12, borderRadius: 7, cursor: 'ew-resize',
+          /* радугу держим в backgroundImage: ниже того же элемента нет, но
+             соседние слои в этом файле уже на longhand — одинаково везде */
+          backgroundImage: 'linear-gradient(to right, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00)',
+        }}>
+        <div style={knobStyle(`${(hsv.h / 360) * 100}%`, '50%')}/>
+      </div>
+    </div>
+  );
+}
+
+/* Hex-поле с локальным черновиком. Напрямую значение в state не годится:
+   пользователь набирает «ff0000» и на второй же букве «ff» получает
+   откат — поле не даёт допечатать. Поэтому текст живёт здесь, наружу
+   уходит разобранный цвет, а по потере фокуса черновик приводится к
+   тому, что реально применено.
+
+   Трёхзначную запись принимаем как есть: пользователь ставит курсор в
+   середину строки и вбивает «ff0» — это уже цвет, и требовать дописывания
+   до шести знаков было бы придиркой к способу печатать. */
+function ColorField({ value, onChange }) {
+  const [text, setText] = useState(value);
+  const [dirty, setDirty] = useState(false);
+  /* синхронизация извне: пикер, второй цвет, «удиви меня» и пресет меняют
+     значение, не проходя через это поле — без эффекта оно показывало бы
+     прошлый цвет */
+  useEffect(() => {
+    if (!dirty) setText(value);
+  }, [value, dirty]);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <input type="color" className="th-color" value={value} onChange={e => onChange(e.target.value)}/>
+      <input className="th-hex" value={text} spellCheck={false}
+        onChange={e => {
+          const s = e.target.value;
+          setText(s);
+          setDirty(true);
+          /* применяем как только цвет дописан — тогда результат виден
+             сразу, без отдельного «применить» и без потери фокуса */
+          const c = hexToRgb(s) || (s.length === 3
+            ? hexToRgb('#' + s[0] + s[0] + s[1] + s[1] + s[2] + s[2])   /* «ff0» → #ff00aa */
+            : null);
+          if (c) onChange(rgbToHex(c.r, c.g, c.b));
+        }}
+        onBlur={() => { setDirty(false); setText(value); }}/>
+    </div>
+  );
+}
+
+/* Ряд «подпись — значение» для параметров, которые меняют одну цифру.
+   Отдельного компонента не делал: это две строки, а рост компонентов
+   в файле уже заметно мешает читать соседние секции. */
+function ThRow({ label, children, dim }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+      padding: '11px 16px', opacity: dim ? 0.4 : 1, transition: 'opacity 0.22s ease',
+    }}>
+      <span style={{ fontSize: 'var(--fs-md)', color: SN.hi }}>{label}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexShrink: 0 }}>{children}</div>
+    </div>
+  );
+}
+
+/* Плитка темы в сетке. Общая для наборов и для сохранённых — отличаются
+   только подпись и наличие крестика, а превью и подсветка должны быть
+   ровно одни и те же, иначе «своя» тема выглядела бы как другая карточка
+   из другого списка.
+
+   `onDelete` рисуется поверх превью, а не под подписью: подпись у плитки
+   своя, и добавление туда кнопки ломало бы высоту всех плиток в ряду —
+   соседние поехали бы вниз на высоту крестика. */
+function ThemeTile({ label, theme, active, onClick, onDelete, deleteTitle }) {
+  const a2 = theme.accentGrad ? theme.accent2 : theme.accent;
+  return (
+    <div title={label} role="button"
+      onClick={onClick}
+      style={{
+        position: 'relative', padding: 0, cursor: 'pointer', borderRadius: 11, overflow: 'hidden',
+        /* двухслойное кольцо: внутреннее цвета подложки отделяет карточку от
+           соседей, внешнее — сам выбор */
+        boxShadow: active
+          ? '0 0 0 2px rgba(10,10,14,0.9), 0 0 0 3.5px var(--accent)'
+          : 'inset 0 0 0 1px rgba(255,255,255,0.07)',
+        transform: active ? 'translateY(-1px)' : 'none',
+        transition: 'box-shadow 0.2s ease, transform 0.2s ease',
+      }}
+      onMouseEnter={e => {
+        if (active) return;
+        e.currentTarget.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,0.16)';
+      }}
+      onMouseLeave={e => {
+        if (active) return;
+        e.currentTarget.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,0.07)';
+      }}>
+      <div style={{
+        position: 'relative', height: 46,
+        backgroundColor: theme.bgMode === 'default' ? THEME_DEFAULT.bgColor : theme.bgColor,
+        /* подставляем СВОЙ акцент плитки: в самом окне здесь встаёт
+           var(--accent-rgb), а в превью он был бы общим для всех плиток,
+           и режим «под обложку» показывал бы у всех один и тот же фон */
+        backgroundImage: themeBgImage(theme, rgbTriplet(theme.accent)),
+      }}>
+        {/* полоска акцента внизу — та же линия, что у верхнего края окна,
+            только без второго цвета: в превью места нет, а разница в один
+            градиент ничего не решает */}
+        <div style={{
+          position: 'absolute', left: 7, bottom: 7, height: 5, width: '46%',
+          borderRadius: 3, background: `linear-gradient(to right, ${theme.accent}, ${a2})`,
+          boxShadow: `0 0 8px ${theme.accent}66`,
+        }}/>
+        <div style={{
+          position: 'absolute', right: 7, top: 7, width: 10, height: 10, borderRadius: '50%',
+          background: theme.accent, boxShadow: `0 0 9px ${theme.accent}`,
+        }}/>
+      </div>
+      <div style={{
+        padding: '6px 8px 7px', fontSize: 'var(--fs-xs)',
+        fontWeight: active ? 600 : 500,
+        color: active ? 'rgba(255,255,255,0.94)' : SN.mid,
+        background: active ? 'rgba(255,255,255,0.055)' : 'rgba(255,255,255,0.022)',
+        transition: 'color 0.18s ease, background 0.18s ease',
+      }}>{label}</div>
+      {onDelete && (
+        <div role="button" title={deleteTitle} aria-label={deleteTitle}
+          onClick={e => { e.stopPropagation(); onDelete(); }}
+          style={{
+            position: 'absolute', right: 5, top: 5, width: 20, height: 20, borderRadius: 6,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', color: 'rgba(255,255,255,0.5)',
+            /* затемнение кружка под крестиком, иначе на светлом превью он
+               не читался бы — подпись темы может быть любой */
+            background: 'rgba(10,10,14,0.55)',
+            transition: 'color 0.15s ease, background 0.15s ease',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color = '#fff'; e.currentTarget.style.background = 'rgba(255,90,80,0.8)'; }}
+          onMouseLeave={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.5)'; e.currentTarget.style.background = 'rgba(10,10,14,0.55)'; }}>
+          <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor"
+            strokeWidth="1.6" strokeLinecap="round">
+            <path d="M2 2l6 6M8 2l-6 6"/>
+          </svg>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* Тумблер. Включённое состояние — заливка акцентом: раньше трек был
    `rgba(255,255,255,0.5)`, то есть тем же серым, что и галочка рядом, и
    «включено» читалось только по форме. Заливка акцентом работает и при
@@ -4255,7 +4837,9 @@ function Switch({ on, onChange, disabled }) {
         width: 36, height: 21, borderRadius: 11, flexShrink: 0, position: 'relative',
         cursor: disabled ? 'default' : 'pointer',
         background: on ? 'var(--accent)' : 'rgba(255,255,255,0.11)',
-        boxShadow: on ? '0 0 10px rgba(var(--accent-rgb),0.28)' : 'none',
+        /* ореол домножается на --glow-strength, иначе ползунок «сила свечений»
+           в «Оформлении» двигал бы всё, кроме тумблеров */
+        boxShadow: on ? '0 0 10px rgba(var(--accent-rgb),calc(0.28 * var(--glow-strength,1)))' : 'none',
         transition: 'background 0.24s ease, box-shadow 0.24s ease',
       }}>
       <div style={{
@@ -4271,7 +4855,14 @@ function Switch({ on, onChange, disabled }) {
 /* Сегменты: выбор из двух-трёх вариантов. Пилл ездит по `layoutId`, поэтому
    переключение не мигает. Активный сегмент — подложка акцентом плюс
    светлая подпись: сам акцент в текст не пускаем, он приглушён и на мелком
-   кегле теряется, зато подложка работает на любой светлоте. */
+   кегле теряется, зато подложка работает на любой светлоте.
+
+   ⚠️ У пилла НЕТ обводки (`inset 0 0 0 1px`). Раньше она была, и на
+   прозрачном акценте читалась как рамка вокруг выбранного пункта — на
+   светлой теме или при слабом свечении это выглядело клетчатой таблицей,
+   а не выбором. Убрана по просьбе. Взамен подложка поднята с 0.15 до 0.2:
+   раньше часть контраста пилла давала рамка, и без неё он был бы заметно
+   бледнее соседей. */
 function Segmented({ value, options, onChange, disabled, id, stretch }) {
   return (
     <div style={{
@@ -4296,8 +4887,7 @@ function Segmented({ value, options, onChange, disabled, id, stretch }) {
                 transition={{ type: 'spring', stiffness: 420, damping: 34, mass: 0.7 }}
                 style={{
                   position: 'absolute', inset: 0, borderRadius: 9,
-                  background: 'rgba(var(--accent-rgb),0.15)',
-                  boxShadow: 'inset 0 0 0 1px rgba(var(--accent-rgb),0.22)',
+                  background: 'rgba(var(--accent-rgb),0.2)',
                 }}/>
             )}
             <span style={{
@@ -4585,6 +5175,7 @@ function LyricsSettings({ settings, onSettings }) {
 /* ── SettingsView ─────────────────────────────────────────────────────────── */
 function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFolder, onClearCoversCache, onClearLikesCache, appAccent, scAuth, onScLogin, onScLogout, sec, setSec, discordStatus }) {
   const t = useLang();
+  const lang = useLangCode();
   /* Материал окна выключает подсветку акцента — см. карточку акцента */
   const micaOn = settings.windowEffect === 'mica';
   const [scLoading, setScLoading] = useState(false);
@@ -4601,6 +5192,41 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     setScLoading(false);
   };
   const set = (k, v) => onSettings({ ...settings, [k]: v });
+  /* Тема. Значение нормализуется на КАЖДОМ чтении, а не только на записи:
+     мусор из старого settings.json (или из чужой вставки) обязан молча
+     чиниться, иначе любой потребитель ниже получил бы NaN в градиенте.
+     Сама запись — через setTh, и он же гасит метку пресета, если правка
+     пришла мимо карточки: иначе подсветка осталась бы на наборе, которого
+     в теме уже нет. */
+  const th = cleanTheme(settings.theme);
+  const setTh = patch => onSettings(s => {
+    const next = { ...(s.theme || THEME_DEFAULT), ...patch };
+    if (!Object.prototype.hasOwnProperty.call(patch, 'preset')) next.preset = null;
+    return { ...s, theme: cleanTheme(next) };
+  });
+  /* Свои темы. Читаются через cleanUserThemes на каждом рендере — как и
+     theme: список лежит на диске и может прийти мусорным. */
+  const userThemes = cleanUserThemes(settings.userThemes);
+  const setUserThemes = fn => onSettings(s => ({
+    ...s, userThemes: cleanUserThemes(fn(cleanUserThemes(s.userThemes))),
+  }));
+  /* Применение набора. Отдельная функция, а не setTh, потому что тема
+     «Обложка» живая только вместе с акцентом от обложки: её фон считается
+     от --accent-rgb, и при зафиксированном акценте он был бы просто
+     одноцветной подложкой — то есть набор вёл бы себя не так, как
+     обещает. */
+  const applyTheme = (v, presetId) => onSettings(s => {
+    const next = { ...s, theme: cleanTheme({ ...THEME_DEFAULT, ...v, preset: presetId }) };
+    if (v.bgMode === 'cover' && s.accentMode !== 'cover') next.accentMode = 'cover';
+    return next;
+  });
+  /* Редактор кода темы. Текст живёт в состоянии и НЕ перезаписывается при
+     смене темы ползунками: иначе он закрывался бы под ногами, пока его
+     правят, и вставить было бы нечего. Значение берём из текста только
+     по кнопке «применить». */
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [codeText,  setCodeText]  = useState(() => themeToJson(cleanTheme(settings.theme)));
+  const [codeNote,  setCodeNote]  = useState(null);   /* обратная связь: скопировано / не разобралось */
   const secRefs  = useRef({});
   const [pill, setPill] = useState({ top:0, height:0 });
 
@@ -4706,17 +5332,87 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     lyrics: (
       <LyricsSettings settings={settings} onSettings={onSettings}/>
     ),
-    appearance: (<>
+appearance: (<>
+{/* ⚠️ Материал окна и тема несовместимы: DWM рисует мику ПОД окном,
+          а акцент и свой фон — это свет OUR OWN слоя над ней, и они бьют по
+          одному и тому же. Поэтому при включённом материале и акцент, и
+          редактор фона заблокированы, а не просто гаснут: иначе можно было
+          бы включить материал, потом тыкнуть «Цвет» и снова получить
+          несовместимую комбинацию. Гасит их сам тумблер материала внизу. */}
+      <Card title={t('card_themes')}>
+        <div style={{ padding: '13px 16px 12px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
+          {t('theme_sub')}
+        </div>
+        {/* Сетка наборов. Превью рисует ровно то, что получится у оболочки:
+            тот же фон (цвет + тот же градиент), полоска акцента внизу и
+            кружок с ореолом. Настоящий фон окна за карточкой не видно — он
+            закрыт содержимым, поэтому превью и есть единственный честный
+            способ показать тему до применения. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, padding: '0 16px 14px' }}>
+          {THEME_PRESETS.map(p => (
+            <ThemeTile key={p.id} label={p.label} theme={cleanTheme({ ...THEME_DEFAULT, ...p.v })}
+              active={th.preset === p.id}
+              onClick={() => applyTheme(p.v, p.id)}/>
+          ))}
+        </div>
+        {/* Свои темы. Отдельная строка, а не вперемешку с наборами: свои
+            можно удалить, и перемешивать их с вечными наборами значило бы
+            показывать крестик то на одной, то на другой карточке. */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+          padding: '12px 16px', borderTop: `1px solid ${SN.line}`,
+        }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: SN.faint }}>{t('theme_mine_list')}</span>
+          <Btn tone="quiet" onClick={() => setUserThemes(list => [
+            ...list,
+            { id: newThemeId(), name: themeHueName(th.accent, lang), v: { ...th, preset: null } },
+          ])}>{t('theme_save')}</Btn>
+        </div>
+        {userThemes.length > 0 && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, padding: '0 16px 14px' }}>
+            {userThemes.map(u => (
+              <ThemeTile key={u.id} label={u.name} theme={cleanTheme(u.v)}
+                active={th.preset === u.id} deleteTitle={t('theme_delete')}
+                onClick={() => applyTheme(cleanTheme(u.v), u.id)}
+                onDelete={() => setUserThemes(list => list.filter(x => x.id !== u.id))}/>
+            ))}
+          </div>
+        )}
+        {/* Нижний ряд навыков. «Удиви меня» собирает тему из новых цветов и
+            заодно снимает метку пресета: получившееся ни с чем не совпадёт,
+            и подсветка осталась бы на чужой карточке. */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+          padding: '11px 16px', borderTop: `1px solid ${SN.line}`,
+        }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: SN.faint }}>
+            {th.preset
+              ? THEME_PRESETS.find(p => p.id === th.preset)?.label ?? t('theme_mine')
+              : t('theme_mine')}
+          </span>
+          <div style={{ display: 'flex', gap: 7 }}>
+            <Btn tone="accent" onClick={() => {
+              /* фон тёмный и в тон акценту: тот же оттенок, светлота убита.
+                 Иначе случайный светлый фон выбивал бы белый текст интерфейса,
+                 который написан фиксированными белыми прозрачностями */
+              setTh({
+                accent: randomVividHex(), accent2: randomVividHex(),
+                bgColor: randomDeepHex(), bgColor2: randomDeepHex(),
+                bgAngle: Math.round(Math.random() * 360),
+                glowStrength: 0.8 + Math.random() * 0.7,
+                radius: [0, 8, 12, 16, 20, 26][Math.floor(Math.random() * 6)],
+                grain: [0, 0.022, 0.04, 0.07][Math.floor(Math.random() * 4)],
+              });
+            }}>{t('theme_random')}</Btn>
+            <Btn onClick={() => setTh({ ...THEME_DEFAULT })}>{t('theme_reset')}</Btn>
+          </div>
+        </div>
+      </Card>
+
       <Card>
-        <div style={{ padding:'14px 16px 0', fontSize:'var(--fs-xs)', color: SN.dim, lineHeight:1.45 }}>
+        <div style={{ padding: '14px 16px 0', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
           {t('accent_sub')}
         </div>
-        {/* Подсветка акцента и материал окна несовместимы: DWM рисует мику под
-            окном, а акцент — это свет OUR OWN слоя над ней, и они бьют по
-            одному и тому же. Поэтому при включённом материале сегменты
-            заблокированы, а не просто гаснут: иначе можно было бы включить
-            материал, потом тыкнуть «Цвет» и снова получить несовместимую
-            комбинацию. Гасит акцент сам тумблер материала. */}
         {/* Плашка замка. Всегда в дереве и раскрывается transition — как
             аккордеон discord ниже: пересборка блока дёргает всё под ним, а
             высота у плашки меняется с 0. */}
@@ -4748,7 +5444,6 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
         </div>
         {(() => {
           const mode = settings.accentMode || 'color';
-          const preset = ACCENT_PRESETS[settings.accentPreset] ? settings.accentPreset : 'default';
           const segIcon = paths => (
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths}</svg>
@@ -4770,17 +5465,73 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
                   onChange={id => onSettings(s => ({ ...s, accentMode: id }))}
                   options={SEGS.map(([v, label, icon]) => ({ v, label, icon }))}/>
               </div>
-                {/* Контекст под выбранным режимом.
-                    ⚠️ Здесь стояли `key={mode}` и `animation:'fadeInUp'`, и
-                    оба были причиной рывка при первом входе в настройки.
-                    `key` перемонтировал блок при смене режима, а высота у
-                    режимов разная (палитра — пять образцов, «выкл» — одна
-                    короткая плашка), так что перемонтирование дёргало всё,
-                    что ниже. Сама анимация тут лишняя: переключение сегмента
-                    уже показывает пилл на layoutId. */}
-                <div style={{ padding: '16px 16px 0' }}>
-                  {mode === 'color' && (
-                    <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+              {/* Контекст под выбранным режимом.
+                  ⚠️ Здесь стояли `key={mode}` и `animation:'fadeInUp'`, и
+                  оба были причиной рывка при первом входе в настройки.
+                  `key` перемонтировал блок при смене режима, а высота у
+                  режимов разная (палитра — образцы, «выкл» — одна
+                  короткая плашка), так что перемонтирование дёргало всё,
+                  что ниже. Сама анимация тут лишняя: переключение сегмента
+                  уже показывает пилл на layoutId. */}
+              <div style={{ padding: '16px 16px 0' }}>
+                {mode === 'color' && (
+                  <div style={{ display: 'flex', gap: 14 }}>
+                    <ColorPad hex={th.accent} onChange={hex => setTh({ accent: hex })}/>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <ColorField value={th.accent} onChange={hex => setTh({ accent: hexOr(hex, th.accent) })}/>
+                      <div style={{ marginTop: 9 }}>
+                        <Btn tone="quiet" onClick={() => setTh({ accent: randomVividHex() })}>
+                          {t('accent_random')}
+                        </Btn>
+                      </div>
+                      {/* Второй цвет. Дергает не весь интерфейс, а одну
+                          полосу у верхнего края окна — и именно поэтому
+                          включается одиноким кубиком, а не сегментом режима */}
+                      <div style={{
+                        marginTop: 13, display: 'flex', alignItems: 'center',
+                        justifyContent: 'space-between', gap: 10,
+                      }}>
+                        <span style={{ fontSize: 'var(--fs-xs)', color: SN.mid }}>{t('accent_second')}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                          <div role="switch" aria-checked={th.accentGrad} title={t('accent_second_sub')}
+                            onClick={() => setTh({ accentGrad: !th.accentGrad })}
+                            style={{
+                              width: 32, height: 19, borderRadius: 10, cursor: 'pointer', position: 'relative',
+                              flexShrink: 0,
+                              background: th.accentGrad ? 'var(--accent)' : 'rgba(255,255,255,0.11)',
+                              boxShadow: th.accentGrad
+                                ? '0 0 10px rgba(var(--accent-rgb),calc(0.28 * var(--glow-strength,1)))' : 'none',
+                              transition: 'background 0.24s ease, box-shadow 0.24s ease',
+                            }}>
+                            <div style={{
+                              position: 'absolute', top: 3, width: 13, height: 13, borderRadius: '50%',
+                              background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+                              left: th.accentGrad ? 16 : 3,
+                              transition: 'left 0.24s cubic-bezier(0.32,0.72,0,1)',
+                            }}/>
+                          </div>
+                          {/* Пикер показываем только когда второй цвет реально
+                              на что-то влияет: выключенный кубик с полем рядом
+                              читался как «уже задано», но не влияло ни на что */}
+                          {th.accentGrad && (
+                            <ColorField value={th.accent2} onChange={hex => setTh({ accent2: hexOr(hex, th.accent2) })}/>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {/* Пять образцов остались как шорткаты: свой цвет теперь
+                    можно задать чем угодно, а эти — то, что хочется достать в
+                    одно нажатие. Набор цветов теперь в THEME_PRESETS и
+                    ACCENT_PRESETS, а список подписей — тут единственный. */}
+                {mode === 'color' && (
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{
+                      fontSize: 'var(--fs-eyebrow)', letterSpacing: '0.1em',
+                      textTransform: 'uppercase', color: SN.faint, marginBottom: 8,
+                    }}>{t('accent_quick')}</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
                       {[
                         ['default',  t('accent_default')],
                         ['lavender', t('accent_lavender')],
@@ -4789,73 +5540,58 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
                         ['amber',    t('accent_amber')],
                       ].map(([key, label]) => {
                         const c = ACCENT_PRESETS[key];
-                        const active = preset === key;
+                        const hex = rgbToHex(c.r, c.g, c.b);
+                        /* активен тот, с которым в themes.accent совпадает
+                           ЦВЕТ, а не запись пресета: иначе подсветка слетела
+                           бы с кнопки при любой ручной правке цвета */
+                        const active = th.accent.toLowerCase() === hex;
                         return (
-                          <div key={key} title={label}
-                            /* тот же принцип: повторный клик по выбранному
-                               образцу не перезапускает палитру и запись */
-                            onClick={() => { if (active) return; onSettings(s => ({ ...s, accentMode:'color', accentPreset:key })); }}
+                          <div key={key} role="button" title={label}
+                            onClick={() => setTh({ accent: hex })}
                             style={{
-                              display:'flex', flexDirection:'column', alignItems:'center', gap:7,
-                              cursor:'pointer', padding:'8px 6px', borderRadius:10,
-                              flex:'1 0 72px',
-                              background: active ? 'rgba(255,255,255,0.055)' : 'transparent',
-                              transition:'background 0.18s',
-                            }}
-                            onMouseEnter={e => { if (!active) e.currentTarget.style.background='rgba(255,255,255,0.03)'; }}
-                            onMouseLeave={e => { if (!active) e.currentTarget.style.background='transparent'; }}
-                          >
-                            <div style={{
-                              width:28, height:28, borderRadius:'50%',
-                              background:`rgb(${c.r},${c.g},${c.b})`,
-                              /* кольцо вокруг выбранного образца — двухслойное:
-                                 внутреннее кольцо цвета фона отделяет его от
-                                 соседей, внешнее подтверждает выбор. Раньше
-                                 было одно кольцо и цветной ореол, и выбранный
-                                 цвет на подложке карточки терялся */
+                              width: 26, height: 26, borderRadius: '50%', cursor: 'pointer', flexShrink: 0,
+                              background: hex,
                               boxShadow: active
-                                ? `0 0 0 2px rgba(10,10,14,0.9), 0 0 0 3.5px rgba(${c.r},${c.g},${c.b},0.95)`
-                                : `0 2px 6px rgba(${c.r},${c.g},${c.b},0.22)`,
-                              transition:'box-shadow 0.22s',
-                            }}/>
-                            <div style={{
-                              fontSize: 'var(--fs-xs)', fontWeight: active ? 600 : 500,
-                              color: active ? 'rgba(255,255,255,0.92)' : SN.mid,
-                              transition:'color 0.18s',
-                            }}>{label}</div>
-                          </div>
+                                ? `0 0 0 2px rgba(10,10,14,0.9), 0 0 0 3.5px ${hex}`
+                                : `0 2px 6px ${hex}38`,
+                              transition: 'box-shadow 0.22s ease, transform 0.18s ease',
+                            }}
+                            onMouseEnter={e => { if (!active) e.currentTarget.style.transform = 'scale(1.12)'; }}
+                            onMouseLeave={e => { if (!active) e.currentTarget.style.transform = 'none'; }}
+                          />
                         );
                       })}
                     </div>
-                  )}
-                  {/* «От обложки» и «Выкл» раньше показывали карточку с
-                      заголовком, который просто повторял уже выбранный
-                      сегмент. Осталось по одной строке: живой образец цвета
-                      либо объяснение, что именно выключено. */}
-                  {mode === 'cover' && (
-                    <div style={{ display:'flex', alignItems:'center', gap:11 }}>
-                      <div style={{
-                        width:26, height:26, borderRadius:8, flexShrink:0,
-                        background:'conic-gradient(from 0deg, #ff8fb1, #ffb164, #ffeb6b, #82dcc3, #9b7dff, #ff8fb1)',
-                        boxShadow:`0 0 16px rgba(${appAccent.r},${appAccent.g},${appAccent.b},0.45)`,
-                        transition:'box-shadow 0.4s',
-                      }}/>
-                      <div style={{ fontSize:'var(--fs-xs)', color: SN.dim, lineHeight:1.45 }}>
-                        {t('accent_cover_sub')}
-                      </div>
-                    </div>
-                  )}
-                  {mode === 'off' && (
+                  </div>
+                )}
+                {/* «От обложки» и «Выкл» раньше показывали карточку с
+                    заголовком, который просто повторял уже выбранный
+                    сегмент. Осталось по одной строке: живой образец цвета
+                    либо объяснение, что именно выключено. */}
+                {mode === 'cover' && (
+                  <div style={{ display:'flex', alignItems:'center', gap:11 }}>
+                    <div style={{
+                      width:26, height:26, borderRadius:8, flexShrink:0,
+                      background:'conic-gradient(from 0deg, #ff8fb1, #ffb164, #ffeb6b, #82dcc3, #9b7dff, #ff8fb1)',
+                      boxShadow:`0 0 16px rgba(${appAccent.r},${appAccent.g},${appAccent.b},0.45)`,
+                      transition:'box-shadow 0.4s',
+                    }}/>
                     <div style={{ fontSize:'var(--fs-xs)', color: SN.dim, lineHeight:1.45 }}>
-                      {t('accent_off_sub')}
+                      {t('accent_cover_sub')}
                     </div>
-                  )}
-                </div>
-              </>
-            );
-          })()}
+                  </div>
+                )}
+                {mode === 'off' && (
+                  <div style={{ fontSize:'var(--fs-xs)', color: SN.dim, lineHeight:1.45 }}>
+                    {t('accent_off_sub')}
+                  </div>
+                )}
+              </div>
+            </>
+          );
+        })()}
 
-          {/* Тумблер пятна за обложкой — в этой же карточке, а не в «Интерфейсе».
+        {/* Тумблер пятна за обложкой — в этой же карточке, а не в «Интерфейсе».
             Полноширинная строка: он отделяет блок выбора режима от края
             карточки, а не висит на общей подложке с палитрой. */}
         <Row label={t('art_glow')} sub={t('art_glow_sub')} last
@@ -4864,6 +5600,147 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             onChange={v => set('ambientGlow', v)}/>
         </Row>
       </Card>
+
+      <Card title={t('card_bg')}>
+        <div style={{ padding: '13px 16px 12px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
+          {micaOn ? t('bg_sub_mica')
+            : th.bgMode === 'cover' ? t('bg_sub_cover')
+            : th.bgMode === 'default' ? t('bg_sub_default') : t('bg_sub_custom')}
+        </div>
+        <div style={{ padding: '0 16px 14px' }}>
+          <Segmented stretch id="bgSegPill" value={micaOn ? 'default' : th.bgMode} disabled={micaOn}
+            onChange={v => setTh({ bgMode: v })}
+            options={[
+              { v: 'default',  label: t('bg_seg_default') },
+              { v: 'color',    label: t('bg_seg_color') },
+              { v: 'gradient', label: t('bg_seg_gradient') },
+              { v: 'cover',    label: t('bg_seg_cover') },
+            ]}/>
+        </div>
+        {/* Режим «под обложку» без живого акцента бессмысленен: фон
+            считается от --accent-rgb, а при фиксированном цвете он был бы
+            просто одноцветной подложкой. Поэтому включая его, мы включаем
+            и акцент от обложки — обратно выбор акцента пользователь
+            делает сам, а фон просто перестанет за ним следовать. */}
+        {th.bgMode === 'cover' && settings.accentMode !== 'cover' && (
+          <div style={{ padding: '0 16px 14px' }}>
+            <Btn onClick={() => onSettings(s => ({ ...s, accentMode: 'cover' }))}>
+              {t('bg_cover_turn_on')}
+            </Btn>
+          </div>
+        )}
+        {/* Поля каждого режима. Базовый цвет у «цвета» и «градиента» общий:
+            у градиента он же один из его концов. */}
+        {!micaOn && th.bgMode === 'color' && (
+          <ThRow label={t('bg_from')}>
+            <ColorField value={th.bgColor} onChange={hex => setTh({ bgColor: hexOr(hex, th.bgColor) })}/>
+          </ThRow>
+        )}
+        {!micaOn && th.bgMode === 'gradient' && (
+          <>
+            <ThRow label={t('bg_from')}>
+              <ColorField value={th.bgColor} onChange={hex => setTh({ bgColor: hexOr(hex, th.bgColor) })}/>
+            </ThRow>
+            <ThRow label={t('bg_to')}>
+              <ColorField value={th.bgColor2} onChange={hex => setTh({ bgColor2: hexOr(hex, th.bgColor2) })}/>
+            </ThRow>
+            <div style={{ padding: '4px 16px 14px' }}>
+              <MiniSlider label={t('bg_angle')} value={th.bgAngle} min={0} max={360} step={1}
+                display={`${th.bgAngle}°`} onChange={v => setTh({ bgAngle: v })}/>
+            </div>
+          </>
+        )}
+      </Card>
+
+      {/* Свечение и форма. Четыре ползунка, каждый пишет ровно одну
+          css-переменную: --glow-strength, --radius, --grain, --vignette.
+          Всё, что не читает эти переменные, под ползунки специально НЕ
+          переделывалось — иначе правка одного стиля разъехалась бы по
+          десятку мест, и «тема» перестала бы быть набором переменных. */}
+      <Card title={t('card_look')}>
+        <MiniSlider label={t('glow_strength')} value={th.glowStrength} min={0} max={2} step={0.05}
+          display={`${Math.round(th.glowStrength * 100)}%`} disabled={settings.accentMode === 'off'}
+          onChange={v => setTh({ glowStrength: v })}/>
+        <div style={{ padding: '0 16px 11px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
+          {t('glow_strength_sub')}
+        </div>
+        <MiniSlider label={t('ui_radius')} value={th.radius} min={0} max={28} step={1}
+          display={`${th.radius}px`} disabled={micaOn} onChange={v => setTh({ radius: v })}/>
+        <div style={{ padding: '0 16px 11px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
+          {t('ui_radius_sub')}
+        </div>
+        <MiniSlider label={t('ui_grain')} value={th.grain} min={0} max={0.15} step={0.002}
+          display={`${Math.round(th.grain * 1000) / 10}%`} onChange={v => setTh({ grain: v })}/>
+        <div style={{ padding: '0 16px 11px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
+          {t('ui_grain_sub')}
+        </div>
+        <MiniSlider label={t('ui_vignette')} value={th.vignette} min={0} max={1} step={0.02}
+          display={`${Math.round(th.vignette * 100)}%`} onChange={v => setTh({ vignette: v })}/>
+        <div style={{
+          padding: '0 16px 15px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45,
+        }}>{t('ui_vignette_sub')}</div>
+      </Card>
+
+      {/* Код темы. Не «экспорт в файл», а обычный текст: тему можно
+          закинуть в чат или в заметку, вставить обратно руками. Копирование
+          идёт через navigator.clipboard с запасным путём через textarea и
+          execCommand — в webview буфер обмена доступен не всегда, и молча
+          ничего не скопировавший вариант хуже, чем работающий запасной. */}
+      <Card title={t('card_theme_code')}>
+        <div style={{ padding: '13px 16px 12px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
+          {t('theme_code_sub')}
+        </div>
+        <div style={{ padding: '0 16px 14px' }}>
+          <Btn tone="quiet" onClick={() => {
+            setCodeOpen(v => !v);
+            setCodeNote(null);
+          }}>{t('theme_code_show')}</Btn>
+        </div>
+        {codeOpen && (
+          <div style={{ padding: '0 16px 14px' }}>
+            <textarea className="th-code" spellCheck={false} value={codeText}
+              onChange={e => setCodeText(e.target.value)}/>
+            <div style={{ display: 'flex', gap: 7, marginTop: 10 }}>
+              <Btn tone="accent" onClick={async () => {
+                /* Копируем текст из поля, а если он пуст — текущую тему.
+                   Иначе «скопировать» молча выдала бы дефолт и выглядела бы
+                   сломанной, пока поле ещё не трогали. */
+                const text = codeText.trim() || themeToJson(th);
+                let ok = false;
+                try { await navigator.clipboard.writeText(text); ok = true; } catch {}
+                if (!ok) {
+                  /* execCommand deprecated, но в webview это единственный
+                     путь, когда navigator.clipboard не выдал разрешения */
+                  try {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.cssText = 'position:fixed;opacity:0;left:-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    ok = document.execCommand('copy');
+                    document.body.removeChild(ta);
+                  } catch {}
+                }
+                setCodeNote(ok ? t('theme_code_copied') : null);
+              }}>{codeNote || t('theme_code_copy')}</Btn>
+              <Btn onClick={() => {
+                /* разбор терпимый к мусору: лишние ключи cleanTheme
+                   отбрасывает, недостающие — досочиняет дефолтами */
+                const raw = (() => {
+                  try { return JSON.parse(codeText); } catch { return null; }
+                })();
+                if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                  setCodeNote(t('theme_code_bad'));
+                  return;
+                }
+                setTh(raw);
+                setCodeNote(null);
+              }}>{t('theme_code_apply')}</Btn>
+            </div>
+          </div>
+        )}
+      </Card>
+
       {/* ❌ УДАЛЕНА карточка «Интерфейс» с тумблером «Отключить разделители».
            Тумблер убран по просьбе, а поведение оставлено включённым: разделители
            между пунктами и треками не рисуются. Карточка была из одного этого
@@ -4883,12 +5760,16 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
           <Switch on={micaOn}
             onChange={v => onSettings(s => {
               const next = { ...s, windowEffect: v ? 'mica' : 'off' };
-              /* материал окна несовместим с подсветкой акцента (см. карточку
-                 акцента) — гасим здесь, в одном месте, чтобы правило не
-                 разъехалось по коду. обратно не трогаем: выключение материала
-                 не должно само включать акцент обратно, пользователь выберет
-                 режим сам */
-              if (v && next.accentMode !== 'off') next.accentMode = 'off';
+              /* материал окна несовместим с подсветкой акцента и своим фоном
+                 (см. карточку акцента) — гасим здесь, в одном месте, чтобы
+                 правило не разъехалось по коду. обратно не трогаем: выключение
+                 материала не должно само включать акцент обратно, пользователь
+                 выберет режим сам. фон при этом не восстанавливаем — у
+                 включённого материа свой */
+              if (v) {
+                if (next.accentMode !== 'off') next.accentMode = 'off';
+                next.theme = cleanTheme({ ...(next.theme || THEME_DEFAULT), bgMode: 'default' });
+              }
               return next;
             })}/>
         </Row>
@@ -7606,7 +8487,21 @@ function App() {
     customTitles: {}, scTitles: {}, minDuration: 30, soundcloudAuth: null,
     sourceMode: 'local', discordRpc: true,
     discordTimestamp: 'progress', discordPause: 'show', discordCover: true,
-    accentMode: 'color', accentPreset: 'default',
+    /* Акцент по умолчанию берётся с обложки, а не задаётся цветом: тема,
+     которая едет за треком, и есть то, ради чего открывают плеер. До
+     первого трека (или у трека без обложки) остаётся дефолтный серый —
+     это осознанно, подставлять «что-нибудь цветное» было бы враньём. */
+    accentMode: 'cover', accentPreset: 'default',
+    /* тема — новый источник правды для цвета и фона. accentPreset остался
+       только миграцией старых файлов настроек: в themes.accent живёт тот же
+       цвет плюс всё остальное, и держать два места, где он записан, —
+       значит гарантированно получить из них разные */
+    /* дефолтная тема — «Обложка»: фон едет за треком, зерно выключено
+       (см. набор). Раньше здесь был THEME_DEFAULT, то есть серый акцент и
+       стоковый фон, и первый же запуск выглядел мёртвым */
+    theme: defaultTheme(),
+    themeDefaults: THEME_DEFAULTS_VERSION,
+    userThemes: [],      /* сохранённые вручную темы: [{id, name, v}] */
     ambientGlow: true,   /* пятно за обложкой в плеере; false = не рисуем вовсе */
     windowEffect: 'off',   /* 'off' | 'mica' — применяется эффектом ниже */
     lyricsSources: LYRICS_SOURCE_IDS.slice(),  /* включённые источники, сверху вниз */
@@ -7826,10 +8721,64 @@ const shuffleKeepRef    = useRef(false);
       return { r, g, b };
     }
     if (settings.accentMode === 'color') {
-      return ACCENT_PRESETS[settings.accentPreset] || ACCENT_PRESETS.default;
+      /* произвольный цвет из темы, а не один из пяти образцов. Раньше здесь
+         стояло `ACCENT_PRESETS[settings.accentPreset]` — те самые пять */
+      return hexToRgb(cleanTheme(settings.theme).accent) || ACCENT_PRESETS.default;
     }
     return ACCENT_PRESETS.default;
-  }, [settings.accentMode, settings.accentPreset, accentRGB]);
+  }, [settings.accentMode, settings.theme, accentRGB]);
+
+  /* Тема → css-переменные. Единственное место, где тема покидает react и
+     попадает в документ: всё остальное читает `var(...)` и потому не знает,
+     откуда взялось значение.
+
+     Порядок важен. Переменные пишутся на :root инлайном, а `--bg` у
+     материала окна переопределён на body — то есть НАСЛЕДУЕТСЯ вниз и
+     перебивает наше. Поэтому при материале свои --bg/--bg-image снимаются
+     совсем (removeProperty), а не пишутся «правильным» значением: иначе мы
+     бы затирали полупрозрачность мики своим сплошным цветом.
+
+     Второй момент: --accent и --accent-rgb лерпятся отдельным эффектом
+     ниже, и --accent-line-b завязан на --accent2-rgb, а НЕ на --accent.
+     Иначе при градиентном акценте левый край догонял бы правый по
+     полсекунды — левая половина палочки была бы старым цветом, правая
+     новым, и градиент выглядел бы как полоса смаза. */
+  useEffect(() => {
+    const t = cleanTheme(settings.theme);
+    const st = document.documentElement.style;
+    const mica = settings.windowEffect === 'mica';
+    /* Материал окна рисует под собой СВОЙ фон, и наш поверх класть нельзя:
+       два слоя, и верхний просто закрывает материал. Поэтому при mica фон
+       выключается в «стандарт», а --bg-image снимается совсем — removeProperty,
+       а не запись «правильным» значением. --bg тоже снимается: его на body
+       переопределяет body.effect-mica, и наша запись на :root была бы просто
+       лишней (а при выключенном материале — ещё и мешала бы переходу). */
+    const bgMode = mica ? 'default' : t.bgMode;
+    const solid  = t.bgMode === 'default' ? THEME_DEFAULT.bgColor : t.bgColor;
+    if (bgMode === 'default') st.removeProperty('--bg');
+    else st.setProperty('--bg', solid);
+    if (bgMode === 'color' || bgMode === 'default') st.removeProperty('--bg-image');
+    else st.setProperty('--bg-image', themeBgImage({ ...t, bgMode }));
+    st.setProperty('--glow-strength', String(t.glowStrength));
+    st.setProperty('--radius', `${t.radius}px`);
+    st.setProperty('--grain', String(t.grain));
+    st.setProperty('--vignette', String(t.vignette));
+    /* Второй цвет. Пока он выключен, --accent2-rgb снят, и css берёт
+       --accent-rgb через fallback — градиент схлопывается в один цвет.
+       Класс `.grad` на палочке нужен отдельно: правило с правым цветом
+       ссылается на --accent2-rgb, а пока переменной нет, она бы вернула
+       прочерк в градиенте. */
+    const bar = document.getElementById('accent-top');
+    if (bar) bar.classList.toggle('grad', !!t.accentGrad);
+    const a2 = t.accentGrad && hexToRgb(t.accent2);
+    if (a2) {
+      st.setProperty('--accent2',     `rgb(${a2.r}, ${a2.g}, ${a2.b})`);
+      st.setProperty('--accent2-rgb', `${a2.r}, ${a2.g}, ${a2.b}`);
+    } else {
+      st.removeProperty('--accent2');
+      st.removeProperty('--accent2-rgb');
+    }
+  }, [settings.theme, settings.windowEffect]);
 
   /* режим «Выкл»: глушим все свечения — body-класс для css-правил,
      --glow-opacity для inline-глоу, LIVE_GLOW для canvas; подписчики
@@ -7948,6 +8897,36 @@ const shuffleKeepRef    = useRef(false);
               m.accentMode = (saved.accentMode === 'cover') ? 'cover' : 'color';
             }
             if (!ACCENT_PRESETS[m.accentPreset]) m.accentPreset = 'default';
+            /* Перенос пресета в тему. accentPreset живёт только для этого:
+               после переноса цвет лежит в theme.accent, и правка пикера уже
+               не должна зависеть от того, какой образец был выбран.
+
+               Уже существующую тему НЕ трогаем: первый же запуск после
+               обновления затирал бы всё, что набрано руками. Второй цвет
+               тоже — при переносе он обязан совпасть с первым, иначе
+               включение «второго цвета» дало бы оттенок, которого никто
+               не выбирал. */
+            if (!m.theme || typeof m.theme !== 'object') {
+              const p = ACCENT_PRESETS[m.accentPreset] || ACCENT_PRESETS.default;
+              const hex = rgbToHex(p.r, p.g, p.b);
+              m.theme = { ...THEME_DEFAULT, accent: hex, accent2: hex };
+            }
+            m.theme = cleanTheme(m.theme);
+            /* свои темы: тот же фильтр, что у всего остального — мусор из
+               старого файла не должен ни упасть в рендер, ни затереть id */
+            m.userThemes = cleanUserThemes(m.userThemes);
+            /* Одноразовая миграция дефолтов темы. Маркер берём из `saved`, а НЕ из
+               слитого `m`: сливание идёт как `{...s, ...saved}`, и в нём
+               marker уже стоял бы из начального состояния — то есть всегда
+               текущей версии, и миграция не сработала бы НИКОГДА, молча
+               выглядя как «дефолт применился». Тронуты только активная тема
+               и режим акцента — папка музыки, логин, переименования и
+               список своих тем остаются как были. */
+            if (saved.themeDefaults !== THEME_DEFAULTS_VERSION) {
+              m.theme = defaultTheme();
+              m.accentMode = 'cover';
+              m.themeDefaults = THEME_DEFAULTS_VERSION;
+            }
             /* список источников текста: выкидываем мусор и дубли, отсутствие
                поля (старый файл настроек) → все источники по умолчанию */
             m.lyricsSources = cleanLyricsSources(m.lyricsSources);
@@ -7999,10 +8978,59 @@ const shuffleKeepRef    = useRef(false);
     })();
   }, []);
 
-  /* сохраняем настройки при изменении */
+  /* Сохраняем настройки при изменении — с отложкой.
+   *
+   * ⚠️ Раньше здесь стоял прямой вызов на каждое изменение state, и это было
+   * почти незаметно: настройки меняли раз в минуту. С редактором темы так
+   * перестало быть — протяжка по квадрату цвета даёт изменение на КАЖДЫЙ
+   * сдвиг мыши, то есть 60 раз в секунду, и каждый раз шла запись JSON на
+   * диск через ipc. Отсюда было «всё приложение перекрашивается и лагает».
+   *
+   * Отложка в 350мс: правка цвета идёт непрерывно, а на диск должно уехать
+   * одно состояние после того, как пользователь отпустит мышь. Таймер
+   * перезаписывается, поэтому за 350мс тишины уедет ровно последняя запись,
+   * а не каждая.
+   *
+   * ⚠️ Пишем в ref, а не в замыкание: значение `settings` на момент
+   * постановки таймера устареет уже на первом же кадре, и на диск уехал
+   * бы ПЕРВЫЙ цвет, а не последний.
+   *
+   * Про сам лаг. Запись на диск была лишь половиной: каждое движение мыши по
+   * пикеру ещё и пересобирало весь интерфейс, потому что состояние настроек
+   * лежит в App и меняет его целиком. Пикер поэтому обновляет цвет не на
+   * каждое событие мыши, а раз в кадр (см. ColorPad). */
+  const saveTimerRef = useRef(0);
+  /* Последние настройки — отдельным ref'ом. Слушатель закрытия подписан
+     один раз, поэтому из его замыкания он видел бы настройки ПЕРВОГО
+     рендера, и на диск уехал бы дефолтный акцент вместо того, что
+     человек выбрал секунду назад. Ref обновляется на каждом рендере, и
+     сброс читает всегда актуальное значение. */
+  const latestSettingsRef = useRef(settings);
+  latestSettingsRef.current = settings;
   useEffect(() => {
-    try { window.electronAPI.saveSettings(settings); } catch {}
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      try { window.electronAPI.saveSettings(latestSettingsRef.current); } catch {}
+    }, 350);
+    /* ⛔ cleanup здесь НЕ вызывает сохранение: тема перерисовывается по
+       ходу effect'а смены фона (см. выше), и сохранение на каждом таком
+       переходе означало бы ровно то же, что и до отложки. */
   }, [settings]);
+  /* Сброс отложки при закрытии окна: без него последнее изменение
+     съедалось бы, если закрыть плеер быстрее, чем прошло 350мс. Закрывают
+     его сразу, это кнопка в тайтлбаре.
+     ⚠️ В webview beforeunload срабатывает ненадёжно (окно закрывает rust,
+     а не документ), поэтому это подстраховка, а не основной путь. */
+  useEffect(() => {
+    const flush = () => {
+      clearTimeout(saveTimerRef.current);
+      try { window.electronAPI.saveSettings(latestSettingsRef.current); } catch {}
+    };
+    window.addEventListener('beforeunload', flush);
+    return () => window.removeEventListener('beforeunload', flush);
+    /* settings в зависимостях нет намеренно: ref обновляется на каждом
+     рендере, а слушатель достаточно подписать один раз */
+  }, []);
 
   useEffect(() => {
     try { window.electronAPI.setLoginItem?.(settings.startWithWindows); } catch {}

@@ -111,6 +111,11 @@ pub fn run() {
                непрозрачным: настройка читается фронтендом асинхронно, а
                полупрозрачной оболочку он делает уже после первого рендера */
             if let Some(w) = handle.get_webview_window("main") {
+                /* Рамку окна снимаем всегда и до всего остального: она
+                   рисуется DWM поверх окна и никуда не девается, даже если
+                   панель скруглена своим радиусом. Именно её видно по углам
+                   — белой в неактивном окне и чёрной в активном. */
+                backdrop::hide_border(&w);
                 let on = settings::load_settings()
                     .get("windowEffect")
                     .and_then(Value::as_str)
@@ -171,7 +176,7 @@ pub fn run() {
             set_window_effect,
         ])
         .run(tauri::generate_context!())
-        .expect("seWer Tauri: запуск tauri");
+        .expect("seWer Prism: запуск tauri");
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -181,8 +186,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let items: [&dyn IsMenuItem<tauri::Wry>; 3] = [&open, &sep, &quit];
     let menu = Menu::with_items(app, &items)?;
 
-    let mut builder = TrayIconBuilder::with_id("sewer-tauri")
-        .tooltip("seWer Tauri")
+    /* id трея — служебный, его видит только сам tauri; главное в нём то,
+       что он не должен совпадать с id трея другой копии, иначе запущенные
+       рядом «seWer Tauri» и «seWer Prism» делили бы один трей */
+    let mut builder = TrayIconBuilder::with_id("sewer-prism")
+        .tooltip("seWer Prism")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main(app),
