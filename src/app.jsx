@@ -4,8 +4,19 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMe
    ReactDOM.createPortal на createPortal. */
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence, LayoutGroup, Reorder } from 'framer-motion'
-import Hls from 'hls.js'
-import gsap from 'gsap'
+/* ⚠️ hls.js и gsap грузятся ЛЕНИВО, а не в шапке модуля. Оба нужны не на
+   старте: hls — только когда включаем SC-трек (и только для hls-стримов),
+   gsap — на первом hero-перелёте и на входе в плеер. Статический импорт
+   тащил их в стартовый чанк: ~1.2 МБ разбиралось и исполнялось ДО первого
+   кадра, на старте, где они не нужны. Теперь каждый — свой чанк, который
+   приезжает по динамическому import() ровно в момент первой нужды и дальше
+   живёт в памяти (модули кэшируются) — туда-обратно через границу IPC тут
+   ничего не ходит, это тот же webview.
+   Контракт: loader возвращает модуль целиком, потребитель берёт .default. */
+let _hlsPromise = null;
+let _gsapPromise = null;
+const loadHls  = () => (_hlsPromise ||= import('hls.js').then(m => m.default));
+const loadGsap = () => (_gsapPromise ||= import('gsap').then(m => m.default));
 /* этот модуль ставит window.electronAPI surface; импорт идёт первым, чтобы
    фасад существовал до того, как App смонтируется (bridge ставит его на импорте) */
 import './bridge.js'
@@ -4183,52 +4194,64 @@ function HeroClone({ hero, exiting, reverse = false }) {
        ~37 различных значений, и на каждом смене — перерисовка. */
     const BR_MORPH = 0.55;
     const rNums = s => s.split(/\s+/).map(parseFloat);
-    const tl = gsap.timeline();
-    const from = reverse
-      ? { x: 0, y: 0, scale: 1, br: BR4 }
-      : { x: dx, y: dy, scale: sc, br: BR_END };
-    const to = reverse
-      ? { x: dx, y: dy, scale: sc, br: BR_END }
-      : { x: 0, y: 0, scale: 1, br: BR4 };
-    /* transform — на всю длительность, только он
-       композитный и его можно отдать GPU целиком */
-    tl.fromTo(el, { x: from.x, y: from.y, scale: from.scale },
-      { x: to.x, y: to.y, scale: to.scale, ease: HERO_EASE, duration: DUR, force3D: true }, 0);
-    /* радиус — отдельным твином на BR_MORTH длительности, пишем сами,
-       чтобы округлять до целых и не перерисовывать на дробных */
-    const A = rNums(from.br), B = rNums(to.br);
-    const brS = { p: 0 };
-    tl.fromTo(brS, { p: 0 }, {
-      p: 1, ease: HERO_EASE, duration: DUR * BR_MORPH,
-      onUpdate: () => {
-        const k = brS.p;
-        el.style.borderRadius = (A[0]+(B[0]-A[0])*k).toFixed(0) + 'px '
-          + (A[1]+(B[1]-A[1])*k).toFixed(0) + 'px '
-          + (A[2]+(B[2]-A[2])*k).toFixed(0) + 'px '
-          + (A[3]+(B[3]-A[3])*k).toFixed(0) + 'px';
-      },
-      onComplete: () => { el.style.borderRadius = to.br; },
-    }, 0);
-    /* ❌ раньше здесь параллельно анимировался `clip-path: inset(0 round …)`
-       на <img> — «в такт радиусу родителя». это было ИЗБЫЧНО: у контейнера
-       `overflow:hidden` и анимируемый `borderRadius` с тем же радиусом, то
-       есть картинка и так обрезается скруглением родителя. вторая
-       растеризация той же кривой (плюс на масштабированной картинке)
-       стоила кадра на каждом шаге, а дропы кадров читаются как
-       дёргасть — то есть добавляли ровно ту «резкость», которую
-       убирали. теперь скругление ведёт только родитель. */
-    return () => tl.kill();
+    /* gsap грузится лениво (см. шапку модуля) — весь этот эффект асинхронный.
+       Отмена через cleanup при этом обязательна и раньше работала просто
+       потому, что gsap был уже импортирован: без неё вторая навигация
+       наложила бы две таймлайна на один клон обложки. */
+    let tl = null, alive = true;
+    loadGsap().then(gsap => {
+      if (!alive) return;
+      tl = gsap.timeline();
+      const from = reverse
+        ? { x: 0, y: 0, scale: 1, br: BR4 }
+        : { x: dx, y: dy, scale: sc, br: BR_END };
+      const to = reverse
+        ? { x: dx, y: dy, scale: sc, br: BR_END }
+        : { x: 0, y: 0, scale: 1, br: BR4 };
+      /* transform — на всю длительность, только он
+         композитный и его можно отдать GPU целиком */
+      tl.fromTo(el, { x: from.x, y: from.y, scale: from.scale },
+        { x: to.x, y: to.y, scale: to.scale, ease: HERO_EASE, duration: DUR, force3D: true }, 0);
+      /* радиус — отдельным твином на BR_MORTH длительности, пишем сами,
+         чтобы округлять до целых и не перерисовывать на дробных */
+      const A = rNums(from.br), B = rNums(to.br);
+      const brS = { p: 0 };
+      tl.fromTo(brS, { p: 0 }, {
+        p: 1, ease: HERO_EASE, duration: DUR * BR_MORPH,
+        onUpdate: () => {
+          const k = brS.p;
+          el.style.borderRadius = (A[0]+(B[0]-A[0])*k).toFixed(0) + 'px '
+            + (A[1]+(B[1]-A[1])*k).toFixed(0) + 'px '
+            + (A[2]+(B[2]-A[2])*k).toFixed(0) + 'px '
+            + (A[3]+(B[3]-A[3])*k).toFixed(0) + 'px';
+        },
+        onComplete: () => { el.style.borderRadius = to.br; },
+      }, 0);
+      /* ❌ раньше здесь параллельно анимировался `clip-path: inset(0 round …)`
+         на <img> — «в такт радиусу родителя». это было ИЗБЫЧНО: у контейнера
+         `overflow:hidden` и анимируемый `borderRadius` с тем же радиусом, то
+         есть картинка и так обрезается скруглением родителя. вторая
+         растеризация той же кривой (плюс на масштабированной картинке)
+         стоила кадра на каждом шаге, а дропы кадров читаются как
+         дёргасть — то есть добавляли ровно ту «резкость», которую
+         убирали. теперь скругление ведёт только родитель. */
+    });
+    return () => { alive = false; tl?.kill(); };
   }, []);
 
   useEffect(() => {
     if (!exiting || !cloneRef.current) return;
-    const tween = gsap.to(cloneRef.current, {
-      opacity: 0,
-      duration: HERO_FADE_MS / 1000,
-      ease: 'power2.out',
-      force3D: true,
+    let tween = null, alive = true;
+    loadGsap().then(gsap => {
+      if (!alive || !cloneRef.current) return;
+      tween = gsap.to(cloneRef.current, {
+        opacity: 0,
+        duration: HERO_FADE_MS / 1000,
+        ease: 'power2.out',
+        force3D: true,
+      });
     });
-    return () => tween.kill();
+    return () => { alive = false; tween?.kill(); };
   }, [exiting]);
 
   // pre-paint inline transform — clone is born already in its starting position
@@ -9334,10 +9357,15 @@ function App() {
   useEffect(() => {
     if (view === 'player' && !hero && artEntranceRef.current) {
       artEntranceTweenRef.current?.kill();
-      artEntranceTweenRef.current = gsap.fromTo(artEntranceRef.current,
-        { opacity: 0, y: 14 },
-        { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' }
-      );
+      let alive = true;
+      loadGsap().then(gsap => {
+        if (!alive || !artEntranceRef.current) return;
+        artEntranceTweenRef.current = gsap.fromTo(artEntranceRef.current,
+          { opacity: 0, y: 14 },
+          { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' }
+        );
+      });
+      return () => { alive = false; };
     }
   }, [view]);
 
@@ -9345,14 +9373,19 @@ function App() {
   useEffect(() => {
     const el = playerInfoRef.current;
     if (!el) return;
-    if (playerVisible) {
-      gsap.fromTo(el,
-        { opacity: 0, y: 14 },
-        { opacity: 1, y: 0, duration: 0.42, ease: 'sine.out', delay: 0.08, clearProps: 'y' }
-      );
-    } else {
-      gsap.to(el, { opacity: 0, duration: 0.1 });
-    }
+    let tweens = null, alive = true;
+    loadGsap().then(gsap => {
+      if (!alive || !playerInfoRef.current) return;
+      if (playerVisible) {
+        tweens = gsap.fromTo(el,
+          { opacity: 0, y: 14 },
+          { opacity: 1, y: 0, duration: 0.42, ease: 'sine.out', delay: 0.08, clearProps: 'y' }
+        );
+      } else {
+        tweens = gsap.to(el, { opacity: 0, duration: 0.1 });
+      }
+    });
+    return () => { alive = false; tweens?.kill(); };
   }, [playerVisible]);
 
   /* плавный ресайз — отключаем transitions пока тянут окно */
@@ -10736,7 +10769,15 @@ function App() {
     if (xfadePrimeRef.current !== prime) return;
     if (!r) { prime.failed = true; return; }
     prime.url = r.url; prime.isHls = r.isHls;
-    if (r.isHls && typeof Hls !== 'undefined' && Hls.isSupported()) {
+    if (r.isHls) {
+      const Hls = await loadHls();
+      /* Пока грузился чанк hls, префетч могли отменить (сменили трек,
+         ушли из плеера) — тогда смонтированный инстанс некому гасить,
+         кроме нас: deckBHlsRef принадлежит уже другому префетчу, а этот
+         осиротевший держал бы открытый стрим вечно. */
+      if (xfadePrimeRef.current !== prime || !Hls.isSupported()) {
+        prime.failed = true; return;
+      }
       const hls = new Hls();
       deckBHlsRef.current = hls;
       hls.loadSource(r.url);
@@ -11098,7 +11139,19 @@ function App() {
       startFadeIn(audio);
     }, { once: true });
 
-    if (isHls && typeof Hls !== 'undefined' && Hls.isSupported()) {
+    if (isHls) {
+      const Hls = await loadHls();
+      /* после await: за это время могли кликнуть другой трек (req сменился)
+         или уйти из плеера. Тогда смонтированный hls повис бы на живом
+         элементе и тянул буфер чужого трека. */
+      if (stale()) { setLoadingTrackId(null); return; }
+      if (!Hls.isSupported()) {
+        audio.src = resolvedUrl;
+        audio.load();
+        audio.play().then(() => setLoadingTrackId(null)).catch(() => { setLoadingTrackId(null); setIsPlaying(false); });
+        setIsPlaying(true);
+        return;
+      }
       const hls = new Hls();
       hlsRef.current = hls;
       hls.loadSource(resolvedUrl);

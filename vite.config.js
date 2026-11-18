@@ -21,5 +21,18 @@ export default defineConfig({
     target: 'chrome105',
     minify: 'esbuild',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        /* framer-motion — единственная тяжёлая библиотека, которая нужна на
+           КАЖДОМ кадре (все 42 использования <motion.*> в app.jsx). Ленивым
+           его делать нельзя, но и тащить в общий чанк с app-кодом незачем:
+           отдельный vendor-чанк кэшируется webview независимо от app.jsx —
+           при пересборке приложения в dev-цикле движок перечитывает только
+           изменённый app.jsx, а framer-motion остаётся в HTTP-кэше. */
+        manualChunks(id) {
+          if (id.includes('node_modules/framer-motion')) return 'framer-motion'
+        },
+      },
+    },
   },
 })
