@@ -103,15 +103,28 @@ window.electronAPI = {
   /* Логин и первый запрос к api залогированы: это единственное место, где
      логин может тихо сорваться — токен есть, а аккаунт в ui не появился,
      потому что /me не ответил. */
-  scLogin: async () => {
+  scLogin: async proxy => {
     log('sc-login: ждём окно входа')
-    const creds = await invoke('sc-login')
+    const creds = await invoke('sc-login', { proxy: proxy || null })
     if (!creds || !creds.token) {
-      log('sc-login: токен не получен')
+      /* Раньше сюда попадал только null, и в логе было просто «токен не
+         получен». Теперь rust называет причину — по ней ui и говорит, что
+         делать (провайдер режет сайт / человек закрыл окно / таймаут). */
+      const why = (creds && creds.error) || 'unknown'
+      log(`sc-login: не вышло, причина ${why}${creds && creds.detail ? ' ' + String(creds.detail).slice(0, 160) : ''}`)
       return creds
     }
     log(`sc-login: токен получен, client_id=${creds.clientId}`)
     return creds
+  },
+  /* Настоящий выход: rust закрывает окно сессии и удаляет куки soundcloud.
+     Без этого «выйти» стирало только токен, а сессия оставалась живой —
+     следующий вход проходил без пароля. */
+  scLogout: async () => {
+    log('sc-logout: закрываю сессию')
+    const res = await invoke('sc-logout')
+    log(`sc-logout: ${JSON.stringify(res || {}).slice(0, 160)}`)
+    return res
   },
   scFetch: async (url, token, clientId, method, body, contentType) => {
     const isMe = /\/me(\?|$)/.test(url)

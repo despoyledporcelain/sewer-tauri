@@ -7,7 +7,12 @@ rust-version = "1.85"
 
 [lib]
 name = "sewer_tauri_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Только rlib. Шаблон tauri ставит ещё staticlib+cdylib «на мобилки», но здесь
+# проект десктопный, а cdylib на windows-gnu ломает линковку: rustc генерирует
+# .def со ВСЕМИ экспортами, и у большой tauri-сборки их переваливает за 65535 —
+# mingw ld падает с «export ordinal too large: 149870». Для десктопа dll не
+# нужна вообще, бинарь линкуется с rlib.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

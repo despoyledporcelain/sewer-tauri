@@ -23,6 +23,7 @@
         "fullscreen": false,
         "decorations": false,
         "transparent": true,
+        "shadow": false,
         "center": true,
         "focus": true,
         "dragDropEnabled": false

@@ -118,39 +118,17 @@ const THEME_DEFAULT = {
   preset:      null,
 };
 
-/* Наборы. Каждый — это ровно те же поля, что у THEME_DEFAULT, поэтому
-   применение пресета это `cleanTheme({...THEME_DEFAULT, ...v})` и никакого
-   отдельного кода.
+/* Темы. В сетке две: стоковая и «Обложка». Ранее здесь был ещё десяток
+   раскрасок (Нуар, Лаванда, Океан…), они убраны: то же самое набирается
+   ползунками и сохраняется в «Свои темы», а наборов было столько, что
+   отличалась от соседней половина одним акцентом.
 
    ⚠️ Тема со своим фоном обязана ставить `bgMode:'color'`, а не 'default' с
    заполненным `bgColor`. Режим «Стандарт» — это ровно стоковый #07070a, и
-   effect фона при нём СНИМАЕТ --bg, а не пишет его. bgColor в пресете с
-   'default' молча игнорировался, и тема выглядела как «поменялся только
-   акцент». На этом попался «Лаванда»: её тёмно-фиолетовый фон не появлялся
-   никогда. То же было у «Карбона» и «Графита». */
+   effect фона при нём СНИМАЕТ --bg, а не пишет его. */
 const THEME_PRESETS = [
-  { id:'noir', label:'Нуар', v:{
-    accent:'#b2b2b2', bgMode:'default', glowStrength:1, radius:12, grain:0.022 } },
-  { id:'carbon', label:'Карбон', v:{
-    accent:'#e6e6ef', bgMode:'color', bgColor:'#0b0b0e', glowStrength:0.75, radius:4, grain:0.07 } },
-  { id:'lavender', label:'Лаванда', v:{
-    accent:'#9b7dff', bgMode:'color', bgColor:'#0a0812', glowStrength:1.1, radius:18 } },
-  { id:'graphite', label:'Графит', v:{
-    accent:'#8ea3b8', bgMode:'color', bgColor:'#0a0c0f', glowStrength:0.7, radius:8, grain:0.04 } },
-  { id:'mint', label:'Мята', v:{
-    accent:'#82dcc3', bgMode:'gradient', bgColor:'#04120f', bgColor2:'#0c2f27', bgAngle:160,
-    glowStrength:1.05, radius:16 } },
-  { id:'rose', label:'Сакура', v:{
-    accent:'#ff91af', bgMode:'gradient', bgColor:'#150a10', bgColor2:'#3d1330', bgAngle:135,
-    glowStrength:1.1, radius:18 } },
-  { id:'amber', label:'Янтарь', v:{
-    accent:'#ffb164', bgMode:'gradient', bgColor:'#140d06', bgColor2:'#3a1c08', bgAngle:120, radius:14 } },
-  { id:'sunset', label:'Закат', v:{
-    accent:'#ff7a5c', accent2:'#ffd166', accentGrad:true, bgMode:'gradient',
-    bgColor:'#2a1030', bgColor2:'#8a2a1c', bgAngle:150, glowStrength:1.2, radius:20 } },
-  { id:'ocean', label:'Океан', v:{
-    accent:'#4cc9f0', accent2:'#4361ee', accentGrad:true, bgMode:'gradient',
-    bgColor:'#04121f', bgColor2:'#0a2f4a', bgAngle:200, glowStrength:1.1, radius:16 } },
+  { id:'default', label:'Стандарт', v:{
+    bgMode:'default' } },
   /* Фон под обложку. Зерно здесь выключено намеренно: шум поверх
      плавно ползущего градиента превращается в песочницу — он не
      перерисовывается вместе с ним, и при смене трека фон едет, а зерно
@@ -159,14 +137,6 @@ const THEME_PRESETS = [
     accent:'#7cf7ff', bgMode:'cover', glowStrength:1.15, radius:20, grain:0 } },
 ];
 
-/* Набор по умолчанию и версия дефолтов.
-   `THEME_DEFAULTS_VERSION` — маркер одноразовой миграции. Без него смена
-   дефолта дошла бы только до чистых установок, а у того, кто уже запускал
-   плеер, остался бы старый дефолт из settings.json навсегда. При обновлении
-   до этой версии активная тема приводится к новому дефолту ОДИН раз:
-   папка музыки, логин soundcloud, переименования и список СВОИХ тем не
-   трогаются, так что ничего не теряется — кроме того, что тема сейчас
-   применена. */
 const THEME_DEFAULTS_VERSION = 2;
 function defaultTheme() {
   const p = THEME_PRESETS.find(x => x.id === 'cover');
@@ -1648,7 +1618,20 @@ const STRINGS = {
     unknown:'неизвестно', logout:'выйти',
     sc_not_connected:'soundcloud не подключён',
     sc_hint:'войди чтобы видеть лайки,\nартистов и подписки',
-    opening_browser:'открываем браузер...', login_browser:'войти через браузер',
+    opening_browser:'жду вход...', login_browser:'войти в soundcloud',
+    /* Коды ошибок из sc_login (src-tauri/src/soundcloud.rs). Раньше на любой
+       провал возвращался null, кнопка молча возвращалась в исходное, и понять
+       «не логинится» было нечем. */
+    sc_err_cert:'soundcloud.com не открылся: провайдер подменяет сертификат. включи VPN или укажи прокси ниже',
+    sc_err_blocked:'провайдер отдаёт заглушку вместо soundcloud.com. нужен VPN или прокси ниже',
+    sc_err_offline:'soundcloud.com не отвечает: проверь интернет или прокси',
+    sc_err_closed:'вход отменён',
+    sc_err_timeout:'окно входа закрылось по таймауту (5 минут) — попробуй ещё раз',
+    sc_err_window:'окно входа не открылось',
+    sc_err_expired:'сессия soundcloud истекла — войди заново',
+    sc_err_proxy:'прокси не разобрался: нужна форма socks5://хост:порт или хост:порт',
+    sc_proxy:'прокси для soundcloud',
+    sc_proxy_hint:'нужен, если провайдер блокирует soundcloud.com. форма: socks5://127.0.0.1:10808 или 127.0.0.1:10809',
     search_ph:'поиск',
     artists:'Исполнители', followers:'подписчиков', tracks_label:'Треки',
     search_best:'Лучшее', search_recent:'Недавние запросы', search_recent_clear:'очистить',
@@ -1795,7 +1778,17 @@ const STRINGS = {
     unknown:'unknown', logout:'log out',
     sc_not_connected:'soundcloud not connected',
     sc_hint:'log in to see your likes,\nartists and subscriptions',
-    opening_browser:'opening browser...', login_browser:'log in via browser',
+    opening_browser:'waiting for sign-in...', login_browser:'log in to soundcloud',
+    sc_err_cert:'soundcloud.com did not open: your provider is serving a forged certificate. turn on a VPN or set a proxy below',
+    sc_err_blocked:'your provider serves a block page instead of soundcloud.com. a VPN or a proxy below is required',
+    sc_err_offline:'soundcloud.com is not responding: check the connection or the proxy',
+    sc_err_closed:'sign-in cancelled',
+    sc_err_timeout:'the sign-in window closed after the 5 minute timeout — try again',
+    sc_err_window:'the sign-in window did not open',
+    sc_err_expired:'soundcloud session expired — log in again',
+    sc_err_proxy:'the proxy could not be parsed: use socks5://host:port or host:port',
+    sc_proxy:'soundcloud proxy',
+    sc_proxy_hint:'needed when the provider blocks soundcloud.com. form: socks5://127.0.0.1:10808 or 127.0.0.1:10809',
     search_ph:'search',
     artists:'Artists', followers:'followers', tracks_label:'Tracks',
     search_best:'Top result', search_recent:'Recent searches', search_recent_clear:'clear',
@@ -5172,14 +5165,52 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
   const micaOn = settings.windowEffect === 'mica';
   const [scLoading, setScLoading] = useState(false);
   const [scError, setScError] = useState(null);
+  /* Прокси для soundcloud. Черновик отдельный, чтобы поле можно было править
+     посимвольно: запись в настройки — только по уходу фокуса/Enter. */
+  const [scProxyDraft, setScProxyDraft] = useState(() => settings.scProxy || '');
+  const scProxySaved = settings.scProxy || '';
+  useEffect(() => { setScProxyDraft(scProxySaved); }, [scProxySaved]);
+  /* Коды из sc_login → человеческий текст (см. soundcloud.rs, sc_login). */
+  const scLoginError = code => {
+    switch (code) {
+      case 'site_cert':      return t('sc_err_cert');
+      case 'site_blocked':   return t('sc_err_blocked');
+      case 'site_unreachable':
+      case 'site_timeout':   return t('sc_err_offline');
+      case 'login_interrupted':
+      case 'login_closed':   return t('sc_err_closed');
+      case 'login_timeout':  return t('sc_err_timeout');
+      case 'window_failed':  return t('sc_err_window');
+      case 'proxy_invalid':  return t('sc_err_proxy');
+      default:               return t('conn_error');
+    }
+  };
   const scLogin = async () => {
     setScLoading(true); setScError(null);
     try {
-      const creds = await window.electronAPI.scLogin();
-      if (!creds) { setScLoading(false); return; }
+      /* Прокси отдаём аргументом, а не только через настройки: они пишутся на
+         диск с задержкой 350 мс, и вписанное «только что» значение иначе не
+         доехало бы до rust. В настройки кладём тоже — окно сессии читает их
+         оттуда. */
+      const proxy = scProxyDraft.trim();
+      if (proxy !== scProxySaved) onSettings({ ...settings, scProxy: proxy });
+      const creds = await window.electronAPI.scLogin(proxy || null);
+      /* Ошибка теперь приходит объектом с кодом и подробностью, а не null:
+         молчаливое «кнопка вернулась на место» и было главной жалобой
+         «не получается войти». */
+      if (!creds || creds.error || !creds.token) {
+        setScError(scLoginError(creds && creds.error));
+        setScLoading(false);
+        return;
+      }
       const res = await window.electronAPI.scFetch('https://api-v2.soundcloud.com/me', creds.token, creds.clientId);
       if (res.data) onScLogin({ ...creds, userId: res.data.id, username: res.data.username, avatarUrl: res.data.avatar_url || null });
-      else setScError(t('profile_error'));
+      else {
+        /* Токен есть, а профиль не отдался: сессия мёртвая. Чистим её,
+           иначе следующая попытка снова подхватит ту же cookie. */
+        setScError(t('profile_error'));
+        try { await window.electronAPI.scLogout(); } catch {}
+      }
     } catch { setScError(t('conn_error')); }
     setScLoading(false);
   };
@@ -5312,6 +5343,38 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             </Btn>
           </div>
         )}
+        {/* Прокси для soundcloud. Место — прямо под статусом входа, потому что
+            нужен он ровно тогда, когда вход не идёт: провайдер подменяет
+            сертификат soundcloud.com, и окно входа не может загрузить даже
+            страницу. Поле видно и после входа: через окно сессии идут PUT. */}
+        <div style={{
+          borderTop: `1px solid ${SN.line}`, padding: '12px 16px 13px',
+        }}>
+          <div style={{
+            fontSize: 'var(--fs-xs)', color: SN.mid, marginBottom: 7,
+          }}>{t('sc_proxy')}</div>
+          <input
+            value={scProxyDraft}
+            spellCheck={false}
+            placeholder="socks5://127.0.0.1:10808"
+            onChange={e => setScProxyDraft(e.target.value)}
+            onBlur={() => {
+              const v = scProxyDraft.trim();
+              if (v !== scProxySaved) onSettings({ ...settings, scProxy: v });
+            }}
+            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              background: 'rgba(255,255,255,0.04)',
+              border: `1px solid ${SN.line}`, borderRadius: 9,
+              padding: '8px 11px', color: 'rgba(255,255,255,0.82)',
+              fontSize: 'var(--fs-sm)', fontFamily: 'inherit', outline: 'none',
+            }}
+          />
+          <div style={{
+            fontSize: 'var(--fs-eyebrow)', color: SN.dim, marginTop: 6, lineHeight: 1.5,
+          }}>{t('sc_proxy_hint')}</div>
+        </div>
       </Card>
     ),
     playback: (
@@ -7537,6 +7600,15 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
   };
   useEffect(() => { saveRecent(recent); }, [recent]);
 
+  /* Уход со вкладки должен уводить и фокус. `pointerEvents:'none'` на корне
+     блокирует мышь, но не фокус: поле остаётся активным элементом — курсор
+     мигает в невидимом вводе, клавиатура (Enter, стрелки, Ctrl+F-состояния)
+     продолжает жить в скрытой вкладке. blur здесь, а не в App: ref на поле
+     живёт в этом компоненте. */
+  useEffect(() => {
+    if (!visible && document.activeElement === inputRef.current) inputRef.current?.blur();
+  }, [visible]);
+
   const applyRecent = (q) => {
     setQuery(q);
     queryRef.current = q;
@@ -7593,11 +7665,23 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
   const top = results[0];
   const rest = results.slice(1);
 
+  /* ⚠️ `visibility` здесь не для анимации, а для hit-testing. В WebView2
+     (как и в Chromium вообще) `opacity:0` НЕ исключает элемент из hit-test:
+     он невидим, но клики по-прежнему ловит, если у потомков свой
+     `pointerEvents`. `pointerEvents:'none'` на корне это чинит только пока
+     потомок не переопределил его обратно ('auto' на результатах, на карточке
+     пользователя). Вкладка поиска лежит в дереве ПОСЛЕ плеера, то есть
+     выше его по порядку отрисовки — и её невидимые результаты перехватывали
+     клики в плеере. Ровно жалоба «ушёл с поиска, а он всё ещё нажимается».
+     `visibility:hidden` выключает hit-test гарантированно на всём поддереве,
+     а transition на visibility возвращает элемент в поток мгновенно при
+     появлении (задержка только на скрытие — чтобы не рубить анимацию opacity). */
   const rootStyle = {
     position:'absolute', inset:0,
     opacity: visible ? 1 : 0,
+    visibility: visible ? 'visible' : 'hidden',
     pointerEvents: visible ? 'auto' : 'none',
-    transition:'opacity 0.14s ease',
+    transition:'opacity 0.14s ease, visibility 0s linear ' + (visible ? '0s' : '0.14s'),
   };
 
   /* Без входа в soundcloud искать нечем: doSearch выходит на первой строке,
@@ -8477,6 +8561,8 @@ function App() {
     autoplay:false, crossfade:0, defaultRepeat:false,
     startWithWindows:false, minimizeToTray:false, musicFolder:'', downloadsFolder:'',
     customTitles: {}, scTitles: {}, minDuration: 30, soundcloudAuth: null,
+    /* прокси для soundcloud (см. карточку аккаунта): пусто — напрямую */
+    scProxy: '',
     sourceMode: 'local', discordRpc: true,
     discordTimestamp: 'progress', discordPause: 'show', discordCover: true,
     /* Акцент по умолчанию берётся с обложки, а не задаётся цветом: тема,
@@ -9853,7 +9939,14 @@ function App() {
     try {
       while (url && pages < 20) {
         const res = await window.electronAPI.scFetch(url, auth.token, auth.clientId);
-        if (res.error) { setScError(`${STRINGS[langRef.current]?.api_err ?? 'api error'}: ${res.error}`); break; }
+        if (res.error) {
+          /* 401 — это не «ошибка api», а мёртвый токен: сессию надо получить
+             заново, и человек должен увидеть это прямо здесь, а не гадать,
+             почему лаки пустые. */
+          const tL = k => STRINGS[langRef.current]?.[k] ?? STRINGS.ru[k] ?? k;
+          setScError(res.error === 401 ? tL('sc_err_expired') : `${tL('api_err')}: ${res.error}`);
+          break;
+        }
         if (!res.data?.collection) break;
         for (const item of res.data.collection) {
           const t = item.track;
@@ -9920,7 +10013,14 @@ function App() {
     try {
       while (url && pages < 20 && !foundKnown) {
         const res = await window.electronAPI.scFetch(url, auth.token, auth.clientId);
-        if (res.error) { setScError(`${STRINGS[langRef.current]?.api_err ?? 'api error'}: ${res.error}`); break; }
+        if (res.error) {
+          /* 401 — это не «ошибка api», а мёртвый токен: сессию надо получить
+             заново, и человек должен увидеть это прямо здесь, а не гадать,
+             почему лаки пустые. */
+          const tL = k => STRINGS[langRef.current]?.[k] ?? STRINGS.ru[k] ?? k;
+          setScError(res.error === 401 ? tL('sc_err_expired') : `${tL('api_err')}: ${res.error}`);
+          break;
+        }
         if (!res.data?.collection) break;
         for (const item of res.data.collection) {
           const t = item.track;
@@ -9986,7 +10086,14 @@ function App() {
   const handleScLogin = useCallback((auth) => {
     setSettings(s => ({ ...s, soundcloudAuth: auth, sourceMode: 'sc' }));
   }, []);
-  const handleScLogout = useCallback(() => {
+  /* Выход — через rust: он закрывает окно сессии и удаляет куки soundcloud.
+     Раньше здесь только чистились настройки, а сессия webview оставалась
+     живой — следующий вход проходил без пароля, и сменить аккаунт было
+     невозможно. Ошибку выхода не глотаем: если куки удалить не удалось,
+     в логе и в консоли останется след, а сессия — живой. */
+  const handleScLogout = useCallback(async () => {
+    try { await window.electronAPI.scLogout(); }
+    catch (e) { console.error('scLogout:', e); }
     scCacheRef.current = [];
     scCacheMapRef.current = new Map();
     try { window.electronAPI.scSaveLikesCache([]); } catch {}

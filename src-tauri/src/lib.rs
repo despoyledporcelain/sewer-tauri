@@ -190,6 +190,7 @@ pub fn run() {
             renderer_log,
             set_login_item,
             sc_login,
+            sc_logout,
             sc_fetch,
             net_fetch,
             sc_check_covers,
@@ -423,8 +424,16 @@ fn renderer_log(msg: String) {
    переписывать 38 вызовов scFetch в ui. */
 
 #[tauri::command(rename = "sc-login")]
-async fn sc_login(app: AppHandle) -> Result<Value, String> {
-    Ok(soundcloud::sc_login(&app).await)
+async fn sc_login(app: AppHandle, proxy: Option<String>) -> Result<Value, String> {
+    Ok(soundcloud::sc_login(&app, proxy).await)
+}
+
+/* Выход — отдельная команда, а не «стереть поле в настройках»: окно сессии
+   надо закрыть, а куки soundcloud удалить, иначе следующий вход проходит без
+   пароля и сменить аккаунт невозможно (см. soundcloud::sc_logout). */
+#[tauri::command(rename = "sc-logout")]
+async fn sc_logout(app: AppHandle) -> Result<Value, String> {
+    Ok(soundcloud::sc_logout(&app).await)
 }
 
 #[tauri::command(rename = "sc-fetch")]
