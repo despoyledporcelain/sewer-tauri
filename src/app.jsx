@@ -1600,6 +1600,15 @@ const STRINGS = {
        «От обложки / От обложки». Два одинаковых заголовка подряд — это шум,
        а не структура. `default_repeat` тоже был без единого обращения. */
     crossfade:'Кроссфейд', crossfade_sub:'Плавное перекрытие треков',
+    /* эквалайзер и транспорт */
+    fx:'Эффекты',
+    eq:'Эквалайзер', eq_on:'Включить', eq_on_sub:'Тембр в реальном времени — и для локальных, и для soundcloud',
+    eqp_flat:'Ровно', eqp_bass:'Бас', eqp_vocal:'Вокал', eqp_treble:'Верх', eq_reset:'сбросить',
+    db:'дБ', hz:'Гц', khz:'кГц',
+    speed_pitch:'Скорость и тон',
+    speed:'Скорость', preserve_pitch:'Держать тональность',
+    preserve_pitch_sub:'При смене скорости высота остаётся прежней',
+    pitch:'Тональность', semitones:'пт',
     /* ❌ УДАЛЕНЫ ключи `card_interface`, `hide_dividers`, `hide_dividers_sub` —
        карточка «Интерфейс» была из одного тумблера разделителей, он убран,
        а поведение зафиксировано константой HIDE_DIVIDERS */
@@ -1764,6 +1773,14 @@ const STRINGS = {
     /* ❌ removed card_audio, autoplay, autoplay_sub, default_repeat,
        card_discord, lyrics_sources, accent_title, accent_off_title — см. ru */
     crossfade:'Crossfade', crossfade_sub:'Smooth overlap between tracks',
+    fx:'Effects',
+    eq:'Equalizer', eq_on:'Enable', eq_on_sub:'Real-time tone shaping — for local files and soundcloud alike',
+    eqp_flat:'Flat', eqp_bass:'Bass', eqp_vocal:'Vocal', eqp_treble:'Treble', eq_reset:'reset',
+    db:'dB', hz:'Hz', khz:'kHz',
+    speed_pitch:'Speed and pitch',
+    speed:'Speed', preserve_pitch:'Keep pitch',
+    preserve_pitch_sub:'Pitch stays the same when speed changes',
+    pitch:'Pitch', semitones:'st',
     /* ❌ removed card_interface, hide_dividers, hide_dividers_sub — см. ru */
     discord_rpc:'Discord Rich Presence', discord_rpc_sub:'Show current track in Discord',
     discord_timestamp:'Timestamp',
@@ -2009,6 +2026,299 @@ function PlayerLikeBtn({ liked, onLike, style: extraStyle }) {
       </div>
     </div>
   );
+}
+
+/* ── корни вкладок («стопка») ──────────────────────────────────────────────
+   Все вьюхи лежат одной стопкой (position:absolute; inset:0) и прячутся
+   прозрачностью, а не размонтированием: так дешевле, и анимация входа не
+   рвётся. Но `opacity:0` в WebView2 НЕ исключает поддерево из hit-test:
+   элемент невидим, а клики ловит — стоит потомку вернуть себе
+   `pointerEvents:'auto'`, а он есть почти у каждой кнопки.
+   `pointerEvents:'none'` на корне поэтому не спасал: скрытая вкладка
+   продолжала перехватывать клики у видимой. Отсюда были и «ушёл с поиска, а
+   он всё ещё нажимается», и «в настройках кнопки не те, что под курсором» —
+   просто вкладка лежит в дереве ПОСЛЕ текущей и перекрывает её.
+
+   `visibility:hidden` выключает hit-test на всём поддереве гарантированно и
+   на layout не влияет (размеры остаются, framer измеряет как обычно).
+   Задержка в transition нужна только на скрытие — чтобы анимация opacity
+   успела доехать; при показе visibility переключается сразу, иначе первое
+   0.14с элемент был бы невидим. */
+const stackRoot = (visible, fadeMs = 0.14) => ({
+  position:'absolute', inset:0,
+  opacity: visible ? 1 : 0,
+  visibility: visible ? 'visible' : 'hidden',
+  pointerEvents: visible ? 'auto' : 'none',
+  transition:`opacity ${fadeMs}s ease, visibility 0s linear ${visible ? '0s' : `${fadeMs}s`}`,
+});
+
+/* ── аудио-движок: эквалайзер, скорость, тон ───────────────────────────────
+   Зачем свой граф. Web Audio — единственный способ и править тембр, и менять
+   тон независимо от скорости: у `<audio>` есть только `playbackRate`, который
+   всегда тянет за собой высоту. Значит медиаэлемент нужно завести в
+   AudioContext (`createMediaElementSource`) и дальше гнать сигнал по цепочке
+   фильтров.
+
+   ⚠️ Два свойства этой схемы, которые легко забыть:
+   1) `crossOrigin='anonymous'` на элементе ОБЯЗАТЕЛЕН и обязан стоять ДО
+      первого `src`. Без него кросс-доменный поток (soundcloud отдаёт треки с
+      cf-media.sndcdn.com) считается «испорченным», и Chromium глушит узел
+      источника — трек просто замолкает при включённом эквалайзере. Проверено:
+      CDN отдаёт `access-control-allow-origin: *`, asset-протокол tauri —
+      заголовок с origin окна, а hls идёт через MSE (blob:), где CORS вообще
+      не участвует.
+   2) как только для элемента вызван `createMediaElementSource`, звук идёт
+      ТОЛЬКО через граф. Если AudioContext окажется в состоянии `suspended`
+      (политика автовоспроизведения), будет тишина. Поэтому `resume()` зовём
+      из обработчиков play и из первого клика по окну.
+
+   Громкость и кроссфейд остаются на `element.volume` — он применяется до
+   источника, поэтому граф их не ломает и переписывать fade-код не нужно. */
+
+/* полосы. Крайние — полки: peaking у самого низа/верха режет за пределами
+   слышимого, а полка двигает весь диапазон, как на настоящем эквалайзере */
+const EQ_BANDS = [
+  { hz:    60, type: 'lowshelf',  q: 0.7 },
+  { hz:   170, type: 'peaking',   q: 1.0 },
+  { hz:   350, type: 'peaking',   q: 1.0 },
+  { hz:  1000, type: 'peaking',   q: 1.0 },
+  { hz:  3500, type: 'peaking',   q: 1.0 },
+  { hz:  8000, type: 'peaking',   q: 1.0 },
+  { hz: 15000, type: 'highshelf', q: 0.7 },
+];
+const EQ_FLAT = EQ_BANDS.map(() => 0);
+/* ±12 дБ: на 18 дБ любой пресет упирается в клиппинг на мастеринге, а
+   пользователь всё равно слышит только «громче», а не «другой тембр» */
+const EQ_GAIN_MAX = 12;
+
+/* Пресеты по полосам выше. Значения — в дБ. */
+const EQ_PRESETS = {
+  flat:  [0, 0, 0, 0, 0, 0, 0],
+  bass:  [7, 5, 1, -1, -1, 0, 1],
+  vocal: [-3, -1, 2, 5, 3, 1, 0],
+  treble:[-2, -1, 0, 0, 2, 4, 5],
+};
+
+const SPEED_MIN = 0.5, SPEED_MAX = 2;
+const PITCH_MAX = 12;          /* полутона в обе стороны */
+
+/* ── переживание hot-reload (только dev) ────────────────────────────────────
+   правка этого файла в dev окно не перезагружает, но модуль пересоздаёт и все
+   эффекты прогоняет заново: cleanup глушил <audio>, стирал `src`, обнулял
+   `_afx` — и музыка обрывалась на каждой правке, даже если менялась одна цифра
+   в отступе кнопки.
+
+   Пережить подмену модуля может только `import.meta.hot.data`, поэтому туда
+   уходит то, что пересоздать нельзя: сами <audio> (для элемента
+   `createMediaElementSource` вызывается один раз в жизни) и AudioContext с
+   узлами. Всё остальное состояние и так лежит в хуках — react-refresh их
+   сохраняет. */
+const HOT = import.meta.hot;
+const HOT_STORE = HOT ? HOT.data : {};
+/* выставляется ровно перед подменой модуля. cleanup этого модуля читает флаг и
+   понимает: окно не закрывают, обрывать воспроизведение нельзя */
+let hotSwapping = false;
+if (HOT) HOT.dispose(() => { hotSwapping = true; });
+/* форма цепочки в afxAttach. старый контекст годится, только пока она та же,
+   иначе в живом графе остались бы узлы прошлой версии. меняешь цепочку —
+   подними число: окно один раз перезагрузится и соберёт граф заново */
+const AFX_SCHEMA = 1;
+
+/* перевесить обработчики деки так, чтобы после подмены модуля на элементе не
+   остались прежние: иначе timeupdate обрабатывался бы дважды, трижды, ... */
+function bindDeck(el, onTime, onEnded) {
+  if (el.__sewTime)  el.removeEventListener('timeupdate', el.__sewTime);
+  if (el.__sewEnded) el.removeEventListener('ended',      el.__sewEnded);
+  el.__sewTime  = onTime;
+  el.__sewEnded = onEnded;
+  el.addEventListener('timeupdate', onTime);
+  el.addEventListener('ended',      onEnded);
+}
+
+/* Звук правится ОДНИМ AudioContext на приложение: два контекста дали бы две
+   разные временные базы и рассинхрон дек в кроссфейде. */
+let _afx = HOT_STORE.afx && HOT_STORE.afx.schema === AFX_SCHEMA ? HOT_STORE.afx : null;
+if (HOT_STORE.afx && !_afx) HOT?.invalidate?.();   /* цепочка поменялась — перезагрузка честнее */
+
+/* состояние загрузки процессора тона: null — ещё не начинали,
+   промис — грузится, 'fail' — не вышло, { SoundTouchNode } — готов.
+   Ворклет нужен ТОЛЬКО тону: эквалайзер живёт на biquad-фильтрах и его
+   не грузит, иначе 70 КБ скрипта висели бы в памяти у всех подряд.
+   готовый берём из хранилища: ворклет привязан к контексту, и после правки
+   файла его пришлось бы регистрировать в том же контексте второй раз. */
+let _st = HOT_STORE.st || null;
+
+/* Ленивый граф: пока ни эквалайзер не включён, ни скорость/тон не сдвинуты,
+   ни одного узла не создаём — апп не должен платить за фичу, которой не
+   пользуются. Как только понадобилось — поднимаем контекст и подключаем в
+   него ОБЕ деки (уже созданные и будущие). */
+function afx() {
+  if (_afx) return _afx;
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctor({ latencyHint: 'playback' });
+  _afx = { ctx, decks: new Map(), eqOn: false, gains: EQ_FLAT.slice(), speed: 1, preserve: true, pitch: 0, schema: AFX_SCHEMA };
+  HOT_STORE.afx = _afx;
+  /* контекст создан вне пользовательского жеста — он стартует suspended.
+     resume() из первого клика/play (см. afxResume) это лечит */
+  return _afx;
+}
+
+function afxResume() {
+  const fx = _afx;
+  if (!fx) return;
+  if (fx.ctx.state !== 'running') fx.ctx.resume().catch(() => {});
+}
+
+/* Цепочка одной деки: источник → 7 полос → (тон) → выход.
+   ⚠️ выход отдельным GainNode, а НЕ сразу destination: узлы тона вставляются
+   между полосами и выходом, и без такой точки их пришлось бы перекоммутировать
+   вручную при каждом включении/выключении, рискуя оставить деку без звука. */
+function afxAttach(audio) {
+  /* граф поднимаем только по требованию: если ни эквалайзер, ни транспорт
+     ещё не включали, подключать элемент некуда и незачем */
+  const fx = _afx;
+  if (!fx || !audio) return null;
+  const seen = fx.decks.get(audio);
+  if (seen) return seen;
+  const src = fx.ctx.createMediaElementSource(audio);
+  const filters = EQ_BANDS.map(b => {
+    const f = fx.ctx.createBiquadFilter();
+    f.type = b.type;
+    f.frequency.value = b.hz;
+    f.Q.value = b.q;
+    f.gain.value = 0;
+    return f;
+  });
+  const out = fx.ctx.createGain();
+  filters.forEach((f, i) => (i === 0 ? src.connect(f) : filters[i - 1].connect(f)));
+  out.connect(fx.ctx.destination);
+  const deck = { src, filters, out, tail: filters[filters.length - 1], st: null };
+  fx.decks.set(audio, deck);
+  deck.tail.connect(out);
+  /* полосы и транспорт уже могут быть сдвинуты: вторая дека появляется при
+     первом кроссфейде, то есть уже после того, как включили эквалайзер */
+  deck.filters.forEach((f, i) => {
+    f.gain.setTargetAtTime(fx.eqOn ? (fx.gains[i] || 0) : 0, fx.ctx.currentTime, 0.02);
+  });
+  afxApplyTransport();        /* выставит скорость/тон и подключит ворклет */
+  return deck;
+}
+
+/* Эквалайзер: включение и профиль. Значения едут плавно (setTargetAtTime),
+   иначе на каждом движении ползунка был бы щелчок. */
+function afxApplyEq(on, gains) {
+  if (!_afx) {
+    if (!on) return;                       /* выключен и графа нет — ничего не делаем */
+    /* включили — граф нужен, деки подключит эффект App через afxAttach */
+    afx();
+  }
+  const fx = _afx;
+  fx.eqOn = !!on;
+  fx.gains = (gains || EQ_FLAT).slice();
+  const t0 = fx.ctx.currentTime;
+  fx.decks.forEach(deck => {
+    deck.filters.forEach((f, i) => {
+      const g = fx.eqOn ? (fx.gains[i] || 0) : 0;
+      f.gain.setTargetAtTime(g, t0, 0.02);
+    });
+  });
+}
+
+/* Модуль процессора тона грузим динамически: 70 КБ воркл-скрипта нужны только
+   тем, кто реально двигает тон. Vite кладёт его отдельным файлом-ассетом
+   (`?url`), а не в бандл. */
+function afxLoadSt() {
+  const fx = _afx;
+  if (!fx || _st) return _st;
+  _st = (async () => {
+    try {
+      const [{ SoundTouchNode }, proc] = await Promise.all([
+        import('@soundtouchjs/audio-worklet'),
+        import('@soundtouchjs/audio-worklet/processor?url'),
+      ]);
+      await SoundTouchNode.register(fx.ctx, proc.default);
+      const ready = { SoundTouchNode };
+      _st = ready;
+      HOT_STORE.st = ready;
+      afxApplyTransport();       /* тон могли сдвинуть, пока ворклет грузился */
+      return ready;
+    } catch (e) {
+      console.warn('[audio] процессор тона не загрузился:', e);
+      _st = 'fail';
+      return null;
+    }
+  })();
+  /* промис тоже кладём в хранилище: иначе подмена модуля на середине загрузки
+     начала бы регистрацию ворклета в том же контексте второй раз */
+  HOT_STORE.st = _st;
+  return _st;
+}
+
+/* Скорость и тон.
+   Скорость меняется на самом элементе (`playbackRate`): только так
+   `currentTime` идёт с той же скоростью, что и звук, — иначе прогресс-бар,
+   полоса в дискорде и оставшееся время врут.
+
+   ⚠️ Тон. `<audio>` при `playbackRate ≠ 1` меняет и высоту. Держать её на
+   месте элемент умеет сам (`preservesPitch`), а вот сдвинуть на N полутонов —
+   нет. Поэтому при `pitch ≠ 0` включается ворклет soundtouch, и правила такие:
+
+   • элемент отдаёт сырое смещение (`preservesPitch = false`): на входе темп `r`
+     и высота `r`;
+   • ворклету сообщаем ту же `r` — процессор делит на неё
+     (`soundtouch-processor.js`: `pitch = 2^(semitones/12) / playbackRate`) и
+     возвращает высоту к исходной, добавляя наши полутона;
+   • если тональность держать не надо, `playbackRate` ворклета = 1, и высота
+     остаётся сдвинутой вместе со скоростью.
+
+   Темп в обоих случаях остаётся `r`: транспондер ворклета скорость не трогает,
+   её держит стретчер при tempo = 1. */
+function afxApplyTransport() {
+  const fx = _afx;
+  if (!fx) return;
+  const rate = fx.speed, semis = fx.pitch, keep = fx.preserve;
+  const stMod = _st && _st.SoundTouchNode ? _st : null;
+  if (semis !== 0) afxLoadSt();
+
+  fx.decks.forEach((deck, audio) => {
+    audio.playbackRate = rate;
+    const useSt = semis !== 0;
+    /* без ворклета высоту держит сам элемент — это бесплатно и качественнее
+       любого стретчера, поэтому на чистой скорости идём нативным путём */
+    audio.preservesPitch = !useSt && keep;
+
+    if (!useSt) {
+      if (deck.st) {
+        try { deck.tail.disconnect(deck.st); } catch {}
+        try { deck.st.disconnect(deck.out); } catch {}
+        deck.tail.connect(deck.out);
+        deck.st = null;
+      }
+      return;
+    }
+
+    if (!stMod) return;              /* ворклет ещё грузится — ждём */
+    if (!deck.st) {
+      deck.st = new stMod.SoundTouchNode({ context: fx.ctx });
+      try { deck.tail.disconnect(deck.out); } catch {}
+      deck.tail.connect(deck.st);
+      deck.st.connect(deck.out);
+    }
+    deck.st.playbackRate.value = keep ? rate : 1;
+    deck.st.pitchSemitones.value = semis;
+  });
+}
+
+/* Единая точка правки транспорта из настроек: одно поле за раз.
+   Граф поднимаем только если правка реально что-то меняет. */
+function afxTransport(patch) {
+  const needed = patch.pitch ? true : (patch.speed != null && patch.speed !== 1);
+  if (!_afx && !needed) return;
+  const fx = afx();
+  if (patch.speed != null)  fx.speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, Number(patch.speed) || 1));
+  if (patch.pitch != null)  fx.pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, Number(patch.pitch) || 0));
+  if (patch.preserve != null) fx.preserve = !!patch.preserve;
+  afxApplyTransport();
 }
 
 /* ── Progress Bar ────────────────────────────────────────────────────────── */
@@ -3855,6 +4165,9 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
          закрыта, но на главной всё равно оставалась целью для кликов в
          левом краю. */
       pointerEvents: inPlayer && open ? 'auto' : 'none',
+      /* и всё равно visibility: закрытая панель невидима, но её кнопки внутри
+         ставят pointerEvents:auto и продолжали ловить клики по списку рядом */
+      visibility: inPlayer && open ? 'visible' : 'hidden',
       transform: open ? 'translateX(0)' : 'translateX(14px)',
       transition: open
         ? 'opacity 0.3s ease 0.08s, transform 0.44s cubic-bezier(0.22,1,0.36,1) 0.08s'
@@ -4040,6 +4353,355 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onBac
             в верхней строке (вместо бывшей плашки «ТЕКСТ ПЕСНИ»), здесь
             ничего — иначе один и тот же список рисовался дважды. */}
       </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── FxPanel ──────────────────────────────────────────────────────────────── */
+/* панель эффектов. живёт в той же колонке 260px и тем же приёмом, что
+   LyricsPanel: список уезжает влево, панель приезжает справа. сделана
+   панелью на всю колонку, а не всплывашкой у кнопки, потому что настроек
+   много (семь полос плюс транспорт) — попап такого размера закрывал бы сам
+   плеер, а ради одного ползунка скорости уходить в «Настройки» далеко.
+
+   полосы свои, а не нативные input[type=range]: нативному треку заливку
+   принято рисовать от левого края, а эквалайзеру нужна заливка ОТ НУЛЕВОЙ
+   ЛИНИИ (иначе «−6 дБ» выглядит как «ничего не поднято»), и на ширине 30px
+   системный бегунок не попадается мышью. клавиатура и role=slider при этом
+   сохранены руками: стрелки — шаг, Shift — крупный шаг, двойной клик — ноль. */
+
+const fmtDb = v => (v === 0 ? '0' : `${v > 0 ? '+' : ''}${Math.round(v * 10) / 10}`);
+/* подпись полосы в панели: 350 / 1k / 3.5k — длина строки важнее точных
+   герц, полное «3 500 Гц» в тридцати пикселях не влезает */
+const hzShort = hz => (hz >= 1000
+  ? `${hz % 1000 ? (hz / 1000).toFixed(1) : hz / 1000}k`
+  : String(hz));
+
+/* общий захват для всех полос панели. наружу отдаёт ref, факт протяжки и
+   готовые обработчики; вертикальная и горизонтальная полосы отличаются
+   только разметкой. `drag` нужен, чтобы на время протяжки выключить
+   transition: иначе ручка отстаёт от курсора на время анимации */
+function useRail({ value, min, max, step, vertical, onChange }) {
+  const ref = useRef(null);
+  const [drag, setDrag] = useState(false);
+  /* значение уходит наверх РАЗ В КАДР, а не на каждое событие мыши: мышь
+     даёт до 240 событий в секунду, приложение рисует 60, а состояние
+     настроек живёт в App — setState на каждое событие пересобирал бы весь
+     плеер (та же история, что у ColorPad). последнее движение применяется
+     следующим кадром, то есть на глаз мгновенно */
+  const live = useRef(onChange);
+  live.current = onChange;
+  const pending = useRef(null);
+  const frame = useRef(0);
+  const flush = useCallback(() => {
+    frame.current = 0;
+    if (pending.current !== null) {
+      const v = pending.current;
+      pending.current = null;
+      live.current(v);
+    }
+  }, []);
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+  /* от чего считать шаг стрелками: от ещё не применённого значения, иначе
+     быстрые нажатия считались бы от одного и того же props.value */
+  const base = () => (pending.current !== null ? pending.current : value);
+  /* округление через *100: шаг 0.05 — это 0.05000000000000001 в двоичной
+     дроби, и без него ползунок выдаёт значения вида 1.3000000000000003,
+     которые потом не сравниваются ни с пресетом, ни с дефолтом */
+  const apply = v => {
+    pending.current = clampNum(Math.round(Math.round(v / step) * step * 100) / 100, min, max);
+    if (!frame.current) frame.current = requestAnimationFrame(flush);
+  };
+  const pick = e => {
+    const r = ref.current?.getBoundingClientRect();
+    if (!r || !r.height || !r.width) return;
+    const t = clampNum(vertical ? (e.clientY - r.top) / r.height
+                                : (e.clientX - r.left) / r.width, 0, 1);
+    apply(vertical ? max - t * (max - min) : min + t * (max - min));
+  };
+  return {
+    ref, drag,
+    pct: (value - min) / (max - min),
+    onPointerDown: e => {
+      if (e.button) return;                     /* правый клик — не наше дело */
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setDrag(true);
+      pick(e);
+    },
+    onPointerMove: e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) pick(e); },
+    onPointerUp: e => {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+      setDrag(false);
+    },
+    onPointerCancel: () => setDrag(false),
+    /* мгновенный сброс (двойной клик по полосе). отменяем ещё не применённое
+       значение от клика: иначе кадр после сброса вернул бы его обратно */
+    reset: v => {
+      pending.current = null;
+      cancelAnimationFrame(frame.current);
+      frame.current = 0;
+      live.current(v);
+    },
+    onKeyDown: e => {
+      const dir = e.key === 'ArrowUp' || e.key === 'ArrowRight' ? 1
+                : e.key === 'ArrowDown' || e.key === 'ArrowLeft' ? -1 : 0;
+      if (!dir) return;
+      e.preventDefault();                       /* иначе стрелка крутит панель */
+      apply(base() + dir * step * (e.shiftKey ? 5 : 1));
+    },
+  };
+}
+
+/* вертикальный фейдер полосы эквалайзера: центр — 0 дБ, заливка растёт от
+   нулевой линии вверх или вниз */
+function EqFader({ value, onChange, label }) {
+  const { ref, drag, pct, reset, ...events } = useRail({
+    value, min: -EQ_GAIN_MAX, max: EQ_GAIN_MAX, step: 0.5, vertical: true, onChange,
+  });
+  const y   = (1 - pct) * 100;       /* позиция ручки от верха, % */
+  const top = Math.min(y, 50);
+  const h   = Math.abs(y - 50);      /* высота заливки, % */
+  const move = drag
+    ? 'box-shadow 0.18s ease'
+    : 'top 0.2s cubic-bezier(0.22,1,0.36,1), height 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.18s ease, transform 0.18s ease';
+  return (
+    <div ref={ref} className="eq-fader" role="slider" tabIndex={0}
+      aria-orientation="vertical" aria-label={label}
+      aria-valuemin={-EQ_GAIN_MAX} aria-valuemax={EQ_GAIN_MAX} aria-valuenow={value}
+      onDoubleClick={() => reset(0)} {...events}>
+      <div className="eq-slot"/>
+      {/* нулевая линия: без неё не видно, откуда отсчёт */}
+      <div style={{position:'absolute', left:0, right:0, top:'50%', height:1, background:'rgba(255,255,255,0.08)'}}/>
+      <div style={{
+        position:'absolute', left:'50%', width:4, marginLeft:-2, borderRadius:2,
+        top:`${top}%`, height:`${h}%`,
+        background:'var(--accent)', opacity: value ? 0.9 : 0, transition: move,
+      }}/>
+      <div className="eq-thumb" style={{top:`${y}%`, transition: move}}/>
+    </div>
+  );
+}
+
+/* горизонтальная полоса транспорта. `center` — заливка от середины (тон),
+   без него — от левого края (скорость) */
+function FxSlider({ value, min, max, step, center, onChange, resetTo, label }) {
+  const { ref, drag, pct, reset, ...events } = useRail({ value, min, max, step, vertical: false, onChange });
+  const x    = pct * 100;
+  const from = center ? 50 : 0;
+  const left = Math.min(x, from);
+  const w    = Math.abs(x - from);
+  const move = drag
+    ? 'box-shadow 0.18s ease'
+    : 'left 0.2s cubic-bezier(0.22,1,0.36,1), width 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.18s ease, transform 0.18s ease';
+  return (
+    <div ref={ref} className="eq-rail" role="slider" tabIndex={0} aria-label={label}
+      aria-valuemin={min} aria-valuemax={max} aria-valuenow={value}
+      onDoubleClick={() => reset(resetTo)} {...events}>
+      <div className="eq-groove">
+        {/* метка нуля у знакового ползунка: без неё непонятно, где
+            «без сдвига», и центр приходится искать на глаз */}
+        {center && (
+          <div style={{
+            position:'absolute', left:'50%', top:-3, width:1, height:10, marginLeft:-0.5,
+            borderRadius:1, background:'rgba(255,255,255,0.13)',
+          }}/>
+        )}
+        <div style={{
+          position:'absolute', top:0, height:'100%', left:`${left}%`, width:`${w}%`,
+          borderRadius:2, background:'var(--accent)',
+          opacity: w > 0.2 ? 0.9 : 0, transition: move,
+        }}/>
+        <div className="eq-dot" style={{
+          left:`${x}%`,
+          transition: drag ? 'box-shadow 0.18s ease'
+            : 'left 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.18s ease, transform 0.18s ease',
+        }}/>
+      </div>
+    </div>
+  );
+}
+
+function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
+  const t = useLang();
+  /* значения нормализуются на КАЖДОМ чтении, как и в настройках: файл мог
+     остаться от версии без этих полей, а ползунок с NaN — это пустая
+     дорожка и `-Infinity` в dB */
+  const eqOn  = !!settings.eqOn;
+  const gains = Array.isArray(settings.eqGains) && settings.eqGains.length === EQ_BANDS.length
+    ? settings.eqGains.map(v => clampNum(Number(v) || 0, -EQ_GAIN_MAX, EQ_GAIN_MAX))
+    : EQ_FLAT;
+  const speed = clampNum(Number(settings.speed) || 1, SPEED_MIN, SPEED_MAX);
+  const pitch = Math.round(clampNum(Number(settings.pitch) || 0, -PITCH_MAX, PITCH_MAX));
+  const keep  = settings.preservePitch !== false;
+
+  /* любая правка полосы включает эквалайзер. панель открывают, чтобы СЛЫШАТЬ
+     результат: «двигаю ползунок, а звук тот же» читается как поломка.
+     выключить обратно можно чипом — сами полосы при этом сохраняются */
+  const patchGains = (fn, wake) => onSettings(s => {
+    const g = Array.isArray(s.eqGains) && s.eqGains.length === EQ_BANDS.length
+      ? s.eqGains.slice() : EQ_FLAT.slice();
+    fn(g);
+    return { ...s, eqGains: g, ...(wake && !s.eqOn ? { eqOn: true } : null) };
+  });
+  const setGain   = (i, v) => patchGains(g => { g[i] = v; }, true);
+  const setPreset = k => onSettings(s => ({ ...s, eqGains: EQ_PRESETS[k].slice(), eqOn: true }));
+  const setSpeed  = v => onSettings(s => ({ ...s, speed: Math.round(v * 100) / 100 }));
+  const setPitch  = v => onSettings(s => ({ ...s, pitch: Math.round(v) }));
+  const toggleEq  = () => onSettings(s => ({ ...s, eqOn: !s.eqOn }));
+
+  /* совпавшие с пресетом полосы подсвечивают свой чип — иначе не видно, из
+     чего исходишь, и «сбросить» приходится на глаз */
+  const matched = Object.keys(EQ_PRESETS).find(k =>
+    EQ_PRESETS[k].every((v, i) => Math.abs(v - gains[i]) < 0.01));
+
+  const CARD = {
+    background: 'rgba(255,255,255,0.035)',
+    border: '1px solid rgba(255,255,255,0.05)',
+    borderRadius: 12,
+  };
+  const VALUE = {
+    fontSize: 'var(--fs-xs)', fontVariantNumeric: 'tabular-nums',
+    transition: 'color 0.18s ease',
+  };
+
+  return (
+    <div style={{
+      position:'absolute', inset:0, display:'flex', flexDirection:'column',
+      opacity: open ? 1 : 0,
+      /* обе защиты те же, что у панели текста: `pointer-events:none` на слое
+         плеера не гасит потомка с auto, а закрытая панель с inset:0 ловила бы
+         клики по списку рядом */
+      pointerEvents: inPlayer && open ? 'auto' : 'none',
+      visibility: inPlayer && open ? 'visible' : 'hidden',
+      transform: open ? 'translateX(0)' : 'translateX(14px)',
+      transition: open
+        ? 'opacity 0.3s ease 0.08s, transform 0.44s cubic-bezier(0.22,1,0.36,1) 0.08s'
+        : 'opacity 0.16s ease, transform 0.16s ease',
+    }}>
+      <div style={{display:'flex', alignItems:'center', gap:4, margin:'10px 12px 0', flexShrink:0, minHeight:24}}>
+        <span style={{
+          fontSize:'var(--fs-eyebrow)', letterSpacing:'0.13em', textTransform:'uppercase',
+          color:'rgba(255,255,255,0.34)', fontWeight:600,
+        }}>{t('fx')}</span>
+        <div style={{flex:1}}/>
+        <div onClick={onClose} title={t('close')} style={{
+          width:24, height:24, borderRadius:7, display:'flex', alignItems:'center',
+          justifyContent:'center', cursor:'pointer', color:'rgba(255,255,255,0.3)',
+          transition:'background 0.15s, color 0.15s',
+        }}
+          onMouseEnter={e => { e.currentTarget.style.background='rgba(255,255,255,0.08)'; e.currentTarget.style.color='rgba(255,255,255,0.75)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='rgba(255,255,255,0.3)'; }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2.4" strokeLinecap="round">
+            <line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/>
+          </svg>
+        </div>
+      </div>
+
+      <div style={{flex:1, minHeight:0, display:'flex', flexDirection:'column', gap:10, padding:'10px 12px 12px'}}>
+        {/* ── эквалайзер ── */}
+        {/* карточка НЕ тянется на всю высоту: при 594px доступной высоты
+            фейдеры выходили по 330px и превращались в частокол. высота полосы
+            задана отдельно (clamp), обе карточки идут по контенту, а пустое
+            место остаётся внизу колонки — это нормальный вид сайдбара */}
+        <div style={{...CARD, flexShrink:0, display:'flex', flexDirection:'column', padding:'9px 8px 8px'}}>
+          <div style={{display:'flex', alignItems:'center', padding:'0 1px'}}>
+            {/* выключатель — чип, а не тумблер: он же и заголовок раздела,
+                и состояние («горит» или нет) видно по точке и по заливке */}
+            <div onClick={toggleEq} title={t('eq_on')} style={{
+              display:'flex', alignItems:'center', gap:6, padding:'5px 9px 5px 8px',
+              borderRadius:7, cursor:'pointer',
+              fontSize:'var(--fs-eyebrow)', fontWeight:600,
+              letterSpacing:'0.08em', textTransform:'uppercase',
+              background: eqOn ? 'rgba(var(--accent-rgb),0.13)' : 'rgba(255,255,255,0.045)',
+              color: eqOn ? 'var(--accent)' : 'rgba(255,255,255,0.42)',
+              transition:'background 0.18s ease, color 0.18s ease',
+            }}>
+              <span style={{
+                width:5, height:5, borderRadius:'50%', flexShrink:0,
+                background: eqOn ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
+                boxShadow: eqOn ? '0 0 6px rgba(var(--accent-rgb),calc(0.7 * var(--glow-strength,1)))' : 'none',
+                transition:'background 0.18s ease, box-shadow 0.18s ease',
+              }}/>
+              {t('eq')}
+            </div>
+          </div>
+
+          <div style={{display:'flex', gap:4, marginTop:8}}>
+            {Object.keys(EQ_PRESETS).map(k => {
+              const on = matched === k;
+              return (
+                <div key={k} onClick={() => setPreset(k)} style={{
+                  flex:1, padding:'5px 0', borderRadius:7, textAlign:'center', cursor:'pointer',
+                  fontSize:'var(--fs-eyebrow)', whiteSpace:'nowrap',
+                  background: on ? 'rgba(var(--accent-rgb),0.13)' : 'rgba(255,255,255,0.045)',
+                  color: on ? 'var(--accent)' : 'rgba(255,255,255,0.42)',
+                  transition:'background 0.16s ease, color 0.16s ease',
+                }}>{t('eqp_' + k)}</div>
+              );
+            })}
+          </div>
+
+          <div style={{height:'clamp(160px, 38vh, 290px)', display:'flex', gap:2, marginTop:10}}>
+            {EQ_BANDS.map((b, i) => (
+              <div key={b.hz} style={{
+                flex:1, minWidth:0, display:'flex', flexDirection:'column', alignItems:'center',
+              }}>
+                <span style={{
+                  ...VALUE, marginBottom:6, whiteSpace:'nowrap',
+                  color: gains[i] ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.18)',
+                }}>{fmtDb(gains[i])}</span>
+                <div style={{flex:1, minHeight:0, width:'100%', padding:'0 2px'}}>
+                  <EqFader value={gains[i]} onChange={v => setGain(i, v)}
+                    label={b.hz >= 1000 ? `${b.hz / 1000} ${t('khz')}` : `${b.hz} ${t('hz')}`}/>
+                </div>
+                <span style={{
+                  fontSize:'var(--fs-eyebrow)', whiteSpace:'nowrap', marginTop:6,
+                  color:'rgba(255,255,255,0.24)',
+                }}>{hzShort(b.hz)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── скорость и тон ── */}
+        <div style={{...CARD, flexShrink:0, padding:'10px 9px 11px'}}>
+          <div style={{display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:8}}>
+            <span style={{fontSize:'var(--fs-sm)', color:'rgba(255,255,255,0.66)'}}>{t('speed')}</span>
+            <span style={{...VALUE, color: speed === 1 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.62)'}}>
+              {speed.toFixed(2)}×
+            </span>
+          </div>
+          <div style={{marginTop:7}}>
+            <FxSlider value={speed} min={SPEED_MIN} max={SPEED_MAX} step={0.05}
+              onChange={setSpeed} resetTo={1} label={t('speed')}/>
+          </div>
+
+          <div style={{
+            display:'flex', alignItems:'baseline', justifyContent:'space-between',
+            gap:8, marginTop:13,
+          }}>
+            <span style={{fontSize:'var(--fs-sm)', color:'rgba(255,255,255,0.66)'}}>{t('pitch')}</span>
+            <span style={{...VALUE, color: pitch === 0 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.62)'}}>
+              {pitch > 0 ? '+' : ''}{pitch} {t('semitones')}
+            </span>
+          </div>
+          <div style={{marginTop:7}}>
+            <FxSlider value={pitch} min={-PITCH_MAX} max={PITCH_MAX} step={1} center
+              onChange={setPitch} resetTo={0} label={t('pitch')}/>
+          </div>
+
+          <div style={{
+            display:'flex', alignItems:'center', justifyContent:'space-between', gap:8,
+            marginTop:12, paddingTop:10, borderTop:'1px solid rgba(255,255,255,0.045)',
+          }}>
+            <span style={{fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.34)', lineHeight:1.35}}>
+              {t('preserve_pitch')}
+            </span>
+            <Switch on={keep} onChange={v => onSettings(s => ({ ...s, preservePitch: v }))}/>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -4389,14 +5051,14 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
               <NavIcon label={t('nav_settings')} active={navActive==='settings'} onClick={()=>onNav('settings')} size={32}
                 icon={<img src="../assets/settings.png" style={{width:17,height:17,filter:'brightness(0) invert(1)',display:'block'}}/>}/>
             </div>
-            <div style={{WebkitAppRegion:'no-drag', opacity: scAuth ? 1 : 0, pointerEvents: scAuth ? 'auto' : 'none', transition:'opacity 0.2s ease'}}>
+            <div style={{WebkitAppRegion:'no-drag', opacity: scAuth ? 1 : 0, pointerEvents: scAuth ? 'auto' : 'none', visibility: scAuth ? 'visible' : 'hidden', transition:'opacity 0.2s ease'}}>
               <NavIcon label={t('nav_local')} active={sourceMode==='local'} onClick={onToggleSource} size={32} icon={folderIcon}/>
             </div>
           </div>
 
           {/* правая зона: collapse библиотеки (только в плеере) */}
           <div style={{flex:1, display:'flex', alignItems:'center', justifyContent:'flex-end', paddingRight:6,
-            opacity: inPlayer ? 1 : 0, pointerEvents: inPlayer ? 'auto' : 'none', transition:'opacity 0.2s ease'}}>
+            opacity: inPlayer ? 1 : 0, pointerEvents: inPlayer ? 'auto' : 'none', visibility: inPlayer ? 'visible' : 'hidden', transition:'opacity 0.2s ease'}}>
             <div style={{WebkitAppRegion:'no-drag', width:30, height:30, borderRadius:9, cursor:'pointer',
               display:'flex', alignItems:'center', justifyContent:'center',
               color:'rgba(255,255,255,0.35)', transition:'color 0.18s ease'}}
@@ -5238,6 +5900,20 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     setScLoading(false);
   };
   const set = (k, v) => onSettings({ ...settings, [k]: v });
+  /* Эквалайзер и транспорт. Значения нормализуются на КАЖДОМ чтении, как и
+     тема: файл мог остаться от версии без этих полей, а ползунок с NaN — это
+     пустая дорожка и `-Infinity` в dB. */
+  const eqGains = Array.isArray(settings.eqGains) && settings.eqGains.length === EQ_BANDS.length
+    ? settings.eqGains.map(v => clampNum(Number(v) || 0, -EQ_GAIN_MAX, EQ_GAIN_MAX))
+    : EQ_FLAT;
+  const speed = clampNum(Number(settings.speed) || 1, SPEED_MIN, SPEED_MAX);
+  const pitch = Math.round(clampNum(Number(settings.pitch) || 0, -PITCH_MAX, PITCH_MAX));
+  const setEqGain = (i, v) => onSettings(s => {
+    const g = Array.isArray(s.eqGains) && s.eqGains.length === EQ_BANDS.length
+      ? s.eqGains.slice() : EQ_FLAT.slice();
+    g[i] = v;
+    return { ...s, eqGains: g };
+  });
   /* Тема. Значение нормализуется на КАЖДОМ чтении, а не только на записи:
      мусор из старого settings.json (или из чужой вставки) обязан молча
      чиниться, иначе любой потребитель ниже получил бы NaN в градиенте.
@@ -5400,13 +6076,49 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
         </div>
       </Card>
     ),
-    playback: (
+    playback: (<>
       <Card>
         <Row label={t('crossfade')} sub={t('crossfade_sub')} last>
           <CrossfadeSlider value={settings.crossfade} onChange={v=>set('crossfade', v)}/>
         </Row>
       </Card>
-    ),
+
+      {/* Эквалайзер. Полосы — те же, что в графе (EQ_BANDS): подпись частоты
+          считается отсюда, а не пишется руками, чтобы подпись и фильтр не
+          разъехались после правки набора. */}
+      <Card title={t('eq')}>
+        <Row label={t('eq_on')} sub={t('eq_on_sub')} last={!settings.eqOn}>
+          <Switch on={!!settings.eqOn} onChange={v=>set('eqOn', v)}/>
+        </Row>
+        {settings.eqOn && (<>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '2px 16px 4px' }}>
+            {Object.keys(EQ_PRESETS).map(k => (
+              <Btn key={k} onClick={() => set('eqGains', EQ_PRESETS[k].slice())}>{t('eqp_' + k)}</Btn>
+            ))}
+            <Btn onClick={() => set('eqGains', EQ_FLAT.slice())}>{t('eq_reset')}</Btn>
+          </div>
+          {EQ_BANDS.map((b, i) => (
+            <MiniSlider key={b.hz}
+              label={b.hz >= 1000 ? `${b.hz / 1000} ${t('khz')}` : `${b.hz} ${t('hz')}`}
+              value={eqGains[i]} min={-EQ_GAIN_MAX} max={EQ_GAIN_MAX} step={0.5}
+              display={`${eqGains[i] > 0 ? '+' : ''}${eqGains[i].toFixed(1)} ${t('db')}`}
+              onChange={v => setEqGain(i, v)}/>
+          ))}
+        </>)}
+      </Card>
+
+      <Card title={t('speed_pitch')}>
+        <MiniSlider label={t('speed')} value={speed} min={SPEED_MIN} max={SPEED_MAX} step={0.05}
+          display={`${speed.toFixed(2)}×`}
+          onChange={v => set('speed', Math.round(v * 100) / 100)}/>
+        <Row label={t('preserve_pitch')} sub={t('preserve_pitch_sub')}>
+          <Switch on={settings.preservePitch !== false} onChange={v=>set('preservePitch', v)}/>
+        </Row>
+        <MiniSlider label={t('pitch')} value={pitch} min={-PITCH_MAX} max={PITCH_MAX} step={1}
+          display={`${pitch > 0 ? '+' : ''}${pitch} ${t('semitones')}`}
+          onChange={v => set('pitch', v)}/>
+      </Card>
+    </>),
     lyrics: (
       <LyricsSettings settings={settings} onSettings={onSettings}/>
     ),
@@ -5501,6 +6213,9 @@ appearance: (<>
           maxHeight: micaOn ? 120 : 0,
           opacity: micaOn ? 1 : 0,
           transform: micaOn ? 'translateY(0)' : 'translateY(-4px)',
+          /* visibility: свёрнутая плашка невидима, но её кнопки ставили
+             pointerEvents:auto и ловили клики по карточке под ней */
+          visibility: micaOn ? 'visible' : 'hidden',
           pointerEvents: micaOn ? 'auto' : 'none',
           /* ⚠️ Рамку задаём именно здесь, а не через `borderWidth` рядом с
              `border` ниже. React ставит стили по порядку ключей, а шорткат
@@ -5978,15 +6693,15 @@ appearance: (<>
 
   return (
     <div style={{
-      position:'absolute', inset:0, display:'flex',
+      ...stackRoot(visible, 0.28),
+      display:'flex',
       /* Только прозрачность, БЕЗ translateY. Панель — предок `layoutId`-пилла
          сегментов, а framer меряет его бокс через getBoundingClientRect, то
          есть вместе с transform предка. Пока предок едет на translateY, пилл
          перепроецируется и на первом входе в настройки дёргается. Подъём на
-         8px того не стоил: эффект давали одни layout-анимации внутри */
-      opacity: visible ? 1 : 0,
-      transition:'opacity 0.28s ease',
-      pointerEvents: visible ? 'auto' : 'none',
+         8px того не стоил: эффект давали одни layout-анимации внутри.
+         visibility/pointerEvents — из stackRoot: скрытая панель не должна
+         ловить клики у видимой вкладки. */
     }}>
       {/* левая навигация */}
       <div style={{
@@ -6403,10 +7118,7 @@ function PlaylistsView({ visible, scAuth, playlists, loading, error, creating,
   const t = useLang();
   return (
     <div style={{
-      position:'absolute', inset:0,
-      opacity: visible ? 1 : 0,
-      pointerEvents: visible ? 'auto' : 'none',
-      transition:'opacity 0.14s ease',
+      ...stackRoot(visible),
     }}>
       <div className="scroll-thin scroll-home" style={{
         position:'absolute', top:0, left:0, right:10, bottom:0,
@@ -6845,11 +7557,9 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
 
   return (
     <div style={{
-      position:'absolute', inset:0, zIndex:60,
+      ...stackRoot(visible, 0.18),
+      zIndex:60,
       background:'var(--bg)',
-      opacity: visible ? 1 : 0,
-      pointerEvents: visible ? 'auto' : 'none',
-      transition:'opacity 0.18s ease',
     }}>
       <div className="scroll-thin" style={{
         width:'100%', height:'100%', overflowY:'auto',
@@ -7698,14 +8408,10 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
      клики в плеере. Ровно жалоба «ушёл с поиска, а он всё ещё нажимается».
      `visibility:hidden` выключает hit-test гарантированно на всём поддереве,
      а transition на visibility возвращает элемент в поток мгновенно при
-     появлении (задержка только на скрытие — чтобы не рубить анимацию opacity). */
-  const rootStyle = {
-    position:'absolute', inset:0,
-    opacity: visible ? 1 : 0,
-    visibility: visible ? 'visible' : 'hidden',
-    pointerEvents: visible ? 'auto' : 'none',
-    transition:'opacity 0.14s ease, visibility 0s linear ' + (visible ? '0s' : '0.14s'),
-  };
+     появлении (задержка только на скрытие — чтобы не рубить анимацию opacity).
+     Тот же приём теперь общий для всех вкладок — stackRoot; здесь остаётся
+     короткий fade (0.14s), отличный от остальных. */
+  const rootStyle = stackRoot(visible);
 
   /* Без входа в soundcloud искать нечем: doSearch выходит на первой строке,
      и вкладка выглядела как рабочая — можно было напечатать запрос и
@@ -8237,12 +8943,9 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
 
   return (
     <div style={{
-      position: 'absolute', inset: 0,
+      ...stackRoot(visible, 0.18),
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
-      opacity: visible ? 1 : 0,
-      pointerEvents: visible ? 'auto' : 'none',
-      transition: 'opacity 0.18s ease',
     }}>
       {/* ── шапка ───────────────────────────────────────────────────────────
           Одна колонка по центру, без фоновой картинки. Раньше здесь был баннер
@@ -8576,6 +9279,10 @@ function App() {
   const [libCollapsed,  setLibCollapsed]  = useState(false);
   /* текст песни: перекрывает библиотеку в колонке слева */
   const [lyricsOpen,   setLyricsOpen]   = useState(false);
+  /* эффекты (эквалайзер, скорость, тон) — тоже в колонке слева. одновременно
+     с текстом открытыми быть не могут: обе панели `inset:0` в одном
+     контейнере, и вторая просто накрыла бы первую */
+  const [fxOpen,       setFxOpen]       = useState(false);
   const [lyrics,       setLyrics]       = useState(null);   /* { status, lines, synced, source } */
   const [lyricsActive, setLyricsActive] = useState(-1);
   const [lyricsNonce,  setLyricsNonce]  = useState(0);      /* ретрай: тот же эффект заново */
@@ -8607,6 +9314,12 @@ function App() {
     windowEffect: 'off',   /* 'off' | 'mica' — применяется эффектом ниже */
     lyricsSources: LYRICS_SOURCE_IDS.slice(),  /* включённые источники, сверху вниз */
     volume: 0.7,   /* gain 0..1 (не позиция ползунка) — переживает перезапуск */
+    /* эквалайзер и транспорт (см. блок afx* выше). eqGains — дБ по полосам
+       EQ_BANDS, порядок и длина заданы там; здесь только значения. speed —
+       множитель, preservePitch — держать высоту при смене скорости, pitch —
+       полутона поверх неё */
+    eqOn: false, eqGains: EQ_FLAT.slice(),
+    speed: 1, preservePitch: true, pitch: 0,
   });
   const [sort,         setSort]         = useState('added');
   const [editingTitle, setEditingTitle] = useState(false);
@@ -8871,13 +9584,10 @@ function App() {
     st.setProperty('--radius', `${t.radius}px`);
     st.setProperty('--grain', String(t.grain));
     st.setProperty('--vignette', String(t.vignette));
-    /* Второй цвет. Пока он выключен, --accent2-rgb снят, и css берёт
-       --accent-rgb через fallback — градиент схлопывается в один цвет.
-       Класс `.grad` на палочке нужен отдельно: правило с правым цветом
-       ссылается на --accent2-rgb, а пока переменной нет, она бы вернула
-       прочерк в градиенте. */
-    const bar = document.getElementById('accent-top');
-    if (bar) bar.classList.toggle('grad', !!t.accentGrad);
+    /* Второй цвет полоски прогресса (см. #accent-fill в styles.css) отдельного
+       класса не требует: правый край градиента ссылается на --accent2-rgb с
+       fallback на --accent-rgb. Пока «второй цвет» выключен, переменная снята
+       и градиент схлопывается в один цвет. */
     const a2 = t.accentGrad && hexToRgb(t.accent2);
     if (a2) {
       st.setProperty('--accent2',     `rgb(${a2.r}, ${a2.g}, ${a2.b})`);
@@ -8913,9 +9623,8 @@ function App() {
     cancelAnimationFrame(accentRafRef.current);
     /* ⚠️ CSS-ПЕРЕМЕННЫЕ пишутся НЕ каждый кадр, а раз в ACCENT_STEP_MS.
        каждый setProperty на :root инвалидирует стиль ВСЕХ 25 потребителей
-       --accent-rgb, и два из них перерисовывают крупные поверхности:
-       #accent-top во всю окно и AmbientGlow (2× обложки). плюс _accentSubs
-       дёргает перерисовку canvas-слайдера громкости с shadowBlur.
+       --accent-rgb, и крупнее всех — AmbientGlow (2× обложки). плюс
+       _accentSubs дёргает перерисовку canvas-слайдера громкости с shadowBlur.
        400мс × 60 = 24 полных инвалидации, при шаге 40мс — их ~10.
        НО это НЕ причина затормозов: пользовательский тест с фиксированным
        цветом (вместо «от обложки») лерп вообще не запускает — и полёт
@@ -8951,39 +9660,52 @@ function App() {
     return () => cancelAnimationFrame(accentRafRef.current);
   }, [appAccent]);
 
-  // titlebar accent glow + верхняя акцентная подсветка — only in player view.
-  // привязано к playerVisible, а не к view: при уходе в настройки setView
-  // отложен на 300мс — свечение гасло бы с запозданием, в отличие от
-  // поиска/библиотеки, где view меняется сразу
+  /* Полоска прогресса у верхнего края окна (вне плеера). Заполнение двигается
+     на timeupdate, поэтому элемент держим в ref, а не в state: ререндер App на
+     каждый тик не нужен. Ищем лениво — разметка живёт в index.html, вне React. */
+  const miniFillRef = useRef(null);
+  const setMiniProgress = useCallback((p) => {
+    const el = miniFillRef.current || (miniFillRef.current = document.getElementById('accent-fill'));
+    if (!el) return;
+    const k = p < 0 ? 0 : p > 1 ? 1 : p;
+    el.style.transform = `scaleX(${k.toFixed(4)})`;
+  }, []);
+
+  /* Видимость полоски: ВНЕ плеера и только пока трек играет. Раньше на этом
+     месте была статичная палочка акцента, горевшая ровно в плеере — то есть
+     там, где прогресс и так есть на слайдере. Теперь наоборот: ушёл в
+     библиотеку/поиск — сверху едет тонкая акцентная полоска, и по ней видно,
+     что трек идёт, не возвращаясь в плеер.
+     Считаем по паре view + playerVisible, а не по одному view: при уходе в
+     настройки setView отложен на 300мс, и полоска успела бы выехать поверх ещё
+     видимого плеера. */
+  useEffect(() => {
+    const inPlayer = view === 'player' && playerVisible;
+    /* трек проверяем по источнику, а не по `track`: он всегда объект (фолбэк
+       BLANK_TRACK), и это условие было бы всегда истинным */
+    const hasTrack = !!scPlayingTrack || trackIdx >= 0;
+    const show = !inPlayer && !!isPlaying && hasTrack;
+    document.body.classList.toggle('mini-progress', show);
+    /* при показе подтягиваем текущую позицию: пока полоска была скрыта,
+       timeupdate её не двигал, а после смены трека progressRef уже обнулён */
+    if (show) setMiniProgress(progressRef.current);
+  }, [view, playerVisible, isPlaying, trackIdx, scPlayingTrack, setMiniProgress]);
+
   /* ❌ УДАЛЁН эффект подсветки тайтлбара в плеере.
      Здесь стояло `tb.style.background = linear-gradient(90deg, var(--bg),
      rgba(accent) 9% в центре, var(--bg))` — горизонтальное свечение акцентом
-     через всю ширину полосы, плюс `body.in-player` для #accent-top.
-
+     через всю ширину полосы.
      Почему это и было то самое «свечение, из-за которого создаётся граница
      тайтлбара»: заливка ставилась ИНЛАЙНО, то есть перебивала и `background`
      из css, и `background: transparent` — тайтлбар снова становился
-     единственной непрозрачной полосой в окне. И видна была только в плеере,
-     потому что эффект навешивался по `view === 'player' && playerVisible`:
-     ни в css, ни в разметке этого свечения не было, и в проверке страницы
-     без открытого плеера оно не появлялось — поэтому и не находилось.
-
-     Что осталось: `in-player` больше не нужен (единственный его потребитель
-     был #accent-top, который тоже удалён), а `glow-off` живёт — на нём
-     держится .like-glow. */
+     единственной непрозрачной полосой в окне.
+     Осталось только это затирание инлайнового стиля (на случай, если он
+     остался в разметке от прошлой сборки): ❌ свой фон тайтлбару больше не
+     ставим, он обязан быть прозрачным. */
   useEffect(() => {
-    const inPlayer = view === 'player' && playerVisible;
-    /* Только класс: он включает палочку акцента у края (#accent-top в
-       styles.css) — её вернули по просьбе.
-       ❌ инлайновый градиент на самом `#titlebar`
-       (`linear-gradient(90deg, var(--bg), accent 9%, var(--bg))`) НЕ
-       возвращаем: он перебивал `background: transparent` и был именно той
-       «границей тайтлбара». Стиль чистим на случай, если он остался в
-       разметке от прошлой сборки. */
-    document.body.classList.toggle('in-player', inPlayer);
     const tb = document.getElementById('titlebar');
     if (tb) tb.style.background = '';
-  }, [view, playerVisible, settings.accentMode]);
+  }, [view, playerVisible]);
 
   /* загружаем настройки и треки при старте */
   useEffect(() => {
@@ -9200,7 +9922,20 @@ function App() {
 
   /* инициализация Audio */
   useEffect(() => {
-    const audio = new Audio();
+    /* после hot-reload это ТОТ ЖЕ элемент, что играет прямо сейчас: новый дал
+       бы тишину в интерфейсе, а старый остался бы в графе и продолжал играть
+       мимо наших обработчиков, паузы и ползунков */
+    const audio = HOT_STORE.audio || new Audio();
+    HOT_STORE.audio = audio;
+    /* ⚠️ ДО первого `src` и всегда, даже если эквалайзер не включён.
+       Как только элемент попадёт в AudioContext (createMediaElementSource),
+       кросс-доменный поток без CORS-режима Chromium глушит целиком — трек
+       просто замолкает. Поставить `crossOrigin` позже, чем присвоен `src`,
+       уже бесполезно: запрос ушёл в no-cors, и лечится это только перезагрузкой
+       трека. Проверено: CDN soundcloud отдаёт `access-control-allow-origin: *`,
+       asset-протокол tauri — заголовок с origin окна, hls идёт через MSE
+       (blob:), где CORS не участвует. */
+    audio.crossOrigin = 'anonymous';
     audio.volume = volume;
     audioRef.current = audio;
 
@@ -9211,12 +9946,16 @@ function App() {
        назад на каждом кадре кроссфейда. */
     const onTime  = handleDeckTime(audio);
     const onEnded = handleDeckEnded(audio);
-    audio.addEventListener('timeupdate', onTime);
-    audio.addEventListener('ended',      onEnded);
+    bindDeck(audio, onTime, onEnded);
 
     return () => {
-      audio.removeEventListener('timeupdate', onTime);
-      audio.removeEventListener('ended',      onEnded);
+      if (audio.__sewTime)  audio.removeEventListener('timeupdate', audio.__sewTime);
+      if (audio.__sewEnded) audio.removeEventListener('ended',      audio.__sewEnded);
+      audio.__sewTime = audio.__sewEnded = null;
+      /* подмена модуля: элемент и граф продолжают жить, обработчики заново
+         навесит следующий mount. всё, что ниже, оборвало бы трек — а значит
+         обрывало бы музыку на каждой правке файла */
+      if (hotSwapping) return;
       audio.pause();
       audio.src = '';
       destroyHls();
@@ -9234,11 +9973,65 @@ function App() {
     };
   }, []);
 
+  /* настройки → звуковой граф: эквалайзер, скорость, тон.
+
+     Один эффект на всё, а не два: `afxAttach` умеет подключить деку и сразу
+     применить уже сложившийся профиль, но порядок «включить полосы → потом
+     подключить» пришлось бы держать вручную, и однажды он бы разъехался.
+     Деки подключаются здесь на каждой правке просто потому, что `afxAttach`
+     идемпотентен: уже подключённый элемент он возвращает из Map.
+
+     Первые две деки создаются лениво (вторая — на первом кроссфейде), и
+     `ensureDeckB` подключает себя сам: иначе она играла бы в обход фильтров. */
+  useEffect(() => {
+    const gains = Array.isArray(settings.eqGains) && settings.eqGains.length === EQ_BANDS.length
+      ? settings.eqGains.map(v => Math.max(-EQ_GAIN_MAX, Math.min(EQ_GAIN_MAX, Number(v) || 0)))
+      : EQ_FLAT;
+    const speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, Number(settings.speed) || 1));
+    const pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, Math.round(Number(settings.pitch) || 0)));
+    const eqOn  = !!settings.eqOn;
+    const keep  = settings.preservePitch !== false;
+
+    if (!eqOn && speed === 1 && pitch === 0) {
+      /* всё по умолчанию. Граф, если он уже поднят, не рвём: createMediaElementSource
+         необратим, деки пришлось бы пересоздавать, а это потеря текущего
+         воспроизведения ради нулевой экономии */
+      afxApplyEq(false);
+      afxTransport({ speed: 1, pitch: 0, preserve: keep });
+      return;
+    }
+
+    afx();
+    afxAttach(audioRef.current);
+    afxAttach(deckBRef.current);
+    afxApplyEq(eqOn, gains);
+    afxTransport({ speed, pitch, preserve: keep });
+    afxResume();     /* контекст мог родиться посреди уже играющего трека */
+  }, [settings.eqOn, settings.eqGains, settings.speed, settings.pitch, settings.preservePitch]);
+
+  /* Автоплей-политика: контекст, созданный не в жесте, стартует suspended, а
+     звук из media-элемента идёт ТОЛЬКО через граф — то есть играет трек и
+     молчит. Один слушатель на документ дешевле, чем ловить каждый play. */
+  useEffect(() => {
+    const wake = () => afxResume();
+    window.addEventListener('pointerdown', wake, true);
+    window.addEventListener('keydown', wake, true);
+    return () => {
+      window.removeEventListener('pointerdown', wake, true);
+      window.removeEventListener('keydown', wake, true);
+    };
+  }, []);
+
   /* смена трека — обновляем src */
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !track) return;
     if (scPlayingTrack) return; // SC-трек управляется через handleScTrackClick
+    /* hot-reload: тот же src уже стоит, а повторный `load()` начал бы трек с
+       нуля прямо посреди прослушивания */
+    const want = track.path ? fileSrc(track.path) : '';
+    if (HOT && HOT_STORE.trackSrc === want) return;
+    HOT_STORE.trackSrc = want;
     destroyHls(); // если был HLS — уничтожить при переключении на локальный трек
     if (track.path) {
       audio.src = fileSrc(track.path);
@@ -9564,7 +10357,10 @@ function App() {
         ms.setPositionState({
           duration: useDur,
           position: Math.min(ct, useDur),
-          playbackRate: 1,
+          /* не 1: при скорости ≠ 1 панель ОС рисовала бы ползунок не там, где
+             реально играет — позиция и duration считаются в медиа-времени,
+             а отображаются в реальном */
+          playbackRate: a?.playbackRate || 1,
         });
       } catch {}
     }
@@ -9584,7 +10380,7 @@ function App() {
         navigator.mediaSession.setPositionState({
           duration: d,
           position: Math.min(Math.max(0, Number(a.currentTime) || 0), d),
-          playbackRate: 1,
+          playbackRate: a.playbackRate || 1,
         });
       } catch {}
     }, 1000);
@@ -10711,12 +11507,17 @@ function App() {
 
   function ensureDeckB() {
     if (deckBRef.current) return deckBRef.current;
-    const b = new Audio();
+    const b = HOT_STORE.deckB || new Audio();
+    HOT_STORE.deckB = b;
+    /* см. инициализацию Audio: атрибут обязан стоять до первого src */
+    b.crossOrigin = 'anonymous';
     b.preload = 'auto';
     b.volume = 0;
-    b.addEventListener('timeupdate', handleDeckTime(b));
-    b.addEventListener('ended',      handleDeckEnded(b));
+    bindDeck(b, handleDeckTime(b), handleDeckEnded(b));
     deckBRef.current = b;
+    /* вторая дека создаётся лениво, уже после того, как могли включить
+       эквалайзер — иначе она играла бы в обход фильтров */
+    afxAttach(b);
     return b;
   }
 
@@ -10730,6 +11531,10 @@ function App() {
       if (!audio.duration) return;
       progressRef.current = audio.currentTime / audio.duration;
       discordProgressRef.current = progressRef.current;
+      /* полоска прогресса у края окна (вне плеера). Тот же timeupdate, что и у
+         слайдера: своего rAF-цикла не заводим — плавность между тиками даёт
+         linear-transition у #accent-fill */
+      setMiniProgress(progressRef.current);
       /* Старый fade-out — только когда настоящего перекрытия нет. Иначе он
          погасил бы ВХОДЯЩУЮ деку: у неё в начале remaining большой, но
          ровно в момент подмены audioRef она ещё считалась старой. */
@@ -11131,6 +11936,10 @@ function App() {
 
     const audio = audioRef.current;
     if (!audio) { setLoadingTrackId(null); return; }
+    /* дальше в этом элементе живёт чужой поток — тег «какой src уже стоит»
+       обязан сброситься, иначе после правки файла локальный трек, выбранный
+       следом, не перезагрузится в элемент */
+    HOT_STORE.trackSrc = null;
 
     const cf = settingsRef.current?.crossfade || 0;
     audio.volume = cf > 0 ? 0 : volumeRef.current;
@@ -11541,12 +12350,30 @@ function App() {
   const handleToggleLyrics = () => {
     const next = !lyricsOpen;
     setLyricsOpen(next);
-    /* текст живёт в колонке библиотеки — если она свёрнута, показать негде */
-    if (next) setLibCollapsed(false);
+    /* обе панели живут в одной колонке: вторая открытая накрыла бы первую */
+    if (next) { setLibCollapsed(false); setFxOpen(false); }
+  };
+
+  /* эффекты: та же колонка, тот же разворот свёрнутой библиотеки */
+  const handleToggleFx = () => {
+    const next = !fxOpen;
+    setFxOpen(next);
+    if (next) { setLibCollapsed(false); setLyricsOpen(false); }
   };
 
   /* панель уезжает вместе с плеером, а не остаётся висеть на чужом экране */
-  useEffect(() => { if (!playerVisible) setLyricsOpen(false); }, [playerVisible]);
+  useEffect(() => {
+    if (!playerVisible) { setLyricsOpen(false); setFxOpen(false); }
+  }, [playerVisible]);
+
+  /* Escape закрывает и эффекты — та же причина, что у текста: панель накрывает
+     колонку целиком, и «как отсюда выйти» не должно быть загадкой */
+  useEffect(() => {
+    if (!fxOpen) return;
+    const onKey = e => { if (e.key === 'Escape') setFxOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fxOpen]);
 
   /* Панель текста занимает ВСЮ колонку библиотеки (position:absolute inset:0
      поверх слоя списка) и глушит его pointerEvents — то есть выглядит как
@@ -11868,11 +12695,12 @@ function App() {
 
         {(
           <div ref={homeScrollRef} className="scroll-thin scroll-home" style={{
-            position:'absolute', top:0, left:0, right:10, bottom:0,
+            /* раньше здесь был только opacity + pointerEvents, и скрытая
+               главная ловила клики у вкладок поверх неё — тот же баг, что у
+               поиска. visibility из stackRoot гасит hit-test на поддереве */
+            ...stackRoot(homeVisible, 0.18),
+            top:0, left:0, right:10, bottom:0,
             overflowY:'auto', padding:'18px 4px 32px 36px',
-            opacity: homeVisible ? 1 : 0,
-            transition: 'opacity 0.18s ease',
-            pointerEvents: homeVisible ? 'auto' : 'none',
           }}>
             {!showWelcome && <div style={{
               display:'flex', alignItems:'center', gap:14, marginBottom:22,
@@ -12038,10 +12866,11 @@ function App() {
 
         {(
           <div style={{
-            position:'absolute', inset:0, display:'flex',
-            opacity: playerVisible ? 1 : 0,
-            transition:'opacity 0.1s ease',
-            pointerEvents: playerVisible ? 'auto' : 'none',
+            /* то же, что у главной: скрытый слой плеера не должен ловить
+               клики у видимых вкладок (см. stackRoot). opacity-переход
+               здесь короткий — 0.1s, как было */
+            ...stackRoot(playerVisible, 0.1),
+            display:'flex',
           }}>
         {/* library panel */}
         <div style={{
@@ -12061,7 +12890,9 @@ function App() {
           <div style={{width:260, flexShrink:0, height:'100%', position:'relative'}}>
           <div style={{
             position:'absolute', inset:0, display:'flex', flexDirection:'column',
-            opacity: lyricsOpen ? 0 : 1,
+            /* уступает место любой из двух панелей колонки — тексту и эффектам:
+               обе приезжают справа на месте списка */
+            opacity: (lyricsOpen || fxOpen) ? 0 : 1,
             /* !playerVisible — ОБЯЗАТЕЛЬНО, иначе невидимый список ест клики
                по сетке на главной. `pointer-events:none` на слое плеера
                (строка выше) НЕ выключает клики в поддереве: по спеке CSS
@@ -12074,9 +12905,9 @@ function App() {
                Клик уходил в невидимую строку VirtualTrackList: звук шёл от
                3-й/4-й строки (смещение по вертикали), экран не менялся,
                hero не запускался. */
-            pointerEvents: playerVisible && !lyricsOpen ? 'auto' : 'none',
-            transform: lyricsOpen ? 'translateX(-14px)' : 'translateX(0)',
-            transition: lyricsOpen
+            pointerEvents: playerVisible && !lyricsOpen && !fxOpen ? 'auto' : 'none',
+            transform: (lyricsOpen || fxOpen) ? 'translateX(-14px)' : 'translateX(0)',
+            transition: (lyricsOpen || fxOpen)
               ? 'opacity 0.16s ease, transform 0.16s ease'
               : 'opacity 0.3s ease 0.08s, transform 0.44s cubic-bezier(0.22,1,0.36,1) 0.08s',
           }}>
@@ -12278,6 +13109,8 @@ function App() {
             onSeek={handleLyricsSeek} onRetry={handleLyricsRefresh}
             onRefresh={handleLyricsRefresh}
             sources={settings.lyricsSources} onBack={() => setLyricsOpen(false)}/>
+          <FxPanel open={fxOpen} inPlayer={playerVisible} settings={settings}
+            onSettings={setSettings} onClose={() => setFxOpen(false)}/>
           </div>
         </div>
 
@@ -12405,8 +13238,18 @@ function App() {
             <div style={{
               width:'min(100%, clamp(260px, 34vw, 520px))', margin:'0 auto 0',
               opacity: playerVisible ? 1 : 0,
+              /* visibility, а не только opacity: скрытый слайдер всё равно
+                 ловит клики (WebView2 не исключает невидимое из hit-test), а
+                 лежит он поверх сетки главной — клик по карточке в нижней
+                 части экрана проваливался в невидимую дорожку. delay на
+                 показ/скрытие тот же 0.28s/0.1s, что у opacity, чтобы
+                 переключение шло вместе с ней */
+              visibility: playerVisible ? 'visible' : 'hidden',
+              pointerEvents: playerVisible ? 'auto' : 'none',
               transform: playerVisible ? 'translateY(0)' : 'translateY(10px)',
-              transition: playerVisible ? 'opacity 0.36s ease 0.28s, transform 0.48s cubic-bezier(0.22,1,0.36,1) 0.28s' : 'opacity 0.1s ease, transform 0.1s ease',
+              transition: playerVisible
+                ? 'opacity 0.36s ease 0.28s, transform 0.48s cubic-bezier(0.22,1,0.36,1) 0.28s, visibility 0s linear 0.28s'
+                : 'opacity 0.1s ease, transform 0.1s ease, visibility 0s linear 0.1s',
             }}>
               <ProgressBar progressRef={progressRef} audioRef={audioRef} total={track.duration || 0}
                 onSeek={handleSeek} isPlaying={isPlaying} visible={playerVisible}
@@ -12419,16 +13262,34 @@ function App() {
                 ничего; удалён вместе с шестью передачами. */}
             {(()=>{ const SIDE = 'clamp(40px, 5.2vw, 58px)'; return (
             <div style={{display:'flex', alignItems:'center', gap:14, justifyContent:'center', marginTop:16}}>
-              {/* Левый балансирующий спейсер 27px УБРАН. Он уравнивал play с
-                  кнопкой лайка, когда слева было только shuffle+prev. Слева
-                  теперь ещё и кнопка текста, и спейсер сдвигал play на 29px.
-                  Справа вместо этого постоянный слот шириной лайка (27px +
-                  marginLeft 14): сам лайк, когда он есть, и невидимый спейсер,
-                  когда трек локальный. Ряд сбалансирован в обоих случаях,
-                  лайк никуда не уезжает. Слева спейсер не нужен вовсе —
-                  flex gap уже даёт отступ от края. */}
+              {/* Баланс ряда. Слева теперь три кнопки (текст, эффекты, shuffle),
+                  справа две (повтор, лайк). Без компенсации play уезжал бы
+                  вправо от центра обложки на ширину кнопки, поэтому в конце
+                  справа стоит невидимый спейсер того же размера, что и кнопка.
+                  Постоянный слот лайка (27px + marginLeft 14) остаётся: трек
+                  бывает локальным, и без слота ряд дёргался бы. */}
               <MagBtn onClick={handleToggleLyrics} active={lyricsOpen} size={SIDE}>
                 <img src="../assets/textt.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:lyricsOpen?1:0.38,transition:'opacity 0.2s ease'}}/>
+              </MagBtn>
+              {/* эффекты — рядом с текстом, потому что открывают ровно ту же
+                  колонку слева (и взаимоисключающие с ним). иконка инлайном, а
+                  не png из assets: те приходится выбеливать фильтром, а
+                  выбранное состояние должно краситься акцентом */}
+              <MagBtn onClick={handleToggleFx} active={fxOpen} size={SIDE}>
+                <div style={{
+                  width:'clamp(18px, 2.2vw, 26px)', height:'clamp(18px, 2.2vw, 26px)',
+                  opacity: fxOpen ? 1 : 0.38, transition:'opacity 0.2s ease',
+                }}>
+                  <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none"
+                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                    <line x1="6"  y1="4" x2="6"  y2="20"/>
+                    <line x1="12" y1="4" x2="12" y2="20"/>
+                    <line x1="18" y1="4" x2="18" y2="20"/>
+                    <line x1="2.6"  y1="15" x2="9.4"  y2="15" strokeWidth="2.4"/>
+                    <line x1="8.6"  y1="8"  x2="15.4" y2="8"  strokeWidth="2.4"/>
+                    <line x1="14.6" y1="13" x2="21.4" y2="13" strokeWidth="2.4"/>
+                  </svg>
+                </div>
               </MagBtn>
               <MagBtn onClick={()=>setShuffle(s=>!s)} active={shuffle} size={SIDE}>
                 <img src="../assets/shuffle.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:shuffle?1:0.38,transition:'opacity 0.2s ease'}}/>
@@ -12452,6 +13313,9 @@ function App() {
                 ? <PlayerLikeBtn liked={likedIds.has(scPlayingTrack.id)}
                     onLike={() => handleLike(scPlayingTrack)} style={{marginLeft:14}}/>
                 : <div style={{width:27, marginLeft:14, flexShrink:0}}/>}
+              {/* невидимый противовес третьей кнопке слева — см. комментарий
+                  в начале ряда */}
+              <div style={{width:SIDE, flexShrink:0}} aria-hidden="true"/>
             </div>
             ); })()}
             </div>{/* controls+progress wrapper end */}
@@ -12578,3 +13442,6 @@ function App() {
 
 
 export default App
+
+// hmr-probe-test-1
+

@@ -14,6 +14,7 @@
     "app:build": "node tools/tauri.mjs build"
   },
   "dependencies": {
+    "@soundtouchjs/audio-worklet": "^2.1.1",
     "@tauri-apps/api": "^2.9.0",
     "framer-motion": "^11.18.2",
     "gsap": "^3.13.0",

@@ -163,52 +163,55 @@
     opacity:var(--vignette, 0.5);
     transition:opacity 0.32s ease;
   }
-  /* Акцентная подсветка сверху — только в плеере (body.in-player) и при
-     вкл. свечениях. Градиент прозрачен уже к ~235px, а элемент раньше
-     занимал inset:0, то есть на каждом кадре лерпа --accent-rgb
-     перерисовывался прямоугольник во всё окно ради пустого низа.
-     Теперь бокс ограничен верхними 62% — та же картинка, вдвое меньше
-     растрируемой площади. */
-  /* Палочка акцента у самого края окна. Возвращена по просьбе — она и есть
-     «красивая линия у границы». Раньше здесь был бокс высотой 62% от окна с
-     ДВУМЯ слоями: эта линия и мягкая заливка вниз на 40px. Заливка убрана —
-     она и давала «свечение, из-за которого создаётся граница тайтлбара».
-     Осталась только палочка, и бокс стал 2px: ради 1.5px линии держать
-     ~430px лишней растрируемой площади на каждом кадре незачем.
+  /* Линия у самого верхнего края окна. Раньше здесь была «палочка акцента»:
+     статичная линия на 60% ширины, горевшая ВНУТРИ плеера — там, где прогресс
+     и так виден на самом слайдере. Теперь наоборот: в плеере элемента нет
+     совсем, а вне плеера (библиотека, поиск, плейлисты, настройки) он
+     работает полоской прогресса — чтобы было видно, что трек идёт и сколько
+     осталось, не возвращаясь в плеер.
 
-     z-index 2, а не 0 как раньше: `#root` имеет z-index 1, и раньше палочка
-     лежала под содержимым — но это было незаметно, потому что пятно за
-     обложкой срезалось по границе тайтлбара и до палочки не доходило. Теперь
-     пятно свободно заходит в верх окна, и при z-index 0 линия оказалась бы
-     под ним. Поверх `#titlebar` (z-index 1000) не поднимаем — он прозрачный. */
+     z-index 2, а не 0: `#root` имеет z-index 1. Поверх `#titlebar`
+     (z-index 1000) не поднимаем — он прозрачный. `overflow:hidden` у
+     #app-shell срезает концы по дуге панели, поэтому линия повторяет форму
+     окна даже под материалом. */
   #accent-top {
     position:absolute; left:0; right:0; top:0; height:2px;
-    z-index:2; pointer-events:none;
-    background:
-      /* Ширина палочки — 60% окна. Сначала была во всю ширину (сплошной кусок
-         64% окна) и читалась перекладиной; потом 40% оказалось слишком
-         коротко. Мягкие края те же, поэтому форма не менялась — только длина */
-      linear-gradient(to right,
-        transparent 0%,
-        rgba(var(--accent-rgb), 0.55) 22%,
-        rgba(var(--accent-rgb), 0.55) 78%,
-        transparent 100%) top / 60% 1.5px no-repeat;
-    opacity:0; transition:opacity 0.6s ease;
+    z-index:2; pointer-events:none; overflow:hidden;
+    /* дорожка: та же линия на всю ширину, но почти невидимая. без неё
+       заполнение читается как растущий из ниоткуда огрызок, а не как
+       «столько из столького» */
+    background: rgba(255,255,255,0.055);
+    opacity:0; transition:opacity 0.45s ease;
   }
-  /* --glow-strength домножает прозрачность, и палочка гаснет вместе с
-     остальными свечениями на нуле */
-  body.in-player:not(.glow-off) #accent-top { opacity: var(--glow-strength, 1); }
-  /* Второй цвет: правый край идёт от --accent2-rgb, а не от --accent.
-     --accent лерпится покадрово (см. эффект в app.jsx), и если бы правая
-     половина шла от него же, при смене цвета полсекунды тянулась бы размытая
-     полоса — старый цвет слева, новый справа. */
-  #accent-top.grad {
-    background:
-      linear-gradient(to right,
-        transparent 0%,
-        rgba(var(--accent-rgb), 0.55) 22%,
-        rgba(var(--accent2-rgb, var(--accent-rgb)), 0.55) 78%,
-        transparent 100%) top / 60% 1.5px no-repeat;
+  /* Полоска — индикатор состояния, а не украшение, поэтому со свечениями она
+     не гаснет: режим «Выкл» (body.glow-off) её не выключает. --glow-strength
+     учитывается, но снизу подпёрт clamp'ом — на нулевой силе свечений полоска
+     притухает, а не исчезает. */
+  body.mini-progress #accent-top { opacity: clamp(0.55, var(--glow-strength, 1), 1); }
+  /* акцент выключен (режим «Выкл»): под обложку цвет не подбирается, и заливка
+     берёт нейтральный светлый — видно, стоит ли трек или уже почти кончился.
+     --accent-rgb при этом остаётся последним лерпнутым цветом, поэтому просто
+     ссылаться на него нельзя */
+  body.glow-off #accent-fill {
+    background:linear-gradient(to right,
+      rgba(255,255,255,0.42),
+      rgba(255,255,255,0.62));
+  }
+  #accent-fill {
+    display:block; height:100%; width:100%;
+    /* заполнение растёт трансформом, а не width: transform композитный,
+       width — layout на каждом обновлении */
+    transform-origin:0 50%; transform:scaleX(0);
+    /* timeupdate приходит ~4 раза в секунду, и без перехода полоска дёргалась
+       бы шагами по 2-4px. переход ровно на период тика делает движение
+       непрерывным — отдельный rAF-цикл для этого не нужен */
+    transition:transform 0.28s linear;
+    /* правый край идёт от --accent2-rgb, а не от лерпнутого --accent: общий
+       цвет дал бы размытую полосу при смене акцента. пока «второй цвет»
+       выключен, --accent2-rgb снят, и fallback даёт первый */
+    background:linear-gradient(to right,
+      rgba(var(--accent-rgb), 0.9),
+      rgba(var(--accent2-rgb, var(--accent-rgb)), 0.9));
   }
   body.effect-mica #titlebar { border-bottom-color: transparent; }
   #titlebar {
@@ -421,6 +424,46 @@
     width:14px; height:14px; border:none; border-radius:50%; background:#fff;
     box-shadow:0 1px 4px rgba(0,0,0,0.5);
   }
+  /* ── полосы панели эффектов (плеер) ─────────────────────────────────────
+     Свои, а не .th-range, по двум причинам: у нативного трека заливка растёт
+     от левого края, а вертикальному фейдеру эквалайзера и знаковому
+     ползунку тона нужна центровка от нуля; плюс полоса шириной 30px
+     системным бегунком не попадается мышью. Значения, позиции и transition
+     ставит компонент инлайном (transition зависит от того, тянут сейчас
+     ручку или нет), здесь — только внешний вид и отклик наведения.
+     transition в css намеренно НЕТ: инлайновый transition перекрыл бы его,
+     и hover-масштаб прыгал бы без анимации. */
+  .eq-fader {
+    position:relative; width:100%; height:100%;
+    cursor:ns-resize; touch-action:none; outline:none;
+  }
+  .eq-fader .eq-slot {
+    position:absolute; left:50%; top:0; bottom:0; width:4px; margin-left:-2px;
+    border-radius:2px; background:rgba(255,255,255,0.055);
+  }
+  .eq-fader .eq-thumb {
+    position:absolute; left:50%; width:18px; height:5px;
+    margin-left:-9px; margin-top:-2.5px; border-radius:3px;
+    background:#fff; box-shadow:0 1px 4px rgba(0,0,0,0.5);
+  }
+  .eq-fader:hover .eq-thumb  { transform:scaleX(1.14); }
+  .eq-fader:active .eq-thumb { transform:scaleX(1.24) scaleY(1.2); }
+  .eq-fader:focus-visible .eq-thumb { box-shadow:0 0 0 3px rgba(255,255,255,0.2); }
+  .eq-rail {
+    position:relative; display:flex; align-items:center; height:18px;
+    cursor:ew-resize; touch-action:none; outline:none;
+  }
+  .eq-rail .eq-groove {
+    position:relative; width:100%; height:4px; border-radius:2px;
+    background:rgba(255,255,255,0.07);
+  }
+  .eq-rail .eq-dot {
+    position:absolute; top:50%; width:12px; height:12px; margin-left:-6px; margin-top:-6px;
+    border-radius:50%; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,0.45);
+  }
+  .eq-rail:hover .eq-dot   { transform:scale(1.16); }
+  .eq-rail:active .eq-dot  { transform:scale(1.26); }
+  .eq-rail:focus-visible .eq-dot { box-shadow:0 0 0 3px rgba(255,255,255,0.2); }
   /* системный выбор цвета: хром рисует рамку и серую подложку, обе убираем,
      оставляя только наш контейнер — иначе он шире, чем соседние поля */
   input[type=color].th-color {
