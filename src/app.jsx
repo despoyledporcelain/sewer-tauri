@@ -3,7 +3,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMe
    глобала нет, поэтому импортируем точечно. Правка в PATCHES — замена
    ReactDOM.createPortal на createPortal. */
 import { createPortal } from 'react-dom'
-import { motion, AnimatePresence, LayoutGroup, Reorder } from 'framer-motion'
+import { motion, AnimatePresence, LayoutGroup, Reorder, useSpring, useReducedMotion } from 'framer-motion'
 /* ⚠️ hls.js и gsap грузятся ЛЕНИВО, а не в шапке модуля. Оба нужны не на
    старте: hls — только когда включаем SC-трек (и только для hls-стримов),
    gsap — на первом hero-перелёте и на входе в плеер. Статический импорт
@@ -199,18 +199,6 @@ function cleanUserThemes(arr) {
     out.push({ id, name, v: cleanTheme(raw.v) });
   }
   return out;
-}
-
-/* Читаемый вид темы для «кода темы». Ключи в порядке THEME_DEFAULT — иначе
-   скопированный текст приходилось бы вычитывать по факту применения.
-   Всё лишнее (preset) убираем: метку «из набора» в чужой теме врёт. */
-function themeToJson(t) {
-  const o = {};
-  for (const k of Object.keys(THEME_DEFAULT)) {
-    if (k === 'preset') continue;
-    o[k] = Array.isArray(t[k]) ? t[k].slice() : t[k];
-  }
-  return JSON.stringify(o, null, 2);
 }
 
 /* Фон оболочки → строка CSS. Пишется в --bg-image и рисуется поверх
@@ -1606,8 +1594,8 @@ const STRINGS = {
     eqp_flat:'Ровно', eqp_bass:'Бас', eqp_vocal:'Вокал', eqp_treble:'Верх', eq_reset:'сбросить',
     db:'дБ', hz:'Гц', khz:'кГц',
     speed_pitch:'Скорость и тон',
-    speed:'Скорость', preserve_pitch:'Держать тональность',
-    preserve_pitch_sub:'При смене скорости высота остаётся прежней',
+    speed:'Скорость', hold_pitch:'Не менять тональность',
+    hold_pitch_sub:'Высота остаётся прежней — едет только темп',
     pitch:'Тональность', semitones:'пт',
     /* ❌ УДАЛЕНЫ ключи `card_interface`, `hide_dividers`, `hide_dividers_sub` —
        карточка «Интерфейс» была из одного тумблера разделителей, он убран,
@@ -1731,9 +1719,18 @@ const STRINGS = {
     ui_radius:'Скругление', ui_radius_sub:'Углы карточек в настройках. Углы самого окна рисует система',
     ui_grain:'Зерно', ui_grain_sub:'Мелкая шумность поверх фона. Убирает бандинг на градиентах',
     ui_vignette:'Виньетка', ui_vignette_sub:'Затемнение по краям окна',
-    card_theme_code:'Код темы', theme_code_sub:'Тема — обычный объект. Его можно скопировать и прислать кому угодно, а оттуда вставить сюда',
-    theme_code_show:'Показать код', theme_code_copy:'Скопировать', theme_code_apply:'Применить',
-    theme_code_copied:'Скопировано', theme_code_bad:'Это не разбор темы',
+    card_ui:'Элементы интерфейса', ui_hide_sub:'Спрятать лишнее. Всё возвращается здесь же — ничего не пропадает насовсем',
+    ui_hide_source:'Переключатель источника', ui_hide_source_sub:'Иконка папки в шапке: локальные треки ↔ облако. Переключать можно и в «Аккаунте»',
+    ui_hide_volume:'Громкость в плеере', ui_hide_volume_sub:'Тонкий ползунок справа. Громкость остаётся в микшере Windows',
+    ui_hide_caption:'Подпись списка', ui_hide_caption_sub:'«Все треки» и счётчик под ним',
+    ui_hide_sort:'Сортировка списка', ui_hide_sort_sub:'Чипсы «Добавлено / Артист / Название / Время»',
+    ui_show_all:'Вернуть всё',
+    source_label:'Источник', source_sub:'Какую библиотеку показывает приложение',
+    source_local:'Локальные', source_sc:'Облако',
+    card_covers:'Обложки',
+    cover_tint:'Сила',
+    cover_tint_off:'выкл',
+    cover_tint_by_cover:'От обложки', cover_tint_by_color:'Свой цвет',
     sec_lyrics:'Текст песен',
     sec_discord:'Discord',
     shuffle_all:'Случайно', shuffle_empty:'Нечего перемешивать',
@@ -1778,8 +1775,8 @@ const STRINGS = {
     eqp_flat:'Flat', eqp_bass:'Bass', eqp_vocal:'Vocal', eqp_treble:'Treble', eq_reset:'reset',
     db:'dB', hz:'Hz', khz:'kHz',
     speed_pitch:'Speed and pitch',
-    speed:'Speed', preserve_pitch:'Keep pitch',
-    preserve_pitch_sub:'Pitch stays the same when speed changes',
+    speed:'Speed', hold_pitch:'Keep pitch',
+    hold_pitch_sub:'Pitch stays put — only the tempo moves',
     pitch:'Pitch', semitones:'st',
     /* ❌ removed card_interface, hide_dividers, hide_dividers_sub — см. ru */
     discord_rpc:'Discord Rich Presence', discord_rpc_sub:'Show current track in Discord',
@@ -1896,9 +1893,18 @@ const STRINGS = {
     ui_radius:'Corner radius', ui_radius_sub:'Corners of the settings cards. The window corners are drawn by the system',
     ui_grain:'Grain', ui_grain_sub:'Fine noise over the background. Hides banding in gradients',
     ui_vignette:'Vignette', ui_vignette_sub:'Darkens the edges of the window',
-    card_theme_code:'Theme code', theme_code_sub:'A theme is a plain object. Copy it and send it to anyone, then paste it back here',
-    theme_code_show:'Show code', theme_code_copy:'Copy', theme_code_apply:'Apply',
-    theme_code_copied:'Copied', theme_code_bad:'That does not parse as a theme',
+    card_ui:'Interface elements', ui_hide_sub:'Hide the extra chrome. Everything comes back from here — nothing is lost for good',
+    ui_hide_source:'Source switch', ui_hide_source_sub:'Folder icon in the titlebar: local tracks ↔ cloud. You can also switch it in Account',
+    ui_hide_volume:'Player volume', ui_hide_volume_sub:'Thin slider on the right. Volume stays available in the Windows mixer',
+    ui_hide_caption:'List caption', ui_hide_caption_sub:'“All tracks” and the counter under it',
+    ui_hide_sort:'List sorting', ui_hide_sort_sub:'“Added / Artist / Title / Time” chips',
+    ui_show_all:'Show everything',
+    source_label:'Source', source_sub:'Which library the app shows',
+    source_local:'Local', source_sc:'Cloud',
+    card_covers:'Artwork',
+    cover_tint:'Strength',
+    cover_tint_off:'off',
+    cover_tint_by_cover:'From artwork', cover_tint_by_color:'Custom colour',
     sec_lyrics:'Lyrics',
     sec_discord:'Discord',
     shuffle_all:'Shuffle', shuffle_empty:'Nothing to shuffle',
@@ -1999,11 +2005,11 @@ function PlayerLikeBtn({ liked, onLike, style: extraStyle }) {
       style={{
         flexShrink:0, cursor:'pointer', padding:4, lineHeight:0,
         opacity: liked ? (hov ? 1 : 0.85) : (hov ? 0.6 : 0.25),
-        transition:'opacity 0.18s ease',
+        transition:'opacity 200ms ease',
         ...extraStyle,
       }}
     >
-      <div style={{position:'relative', display:'flex', transform: hov ? 'scale(1.16)' : 'scale(1)', transition:'transform 0.15s ease'}}>
+      <div style={{position:'relative', display:'flex', transform: hov ? 'scale(1.1)' : 'scale(1)', transition:'transform 260ms cubic-bezier(0.23,1,0.32,1)'}}>
         {/* кольцо-вспышка: расходится и гаснет при каждом лайке */}
         {popKey > 0 && (
           <motion.div key={'ring' + popKey}
@@ -2099,7 +2105,10 @@ const EQ_PRESETS = {
   treble:[-2, -1, 0, 0, 2, 4, 5],
 };
 
-const SPEED_MIN = 0.5, SPEED_MAX = 2;
+/* 0.75–1.25: шире было 0.5–2, но на краях стретчер уже «пластилит» — форма
+   волны слышна на голосе, а вернуть ползунок в 1× приходилось на глаз. четверти
+   в обе стороны хватает и подкасту, и медленным вещам */
+const SPEED_MIN = 0.75, SPEED_MAX = 1.25;
 const PITCH_MAX = 12;          /* полутона в обе стороны */
 
 /* ── переживание hot-reload (только dev) ────────────────────────────────────
@@ -2178,6 +2187,15 @@ function afxAttach(audio) {
      ещё не включали, подключать элемент некуда и незачем */
   const fx = _afx;
   if (!fx || !audio) return null;
+
+  /* Смена src сбрасывает скорость элемента (см. defaultPlaybackRate в
+     afxApplyTransport): переустанавливаем профиль на каждый новый трек.
+     Слушатель один и тот же на элемент, поэтому старый снимаем — иначе после
+     правки файла тут остались бы функции прошлой версии модуля. */
+  if (audio.__sewTransport) audio.removeEventListener('loadstart', audio.__sewTransport);
+  audio.__sewTransport = () => { if (_afx) afxApplyTransport(); };
+  audio.addEventListener('loadstart', audio.__sewTransport);
+
   const seen = fx.decks.get(audio);
   if (seen) return seen;
   const src = fx.ctx.createMediaElementSource(audio);
@@ -2281,6 +2299,11 @@ function afxApplyTransport() {
   if (semis !== 0) afxLoadSt();
 
   fx.decks.forEach((deck, audio) => {
+    /* defaultPlaybackRate, а не только playbackRate: `load()` (его вызывает
+       любая смена src) сбрасывает текущую скорость к дефолтной, и новый трек
+       стартовал бы на 1× до первой правки ползунка. дефолт держим равным
+       скорости — тогда сброс возвращает её же */
+    audio.defaultPlaybackRate = rate;
     audio.playbackRate = rate;
     const useSt = semis !== 0;
     /* без ворклета высоту держит сам элемент — это бесплатно и качественнее
@@ -2934,6 +2957,39 @@ function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = fa
   );
 }
 
+/* ── тонирование обложек ─────────────────────────────────────────────────── */
+/* Слой цвета поверх обложки с `mix-blend-mode: color`. Это ровно приём
+   tinted-иконок в ios 18: режим color берёт у источника ТОН и НАСЫЩЕННОСТЬ, а
+   светлоту — у картинки под ним. Обложка остаётся собой (все переходы, лица,
+   фактура), но живёт в одной палитре.
+
+   Цвет ОДИН на всё приложение, и это принципиально: смысл режима — чтобы весь
+   экран читался цельно, а не чтобы каждая обложка красовалась своим оттенком.
+   Два источника (переключатель в «Оформление → Обложки»):
+   • `cover` — оттенок ТЕКУЩЕЙ обложки: переключил трек — перекрасилось всё;
+   • `color` — выбранный в колор-пикере.
+
+   Оба приходят сюда одной css-переменной (--cover-tint-rgb), которую пишет
+   App: обложки рисуются в полутора десятках мест, и считать/протаскивать цвет
+   в каждое было бы и дороже, и бессмысленно — он одинаков для всех.
+
+   Переход между цветами — css-транзишн на самом слое: при смене трека
+   переменная меняется один раз, а дальше браузер сам едет от старого тона к
+   новому. Никакого lerp-цикла здесь не нужно.
+
+   Ставить слой нужно СРАЗУ ЗА картинкой: всё, что рисуется после (затемнение
+   под курсором, спиннер, бейджи, кнопка play), должно лежать поверх
+   тонировки — иначе бленд перекрасит и его. */
+function CoverTint() {
+  return <div aria-hidden="true" style={{
+    position:'absolute', inset:0, pointerEvents:'none',
+    background:'rgb(var(--cover-tint-rgb))',
+    mixBlendMode:'color',
+    opacity:'var(--cover-tint, 0)',
+    transition:'background 0.5s ease, opacity 0.3s ease',
+  }}/>;
+}
+
 function AlbumArt({ track, instant, onReady }) {
   const url = track?.coverUrl || null;
   const [layers, setLayers] = useState(() => (url ? [{ url }] : []));
@@ -3018,7 +3074,9 @@ function AlbumArt({ track, instant, onReady }) {
       {layers.map((l, i) => (
         <CoverLayer key={l.url} url={l.url} onLoaded={markLoaded} onFailed={dropLayer} instant={instant}
           isTop={i === layers.length - 1} ready={!!l.ready} topReady={topReady}/>
-      ))}    </div>
+      ))}
+      <CoverTint/>
+    </div>
   );
 }
 
@@ -3072,20 +3130,80 @@ function AmbientGlow({ visible, off }) {
 }
 
 /* ── MagBtn ──────────────────────────────────────────────────────────────── */
+/* Кнопка транспорта.
+
+   Раньше на ховере была одна `scale(1.1)` на жёсткой пружине: кнопка целиком
+   «щёлкала» размером, а иконка и подложка оставались на месте. Отсюда и
+   ощущение дешёвки — движение одно, мгновенное, и оно про габарит, а не про
+   саму кнопку.
+
+   Теперь масштаба на ховере нет вовсе:
+   • под иконкой расцветает ореол в акцентном цвете (radial-gradient, а не
+     box-shadow: тень повторяет силуэт кнопки и на тёмном фоне даёт грязное
+     пятно вместо свечения);
+   • иконка едет за курсором на пару пикселей — отсюда и «магнит». Движение на
+     пружине: pointermove приходит на 100 Гц, и без интерполяции иконка прыгала
+     бы пиксельными ступеньками;
+   • масштаб остался только у нажатия (0.94) — это единственное движение,
+     которое обязано читаться как отклик.
+
+   Ореол и уезд иконки — transform/opacity, то есть композитор: ховер не
+   трогает layout и не дёргается, даже когда основной поток занят. */
+const MAG_PULL = 3.2;          /* предел уезда иконки от центра, px */
+
 function MagBtn({ onClick, active, children, size=52 }) {
+  const reduce = useReducedMotion();
+  const [hov, setHov] = useState(false);
+  const mx = useSpring(0, { stiffness: 340, damping: 24, mass: 0.35 });
+  const my = useSpring(0, { stiffness: 340, damping: 24, mass: 0.35 });
+
+  const move = e => {
+    if (reduce) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    /* нормализуем по половине габарита: край кнопки = 1, центр = 0, поэтому
+       предел уезда одинаков и у 40px, и у 66px */
+    mx.set(((e.clientX - (r.left + r.width  / 2)) / (r.width  / 2)) * MAG_PULL);
+    my.set(((e.clientY - (r.top  + r.height / 2)) / (r.height / 2)) * MAG_PULL);
+  };
+  /* возвращаем на место тоже пружиной, а не мгновенно: отпускание курсора —
+     часть жеста, и «отскок» читается как инерция */
+  const leave = () => { setHov(false); mx.set(0); my.set(0); };
+
   return (
     <motion.button onClick={onClick}
-      whileHover={{ scale: 1.1 }}
-      whileTap={{ scale: 0.82 }}
-      transition={{ type:'spring', stiffness: 600, damping: 22, mass: 0.4 }}
+      onPointerEnter={() => setHov(true)} onPointerMove={move} onPointerLeave={leave}
+      whileTap={{ scale: 0.94 }}
+      transition={{ type:'spring', stiffness: 520, damping: 28, mass: 0.5 }}
       style={{
+        position:'relative',
         width:size, height:size, borderRadius:'50%', border:'none', background:'none',
         color: active ? 'var(--accent)' : 'rgba(255,255,255,0.38)',
         display:'flex', alignItems:'center', justifyContent:'center',
         cursor:'pointer', flexShrink:0,
-        transition:'color 0.2s ease',
+        transition:'color 220ms ease',
       }}>
-      {children}
+      {/* ореол лежит ПОД иконкой и не выходит за габарит кнопки: кнопки стоят
+          плотно, и пятно крупнее самой кнопки слипалось бы с соседним */}
+      <span aria-hidden="true" style={{
+        position:'absolute', inset:'6%', borderRadius:'50%',
+        background:'radial-gradient(circle at center,'
+          + ' rgba(var(--accent-rgb),0.28) 0%,'
+          + ' rgba(var(--accent-rgb),0.14) 44%,'
+          + ' rgba(var(--accent-rgb),0.04) 67%,'
+          + ' rgba(var(--accent-rgb),0) 78%)',
+        opacity: hov ? 1 : 0,
+        transform: hov ? 'scale(1)' : 'scale(0.58)',
+        /* появление медленнее угасания: курсор влетает быстро, а отпускает
+           кнопку глаз ещё несколько кадров */
+        transition: hov
+          ? 'opacity 190ms ease, transform 340ms cubic-bezier(0.23,1,0.32,1)'
+          : 'opacity 150ms ease, transform 150ms cubic-bezier(0.23,1,0.32,1)',
+        pointerEvents:'none',
+      }}/>
+      <motion.span style={{
+        position:'relative', display:'flex', alignItems:'center', justifyContent:'center',
+        x: mx, y: my,
+      }}>{children}</motion.span>
     </motion.button>
   );
 }
@@ -3104,6 +3222,7 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null }) {
      панели, а на кнопке ничего. */
   const [playPulse, setPlayPulse] = useState(0);
   const [trackPulse, setTrackPulse] = useState(0);
+  const [hov, setHov] = useState(false);
   const wasPlaying = useRef(false);
   useEffect(() => {
     if (isPlaying && !wasPlaying.current) setPlayPulse(k => k + 1);
@@ -3135,8 +3254,8 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null }) {
   });
   return (
     <motion.button onClick={onToggle}
-      whileHover={{ scale: 1.04 }}
-      whileTap={{ scale: 0.93 }}
+      onPointerEnter={() => setHov(true)} onPointerLeave={() => setHov(false)}
+      whileTap={{ scale: 0.95 }}
       animate={trackPulse > 0 ? { scale: [1, 0.9, 1] } : {}}
       transition={{ type:'spring', stiffness: 380, damping: 26, mass: 0.6 }}
       style={{
@@ -3147,6 +3266,20 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null }) {
         cursor:'pointer', flexShrink:0, position:'relative',
         transition:'background 0.3s ease',
       }}>
+      {/* ховер — не масштаб, а свет: вокруг кнопки проступает акцентное кольцо.
+          оно живёт за габаритом кнопки, поэтому ряд не сдвигается и ничего не
+          пересчитывается в layout; появление с лёгким расширением, угасание
+          быстрее — как у остальных кнопок транспорта */}
+      <span aria-hidden="true" style={{
+        position:'absolute', inset:-8, borderRadius:'50%',
+        border:'1.5px solid rgba(var(--accent-rgb),0.42)',
+        opacity: hov ? 1 : 0,
+        transform: hov ? 'scale(1)' : 'scale(0.88)',
+        transition: hov
+          ? 'opacity 200ms ease, transform 320ms cubic-bezier(0.23,1,0.32,1)'
+          : 'opacity 140ms ease, transform 140ms cubic-bezier(0.23,1,0.32,1)',
+        pointerEvents:'none',
+      }}/>
       {isPlaying && playPulse > 0 && (
         <motion.span key={playPulse}
           initial={{ scale:0.82, opacity:0.5 }}
@@ -3287,6 +3420,7 @@ const TrackRow = React.memo(function TrackRow({ track, isActive, isLoading, isEr
               onError={e=>{e.currentTarget.style.display='none'}}/>
           : <img src="../assets/note.png" style={{width:11,height:11,filter:'brightness(0) invert(1)',opacity:isActive?0.9:0.2}}/>
         }
+        <CoverTint/>
       </div>
       <div style={{flex:1, overflow:'hidden'}}>
         <div style={{fontSize: 'var(--fs-sm)', fontWeight: isActive ? 700 : 500,
@@ -3615,6 +3749,7 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
                         {pl.coverUrl
                           ? <img src={pl.coverUrl} loading="lazy" style={{position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', clipPath:'inset(0 round 6px)'}}/>
                           : <img src="../assets/note.png" style={{width:9, height:9, filter:'brightness(0) invert(1)', opacity:0.2, position:'absolute', inset:0, margin:'auto'}}/>}
+                        <CoverTint/>
                       </div>
                       <div style={{flex:1, minWidth:0, fontSize: 'var(--fs-sm)', fontWeight:500,
                         color: on ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.82)',
@@ -3768,6 +3903,7 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
                       height: '100%', objectFit: 'cover' }}/>
                   : <img src="../assets/note.png" style={{ position: 'absolute', inset: 0, margin: 'auto',
                       width: 14, height: 14, filter: 'brightness(0) invert(1)', opacity: 0.2 }}/>}
+                <CoverTint/>
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 'var(--fs-md)', fontWeight: 600, color: 'rgba(255,255,255,0.88)',
@@ -4454,17 +4590,29 @@ function useRail({ value, min, max, step, vertical, onChange }) {
 }
 
 /* вертикальный фейдер полосы эквалайзера: центр — 0 дБ, заливка растёт от
-   нулевой линии вверх или вниз */
-function EqFader({ value, onChange, label }) {
+   нулевой линии вверх или вниз.
+
+   Двигается ТОЛЬКО transform. Раньше здесь анимировались `top` и `height` в
+   процентах: смена пресета дёргала layout у четырнадцати элементов разом, и
+   семь полос ехали рывками — тем заметнее, чем больше на основном потоке
+   работы (а перерисовка App на смену настроек как раз на нём). translate и
+   scale считает композитор, и ему эта работа не мешает. */
+function EqFader({ value, onChange, label, thumbRef }) {
   const { ref, drag, pct, reset, ...events } = useRail({
     value, min: -EQ_GAIN_MAX, max: EQ_GAIN_MAX, step: 0.5, vertical: true, onChange,
   });
-  const y   = (1 - pct) * 100;       /* позиция ручки от верха, % */
-  const top = Math.min(y, 50);
-  const h   = Math.abs(y - 50);      /* высота заливки, % */
+  /* заливка — две половины от нулевой линии, сверху и снизу. одна из них
+     всегда нулевая, поэтому вместо пересчёта top/height достаточно
+     scaleY от основания каждой половины */
+  const up   = Math.max(0, pct * 2 - 1);
+  const down = Math.max(0, 1 - pct * 2);
   const move = drag
     ? 'box-shadow 0.18s ease'
-    : 'top 0.2s cubic-bezier(0.22,1,0.36,1), height 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.18s ease, transform 0.18s ease';
+    : 'transform 0.42s cubic-bezier(0.22,1,0.36,1), opacity 0.2s ease, box-shadow 0.18s ease';
+  const half = {
+    position:'absolute', left:'50%', width:4, marginLeft:-2, borderRadius:2,
+    background:'var(--accent)', transition: move,
+  };
   return (
     <div ref={ref} className="eq-fader" role="slider" tabIndex={0}
       aria-orientation="vertical" aria-label={label}
@@ -4474,52 +4622,139 @@ function EqFader({ value, onChange, label }) {
       {/* нулевая линия: без неё не видно, откуда отсчёт */}
       <div style={{position:'absolute', left:0, right:0, top:'50%', height:1, background:'rgba(255,255,255,0.08)'}}/>
       <div style={{
-        position:'absolute', left:'50%', width:4, marginLeft:-2, borderRadius:2,
-        top:`${top}%`, height:`${h}%`,
-        background:'var(--accent)', opacity: value ? 0.9 : 0, transition: move,
+        ...half, bottom:'50%', height:'50%', transformOrigin:'bottom',
+        transform:`scaleY(${up})`, opacity: up ? 0.9 : 0,
       }}/>
-      <div className="eq-thumb" style={{top:`${y}%`, transition: move}}/>
+      <div style={{
+        ...half, top:'50%', height:'50%', transformOrigin:'top',
+        transform:`scaleY(${down})`, opacity: down ? 0.9 : 0,
+      }}/>
+      {/* ручка. обёртка в высоту всей дорожки нужна ради translateY в
+          процентах: у самой ручки высота 5px, и 50% считались бы от пяти
+          пикселей, а не от дорожки */}
+      <div style={{
+        position:'absolute', left:0, right:0, top:0, height:'100%',
+        transform:`translateY(${(1 - pct) * 100}%)`, transition: move,
+        pointerEvents:'none',
+      }}>
+        <div className="eq-thumb" ref={thumbRef}
+          style={{transition:'transform 0.16s ease, box-shadow 0.18s ease'}}/>
+      </div>
     </div>
   );
 }
 
-/* горизонтальная полоса транспорта. `center` — заливка от середины (тон),
-   без него — от левого края (скорость) */
-function FxSlider({ value, min, max, step, center, onChange, resetTo, label }) {
+/* горизонтальная полоса транспорта. заливка растёт от `origin` — у скорости
+   это 1×, и ровно там же стоит метка: без неё непонятно, куда возвращаться,
+   когда ползунок уехал в край.
+
+   Двигается только transform. Раньше заливка анимировала `left`/`width`, а
+   точка — `left`: это layout на каждое движение мыши, и полоса ехала
+   ступеньками — та же история, что была у фейдеров с `top`/`height`.
+   translateX в процентах считается от СОБСТВЕННОЙ ширины элемента, а у
+   заливки она равна дорожке, поэтому всё считается в процентах без пикселей. */
+function FxSlider({ value, min, max, step, origin, onChange, resetTo, label }) {
   const { ref, drag, pct, reset, ...events } = useRail({ value, min, max, step, vertical: false, onChange });
   const x    = pct * 100;
-  const from = center ? 50 : 0;
-  const left = Math.min(x, from);
-  const w    = Math.abs(x - from);
+  const o    = origin == null ? 0 : ((origin - min) / (max - min)) * 100;
+  const from = Math.min(x, o);
+  const w    = Math.abs(x - o);
   const move = drag
     ? 'box-shadow 0.18s ease'
-    : 'left 0.2s cubic-bezier(0.22,1,0.36,1), width 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.18s ease, transform 0.18s ease';
+    : 'transform 0.28s cubic-bezier(0.22,1,0.36,1), opacity 0.2s ease, box-shadow 0.18s ease';
   return (
     <div ref={ref} className="eq-rail" role="slider" tabIndex={0} aria-label={label}
       aria-valuemin={min} aria-valuemax={max} aria-valuenow={value}
       onDoubleClick={() => reset(resetTo)} {...events}>
       <div className="eq-groove">
-        {/* метка нуля у знакового ползунка: без неё непонятно, где
-            «без сдвига», и центр приходится искать на глаз */}
-        {center && (
+        {origin != null && (
           <div style={{
-            position:'absolute', left:'50%', top:-3, width:1, height:10, marginLeft:-0.5,
+            position:'absolute', left:`${o}%`, top:-3, width:1, height:10, marginLeft:-0.5,
             borderRadius:1, background:'rgba(255,255,255,0.13)',
           }}/>
         )}
         <div style={{
-          position:'absolute', top:0, height:'100%', left:`${left}%`, width:`${w}%`,
-          borderRadius:2, background:'var(--accent)',
+          position:'absolute', inset:0, borderRadius:2, background:'var(--accent)',
+          transformOrigin:'left center',
+          transform:`translateX(${from}%) scaleX(${w / 100})`,
           opacity: w > 0.2 ? 0.9 : 0, transition: move,
         }}/>
-        <div className="eq-dot" style={{
-          left:`${x}%`,
-          transition: drag ? 'box-shadow 0.18s ease'
-            : 'left 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.18s ease, transform 0.18s ease',
-        }}/>
+        {/* точка едет в обёртке во всю дорожку: у самой точки ширина 12px, и
+            translateX в процентах считался бы от неё, а не от дорожки */}
+        <div style={{
+          position:'absolute', inset:0, pointerEvents:'none',
+          transform:`translateX(${x}%)`, transition: move,
+        }}>
+          <div className="eq-dot"
+            style={{transition:'transform 0.16s ease, box-shadow 0.18s ease'}}/>
+        </div>
       </div>
     </div>
   );
+}
+
+/* ── молния между полосами ───────────────────────────────────────────────────
+   Смена пресета переставляет все семь фейдеров разом, и без общего жеста это
+   читается как «подставили другие цифры». Разряд связывает полосы: он идёт по
+   ТЕКУЩИМ позициям ручек (читаем их из DOM в каждом кадре), поэтому едет
+   вместе с ними, а не живёт отдельной картинкой, и уходит тихим угасанием.
+
+   Рисуется мимо React: 60 кадров setState перерисовывали бы всю панель — то
+   есть добавляли бы ровно тот лаг, который здесь и лечим. Меняется один
+   атрибут `d` у трёх путей. */
+
+/* яркость удара во времени, мс → 0..1: два «щелчка» в начале (молния бьётся
+   не один раз), потом угасание. Массив, а не формула, — так кривая видна
+   глазами и правится одной цифрой */
+const BOLT_ENV = [[0,1],[90,0.34],[150,0.95],[240,0.3],[330,0.72],[450,0.3],[600,0.12],[880,0]];
+
+function boltEnv(t) {
+  for (let i = 1; i < BOLT_ENV.length; i++) {
+    const [t1, a1] = BOLT_ENV[i];
+    if (t > t1) continue;
+    const [t0, a0] = BOLT_ENV[i - 1];
+    return a0 + (a1 - a0) * ((t - t0) / (t1 - t0 || 1));
+  }
+  return 0;
+}
+
+/* путь по ручкам: между соседними точками три излома со случайным смещением
+   по нормали. Амплитуда гаснет к концу отрезка, поэтому линия всё-таки
+   попадает в ручку, а не улетает мимо неё */
+function boltPath(pts) {
+  let d = '';
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;
+    if (!d) d = `M${a.x.toFixed(1)} ${a.y.toFixed(1)}`;
+    for (let s = 1; s <= 3; s++) {
+      const k = s / 3;
+      const amp = s === 3 ? 0 : Math.min(9, len * 0.17);
+      const o = (Math.random() * 2 - 1) * amp;
+      d += `L${(a.x + dx * k + nx * o).toFixed(1)} ${(a.y + dy * k + ny * o).toFixed(1)}`;
+    }
+  }
+  return d;
+}
+
+/* короткие отростки от полос: у настоящего разряда они есть, и именно они
+   делают вспышку молнией, а не ломаной линией */
+function boltBitsPath(pts) {
+  let d = '';
+  for (let i = 1; i < pts.length; i++) {
+    if (Math.random() < 0.45) continue;      /* не с каждой полосы */
+    const p = pts[i];
+    const ang = Math.random() * Math.PI * 2;
+    const l1 = 6 + Math.random() * 11;
+    const l2 = 4 + Math.random() * 8;
+    const bend = Math.random() * 1.1 - 0.55;
+    const x1 = p.x + Math.cos(ang) * l1, y1 = p.y + Math.sin(ang) * l1;
+    const x2 = x1 + Math.cos(ang + bend) * l2, y2 = y1 + Math.sin(ang + bend) * l2;
+    d += `M${p.x.toFixed(1)} ${p.y.toFixed(1)}L${x1.toFixed(1)} ${y1.toFixed(1)}L${x2.toFixed(1)} ${y2.toFixed(1)}`;
+  }
+  return d;
 }
 
 function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
@@ -4532,8 +4767,69 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
     ? settings.eqGains.map(v => clampNum(Number(v) || 0, -EQ_GAIN_MAX, EQ_GAIN_MAX))
     : EQ_FLAT;
   const speed = clampNum(Number(settings.speed) || 1, SPEED_MIN, SPEED_MAX);
-  const pitch = Math.round(clampNum(Number(settings.pitch) || 0, -PITCH_MAX, PITCH_MAX));
-  const keep  = settings.preservePitch !== false;
+
+  /* совпавшие с пресетом полосы подсвечивают свой чип — иначе не видно, из
+     чего исходишь, и «сбросить» приходится на глаз */
+  const matched = Object.keys(EQ_PRESETS).find(k =>
+    EQ_PRESETS[k].every((v, i) => Math.abs(v - gains[i]) < 0.01));
+
+  /* вспышка при смене пресета. состояние живёт в рефах: разряд перерисовывается
+     каждым кадром, и держать его в useState значило бы гонять весь FxPanel (а
+     с ним семь фейдеров) шестьдесят раз в секунду */
+  const fadersRef = useRef(null);      /* ряд полос: от него считаем координаты */
+  const thumbsRef = useRef([]);        /* ручки: по ним и идёт разряд */
+  const boltRefs  = useRef({});        /* { main, glow, bits } — три пути */
+  const boltRaf   = useRef(0);
+  const boltGen   = useRef(0);         /* поколение удара: прошлый цикл должен умереть */
+
+  const stopBolt = () => {
+    boltGen.current++;
+    cancelAnimationFrame(boltRaf.current);
+    const { main, glow, bits } = boltRefs.current;
+    for (const p of [main, glow, bits]) {
+      if (!p) continue;
+      p.setAttribute('d', '');
+      p.style.opacity = 0;
+    }
+  };
+
+  const strike = () => {
+    const row = fadersRef.current;
+    const { main, glow, bits } = boltRefs.current;
+    if (!row || !main || !glow || !bits) return;
+    const gen = ++boltGen.current;
+    cancelAnimationFrame(boltRaf.current);
+    /* рамку ряда снимаем один раз: за время вспышки панель не переезжает, а
+       читать её в каждом кадре — это лишний принудительный layout */
+    const box = row.getBoundingClientRect();
+    const t0  = performance.now();
+    const tick = now => {
+      if (gen !== boltGen.current) return;   /* панель закрыли или ударил новый */
+      const a = boltEnv(now - t0);
+      const pts = [];
+      for (const el of thumbsRef.current) {
+        if (!el) continue;
+        const r = el.getBoundingClientRect();   /* ручка едет — берём где она сейчас */
+        pts.push({ x: r.left + r.width / 2 - box.left, y: r.top + r.height / 2 - box.top });
+      }
+      const d = a && pts.length > 1 ? boltPath(pts) : '';
+      main.setAttribute('d', d);
+      glow.setAttribute('d', d);
+      bits.setAttribute('d', a ? boltBitsPath(pts) : '');
+      /* мерцание: у настоящего разряда яркость гуляет из кадра в кадр */
+      main.style.opacity = (a * (0.7 + Math.random() * 0.3)).toFixed(3);
+      glow.style.opacity = (a * 0.5).toFixed(3);
+      bits.style.opacity = (a * (0.35 + Math.random() * 0.4)).toFixed(3);
+      if (!a) return;                        /* догорело — больше кадров не просим */
+      boltRaf.current = requestAnimationFrame(tick);
+    };
+    boltRaf.current = requestAnimationFrame(tick);
+  };
+
+  /* закрытая панель вспышку не дорисовывает: иначе она догорала бы в скрытом
+     слое и «вспыхивала» при следующем открытии */
+  useEffect(() => { if (!open) stopBolt(); }, [open]);
+  useEffect(() => () => stopBolt(), []);
 
   /* любая правка полосы включает эквалайзер. панель открывают, чтобы СЛЫШАТЬ
      результат: «двигаю ползунок, а звук тот же» читается как поломка.
@@ -4545,20 +4841,23 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
     return { ...s, eqGains: g, ...(wake && !s.eqOn ? { eqOn: true } : null) };
   });
   const setGain   = (i, v) => patchGains(g => { g[i] = v; }, true);
-  const setPreset = k => onSettings(s => ({ ...s, eqGains: EQ_PRESETS[k].slice(), eqOn: true }));
+  const setPreset = k => {
+    /* по уже выбранному пресету щёлкать нечего: ни звука, ни движения, ни
+       вспышки — если только эквалайзер выключен, тогда смысл есть */
+    if (matched === k && eqOn) return;
+    onSettings(s => ({ ...s, eqGains: EQ_PRESETS[k].slice(), eqOn: true }));
+    strike();
+  };
   const setSpeed  = v => onSettings(s => ({ ...s, speed: Math.round(v * 100) / 100 }));
-  const setPitch  = v => onSettings(s => ({ ...s, pitch: Math.round(v) }));
   const toggleEq  = () => onSettings(s => ({ ...s, eqOn: !s.eqOn }));
 
-  /* совпавшие с пресетом полосы подсвечивают свой чип — иначе не видно, из
-     чего исходишь, и «сбросить» приходится на глаз */
-  const matched = Object.keys(EQ_PRESETS).find(k =>
-    EQ_PRESETS[k].every((v, i) => Math.abs(v - gains[i]) < 0.01));
-
+  /* группы как в остальном приложении: подложка и ничего больше. рамки и
+     разделители здесь были единственными на весь интерфейс — HIDE_DIVIDERS
+     гасит линии в настройках, а эта панель рисовала свои; радиус — из
+     --radius, чтобы он ехал тем же ползунком, что и углы окна */
   const CARD = {
-    background: 'rgba(255,255,255,0.035)',
-    border: '1px solid rgba(255,255,255,0.05)',
-    borderRadius: 12,
+    background: 'rgba(255,255,255,0.032)',
+    borderRadius: 'var(--radius, 14px)',
   };
   const VALUE = {
     fontSize: 'var(--fs-xs)', fontVariantNumeric: 'tabular-nums',
@@ -4643,7 +4942,10 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
             })}
           </div>
 
-          <div style={{height:'clamp(160px, 38vh, 290px)', display:'flex', gap:2, marginTop:10}}>
+          <div ref={fadersRef} style={{
+            height:'clamp(160px, 38vh, 290px)', position:'relative',
+            display:'flex', gap:2, marginTop:10,
+          }}>
             {EQ_BANDS.map((b, i) => (
               <div key={b.hz} style={{
                 flex:1, minWidth:0, display:'flex', flexDirection:'column', alignItems:'center',
@@ -4654,6 +4956,7 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
                 }}>{fmtDb(gains[i])}</span>
                 <div style={{flex:1, minHeight:0, width:'100%', padding:'0 2px'}}>
                   <EqFader value={gains[i]} onChange={v => setGain(i, v)}
+                    thumbRef={el => { thumbsRef.current[i] = el; }}
                     label={b.hz >= 1000 ? `${b.hz / 1000} ${t('khz')}` : `${b.hz} ${t('hz')}`}/>
                 </div>
                 <span style={{
@@ -4662,6 +4965,25 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
                 }}>{hzShort(b.hz)}</span>
               </div>
             ))}
+
+            {/* разряд при смене пресета. svg идёт последним, то есть поверх
+                полос и поверх ручек, и кликов не ловит вовсе. координаты —
+                в пикселях ряда: без viewBox единицы svg равны пикселям, и
+                считать их проще, чем в процентах вьюпорта */}
+            <svg aria-hidden="true" style={{
+              position:'absolute', inset:0, width:'100%', height:'100%',
+              pointerEvents:'none', overflow:'visible',
+            }}>
+              <path ref={el => { boltRefs.current.glow = el; }} fill="none"
+                strokeWidth="4.2" strokeLinejoin="round" strokeLinecap="round"
+                style={{ stroke:'var(--accent)', filter:'blur(3.5px)', opacity:0 }}/>
+              <path ref={el => { boltRefs.current.bits = el; }} fill="none"
+                strokeWidth="0.9" strokeLinejoin="round" strokeLinecap="round"
+                style={{ stroke:'var(--accent)', opacity:0 }}/>
+              <path ref={el => { boltRefs.current.main = el; }} fill="none"
+                strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round"
+                style={{ stroke:'rgba(255,255,255,0.92)', opacity:0 }}/>
+            </svg>
           </div>
         </div>
 
@@ -4674,33 +4996,14 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
             </span>
           </div>
           <div style={{marginTop:7}}>
-            <FxSlider value={speed} min={SPEED_MIN} max={SPEED_MAX} step={0.05}
+            <FxSlider value={speed} min={SPEED_MIN} max={SPEED_MAX} step={0.01} origin={1}
               onChange={setSpeed} resetTo={1} label={t('speed')}/>
           </div>
 
-          <div style={{
-            display:'flex', alignItems:'baseline', justifyContent:'space-between',
-            gap:8, marginTop:13,
-          }}>
-            <span style={{fontSize:'var(--fs-sm)', color:'rgba(255,255,255,0.66)'}}>{t('pitch')}</span>
-            <span style={{...VALUE, color: pitch === 0 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.62)'}}>
-              {pitch > 0 ? '+' : ''}{pitch} {t('semitones')}
-            </span>
-          </div>
-          <div style={{marginTop:7}}>
-            <FxSlider value={pitch} min={-PITCH_MAX} max={PITCH_MAX} step={1} center
-              onChange={setPitch} resetTo={0} label={t('pitch')}/>
-          </div>
-
-          <div style={{
-            display:'flex', alignItems:'center', justifyContent:'space-between', gap:8,
-            marginTop:12, paddingTop:10, borderTop:'1px solid rgba(255,255,255,0.045)',
-          }}>
-            <span style={{fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.34)', lineHeight:1.35}}>
-              {t('preserve_pitch')}
-            </span>
-            <Switch on={keep} onChange={v => onSettings(s => ({ ...s, preservePitch: v }))}/>
-          </div>
+          {/* тональность в плеере не настраивается: ползунок убран, а
+              «держать/не держать» переехало целиком в «Настройки» — это
+              решение на один раз, а не ручка, которую крутят по десять раз
+              за песню */}
         </div>
       </div>
     </div>
@@ -4744,6 +5047,7 @@ const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidd
         ) : (
           <img src="../assets/note.png" style={{width:24,height:24,filter:'brightness(0) invert(1)',opacity:0.13}}/>
         )}
+        <CoverTint/>
         <div className="home-card-overlay" style={{
           position:'absolute', inset:0, background:'rgba(0,0,0,0.32)',
           display:'flex', alignItems:'center', justifyContent:'center',
@@ -4966,6 +5270,9 @@ function HeroClone({ hero, exiting, reverse = false }) {
           </svg>
         </div>
       )}
+      {/* тонировка и на клоне: он летит в плеер и подменяется обложкой
+          AlbumArt, и без слоя цвет на полёте «прыгал» бы */}
+      <CoverTint/>
     </div>,
     document.body
   );
@@ -4976,7 +5283,7 @@ function HeroClone({ hero, exiting, reverse = false }) {
    (абсолютно на окно) сегмент Плейлисты|Треки|Плеер|Поиск с горизонтальным
    пиллом, справа collapse библиотеки (только в плеере). рендерится порталами в
    #topbar-slot и #titlebar (тайтлбар — статический html вне react-root) */
-function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth, sourceMode, onToggleSource }) {
+function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth, sourceMode, onToggleSource, hideSource }) {
   const t = useLang();
   const navImg = (src, s=17) => <img src={src} style={{width:s, height:s, filter:'brightness(0) invert(1)', display:'block'}}/>;
   const NAV = [
@@ -5051,9 +5358,11 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
               <NavIcon label={t('nav_settings')} active={navActive==='settings'} onClick={()=>onNav('settings')} size={32}
                 icon={<img src="../assets/settings.png" style={{width:17,height:17,filter:'brightness(0) invert(1)',display:'block'}}/>}/>
             </div>
-            <div style={{WebkitAppRegion:'no-drag', opacity: scAuth ? 1 : 0, pointerEvents: scAuth ? 'auto' : 'none', visibility: scAuth ? 'visible' : 'hidden', transition:'opacity 0.2s ease'}}>
-              <NavIcon label={t('nav_local')} active={sourceMode==='local'} onClick={onToggleSource} size={32} icon={folderIcon}/>
-            </div>
+            {scAuth && !hideSource && (
+              <div style={{WebkitAppRegion:'no-drag'}}>
+                <NavIcon label={t('nav_local')} active={sourceMode==='local'} onClick={onToggleSource} size={32} icon={folderIcon}/>
+              </div>
+            )}
           </div>
 
           {/* правая зона: collapse библиотеки (только в плеере) */}
@@ -5843,6 +6152,20 @@ function LyricsSettings({ settings, onSettings }) {
 }
 
 /* ── SettingsView ─────────────────────────────────────────────────────────── */
+/* ── что можно спрятать в интерфейсе ──────────────────────────────────────────
+   Оформление → «Элементы интерфейса». Один объект, а не четыре отдельных поля
+   настроек: все четыре ключа читаются одним смыслом («этот кусок скрыт»), и
+   «вернуть всё» получается одной записью, а не четырьмя.
+
+   Ключи: source — переключатель источника в шапке, volume — вертикальная
+   громкость в плеере, caption — подпись и счётчик списка, sort — чипсы
+   сортировки. Функциональных тупиков нет: источник переключается в «Аккаунте»,
+   громкость остаётся в микшере Windows, а подпись и чипсы — только оформление. */
+const UI_HIDDEN_NONE = { source:false, volume:false, caption:false, sort:false };
+/* файл настроек может быть старее ключа: недостающее добираем дефолтом, иначе
+   `settings.uiHidden.source` — это TypeError на первом же запуске */
+const uiHiddenOf = s => ({ ...UI_HIDDEN_NONE, ...(s && s.uiHidden) });
+
 function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFolder, onClearCoversCache, onClearLikesCache, appAccent, scAuth, onScLogin, onScLogout, sec, setSec, discordStatus }) {
   const t = useLang();
   const lang = useLangCode();
@@ -5908,6 +6231,20 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     : EQ_FLAT;
   const speed = clampNum(Number(settings.speed) || 1, SPEED_MIN, SPEED_MAX);
   const pitch = Math.round(clampNum(Number(settings.pitch) || 0, -PITCH_MAX, PITCH_MAX));
+  const holdPitch = settings.shiftPitch === false;
+
+  /* «Элементы интерфейса»: что из хрома спрятано. Пишем функциональной формой
+     onSettings, а не {...settings}: четыре тумблера пишут один объект, и
+     замыкание из прошлого рендера теряло бы соседнюю правку */
+  const uiHidden  = uiHiddenOf(settings);
+  /* цвет тонирования обложек; пустое/битое значение из старого файла → чёрный */
+  const tintColor = settings.coverTintColor || '#000000';
+  const tintMode  = settings.coverTintMode === 'color' ? 'color' : 'cover';
+  const anyHidden = Object.values(uiHidden).some(Boolean);
+  const setHidden = (k, v) => onSettings(s => ({
+    ...s,
+    uiHidden: k === null ? { ...UI_HIDDEN_NONE } : { ...uiHiddenOf(s), [k]: v },
+  }));
   const setEqGain = (i, v) => onSettings(s => {
     const g = Array.isArray(s.eqGains) && s.eqGains.length === EQ_BANDS.length
       ? s.eqGains.slice() : EQ_FLAT.slice();
@@ -5942,13 +6279,6 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     if (v.bgMode === 'cover' && s.accentMode !== 'cover') next.accentMode = 'cover';
     return next;
   });
-  /* Редактор кода темы. Текст живёт в состоянии и НЕ перезаписывается при
-     смене темы ползунками: иначе он закрывался бы под ногами, пока его
-     правят, и вставить было бы нечего. Значение берём из текста только
-     по кнопке «применить». */
-  const [codeOpen, setCodeOpen] = useState(false);
-  const [codeText,  setCodeText]  = useState(() => themeToJson(cleanTheme(settings.theme)));
-  const [codeNote,  setCodeNote]  = useState(null);   /* обратная связь: скопировано / не разобралось */
   const secRefs  = useRef({});
   const [pill, setPill] = useState({ top:0, height:0 });
 
@@ -6042,6 +6372,17 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             </Btn>
           </div>
         )}
+        {/* Источник библиотеки. Раньше переключался только иконкой папки в
+            шапке — а её можно спрятать (Оформление → Элементы интерфейса), и
+            тогда переключение осталось бы без единой ручки в интерфейсе.
+            Здесь же оно и по смыслу: облако — это про аккаунт. */}
+        {scAuth && (
+          <Row label={t('source_label')} sub={t('source_sub')}>
+            <Segmented id="segSource" value={settings.sourceMode === 'sc' ? 'sc' : 'local'}
+              onChange={v => set('sourceMode', v)}
+              options={[{ v:'local', label:t('source_local') }, { v:'sc', label:t('source_sc') }]}/>
+          </Row>
+        )}
         {/* Прокси для soundcloud. Место — прямо под статусом входа, потому что
             нужен он ровно тогда, когда вход не идёт: провайдер подменяет
             сертификат soundcloud.com, и окно входа не может загрузить даже
@@ -6108,11 +6449,14 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
       </Card>
 
       <Card title={t('speed_pitch')}>
-        <MiniSlider label={t('speed')} value={speed} min={SPEED_MIN} max={SPEED_MAX} step={0.05}
+        <MiniSlider label={t('speed')} value={speed} min={SPEED_MIN} max={SPEED_MAX} step={0.01}
           display={`${speed.toFixed(2)}×`}
           onChange={v => set('speed', Math.round(v * 100) / 100)}/>
-        <Row label={t('preserve_pitch')} sub={t('preserve_pitch_sub')}>
-          <Switch on={settings.preservePitch !== false} onChange={v=>set('preservePitch', v)}/>
+        {/* «горит» = высота не едет, то есть по умолчанию он выключен:
+            скорость меняет и темп, и тон, как у магнитофона. кому это мешает
+            (подкаст, вокал) — включает и получает чистый тайм-стретч */}
+        <Row label={t('hold_pitch')} sub={t('hold_pitch_sub')}>
+          <Switch on={holdPitch} onChange={v => set('shiftPitch', !v)}/>
         </Row>
         <MiniSlider label={t('pitch')} value={pitch} min={-PITCH_MAX} max={PITCH_MAX} step={1}
           display={`${pitch > 0 ? '+' : ''}${pitch} ${t('semitones')}`}
@@ -6474,65 +6818,65 @@ appearance: (<>
         }}>{t('ui_vignette_sub')}</div>
       </Card>
 
-      {/* Код темы. Не «экспорт в файл», а обычный текст: тему можно
-          закинуть в чат или в заметку, вставить обратно руками. Копирование
-          идёт через navigator.clipboard с запасным путём через textarea и
-          execCommand — в webview буфер обмена доступен не всегда, и молча
-          ничего не скопировавший вариант хуже, чем работающий запасной. */}
-      <Card title={t('card_theme_code')}>
-        <div style={{ padding: '13px 16px 12px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
-          {t('theme_code_sub')}
+      {/* Обложки. Цвет ОДИН на всё приложение, поэтому оно и читается цельно:
+          «От обложки» — тон текущего трека (переключил — перекрасилось всё),
+          «Свой цвет» — выбранный здесь. */}
+      <Card title={t('card_covers')}>
+        <div style={{ padding: '14px 16px 0' }}>
+          <Segmented stretch id="coverTintPill" value={tintMode}
+            onChange={v => set('coverTintMode', v)}
+            options={[
+              { v: 'cover', label: t('cover_tint_by_cover') },
+              { v: 'color', label: t('cover_tint_by_color') },
+            ]}/>
         </div>
-        <div style={{ padding: '0 16px 14px' }}>
-          <Btn tone="quiet" onClick={() => {
-            setCodeOpen(v => !v);
-            setCodeNote(null);
-          }}>{t('theme_code_show')}</Btn>
-        </div>
-        {codeOpen && (
-          <div style={{ padding: '0 16px 14px' }}>
-            <textarea className="th-code" spellCheck={false} value={codeText}
-              onChange={e => setCodeText(e.target.value)}/>
-            <div style={{ display: 'flex', gap: 7, marginTop: 10 }}>
-              <Btn tone="accent" onClick={async () => {
-                /* Копируем текст из поля, а если он пуст — текущую тему.
-                   Иначе «скопировать» молча выдала бы дефолт и выглядела бы
-                   сломанной, пока поле ещё не трогали. */
-                const text = codeText.trim() || themeToJson(th);
-                let ok = false;
-                try { await navigator.clipboard.writeText(text); ok = true; } catch {}
-                if (!ok) {
-                  /* execCommand deprecated, но в webview это единственный
-                     путь, когда navigator.clipboard не выдал разрешения */
-                  try {
-                    const ta = document.createElement('textarea');
-                    ta.value = text;
-                    ta.style.cssText = 'position:fixed;opacity:0;left:-9999px';
-                    document.body.appendChild(ta);
-                    ta.select();
-                    ok = document.execCommand('copy');
-                    document.body.removeChild(ta);
-                  } catch {}
-                }
-                setCodeNote(ok ? t('theme_code_copied') : null);
-              }}>{codeNote || t('theme_code_copy')}</Btn>
-              <Btn onClick={() => {
-                /* разбор терпимый к мусору: лишние ключи cleanTheme
-                   отбрасывает, недостающие — досочиняет дефолтами */
-                const raw = (() => {
-                  try { return JSON.parse(codeText); } catch { return null; }
-                })();
-                if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-                  setCodeNote(t('theme_code_bad'));
-                  return;
-                }
-                setTh(raw);
-                setCodeNote(null);
-              }}>{t('theme_code_apply')}</Btn>
+        {tintMode === 'color' && (
+          <div style={{ padding: '14px 16px 0', display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+            <ColorPad hex={tintColor} onChange={hex => set('coverTintColor', hex)}/>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <ColorField value={tintColor} onChange={hex => set('coverTintColor', hexOr(hex, tintColor))}/>
             </div>
           </div>
         )}
+        <MiniSlider label={t('cover_tint')} value={settings.coverTint ?? 0} min={0} max={1} step={0.02}
+          display={settings.coverTint > 0 ? `${Math.round(settings.coverTint * 100)}%` : t('cover_tint_off')}
+          onChange={v => set('coverTint', v)}/>
       </Card>
+
+      {/* Элементы интерфейса. Не «спрятать всё», а конкретный хром, без
+          которого приложение остаётся рабочим: источник переключается в
+          «Аккаунте», громкость живёт в микшере Windows, подпись и чипсы —
+          чистое оформление. Обратная связь мгновенная: шапка видна и отсюда,
+          так что спрятанный переключатель исчезает прямо на глазах. */}
+      <Card title={t('card_ui')}>
+        <div style={{ padding: '13px 16px 6px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
+          {t('ui_hide_sub')}
+        </div>
+        <Row label={t('ui_hide_source')} sub={t('ui_hide_source_sub')}>
+          <Switch on={!!uiHidden.source} onChange={v => setHidden('source', v)}/>
+        </Row>
+        <Row label={t('ui_hide_volume')} sub={t('ui_hide_volume_sub')}>
+          <Switch on={!!uiHidden.volume} onChange={v => setHidden('volume', v)}/>
+        </Row>
+        <Row label={t('ui_hide_caption')} sub={t('ui_hide_caption_sub')}>
+          <Switch on={!!uiHidden.caption} onChange={v => setHidden('caption', v)}/>
+        </Row>
+        <Row label={t('ui_hide_sort')} sub={t('ui_hide_sort_sub')} last={!anyHidden}>
+          <Switch on={!!uiHidden.sort} onChange={v => setHidden('sort', v)}/>
+        </Row>
+        {anyHidden && (
+          <div style={{ padding: '2px 16px 14px' }}>
+            <Btn onClick={() => setHidden(null)}>{t('ui_show_all')}</Btn>
+          </div>
+        )}
+      </Card>
+
+      {/* ❌ УДАЛЕНА карточка «Код темы» (показ/копирование/вставка темы
+           текстом). Тема и так сохраняется в settings.json и в своих наборах,
+           а два способа держать одно и то же только расходились: вставка через
+           текст молча перетирала тему, которую правили ползунками. Вместе с
+           карточкой ушли themeToJson, состояние редактора и ключи theme_code_*
+           в обоих словарях. */}
 
       {/* ❌ УДАЛЕНА карточка «Интерфейс» с тумблером «Отключить разделители».
            Тумблер убран по просьбе, а поведение оставлено включённым: разделители
@@ -6929,6 +7273,7 @@ function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoadi
       }}>
         {track.coverUrl && <img src={track.coverUrl} loading="lazy" decoding="async" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',clipPath:'inset(0 round 8px)',display:'block'}}
           onError={e=>{e.currentTarget.style.display='none'}}/>}
+        <CoverTint/>
         {isLoading
           ? <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center'}}>
               <div style={{width:14,height:14,border:'2px solid rgba(255,255,255,0.15)',borderTopColor:'rgba(255,255,255,0.6)',borderRadius:'50%',animation:'spin 0.75s linear infinite'}}/>
@@ -7050,6 +7395,7 @@ function PlaylistCard({ playlist, onOpen, onEdit }) {
               clipPath:'inset(0 round 0 0 16px 16px)', display:'block'}}
             onError={e => { e.currentTarget.style.display = 'none'; }}/>
         : <img src="../assets/note.png" style={{width:24, height:24, filter:'brightness(0) invert(1)', opacity:0.13}}/>}
+      <CoverTint/>
       {/* трек-каунт бейдж */}
       <div style={{
         position:'absolute', left:7, bottom:7,
@@ -7229,6 +7575,7 @@ function PlaylistAddRow({ tr, added, onAdd, onPlay, isLoading, isError }) {
           ? <img src={tr.coverUrl} loading="lazy" style={{position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', clipPath:'inset(0 round 8px)', display:'block'}}
               onError={e => { e.currentTarget.style.display = 'none'; }}/>
           : <img src="../assets/note.png" style={{width:10, height:10, filter:'brightness(0) invert(1)', opacity:0.2, position:'absolute', inset:0, margin:'auto'}}/>}
+        <CoverTint/>
         {isLoading
           ? <div style={{position:'absolute', inset:0, background:'rgba(0,0,0,0.55)', display:'flex', alignItems:'center', justifyContent:'center'}}>
               <div style={{width:12, height:12, border:'2px solid rgba(255,255,255,0.15)', borderTopColor:'rgba(255,255,255,0.6)', borderRadius:'50%', animation:'spin 0.75s linear infinite'}}/>
@@ -7603,6 +7950,7 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
               ) : (
                 <img src="../assets/note.png" style={{position:'absolute', inset:0, margin:'auto', width:22, height:22, filter:'brightness(0) invert(1)', opacity:0.16}}/>
               )}
+              <CoverTint/>
               {/* hover-оверлей: камера + подсказка */}
               <div className="pl-art-hover" style={{
                 position:'absolute', inset:0, display:'flex', flexDirection:'column',
@@ -7755,6 +8103,7 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
                     ? <img src={tr.coverUrl} loading="lazy" style={{position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', clipPath:'inset(0 round 8px)', display:'block', opacity: isPlaying ? 1 : 0.88}}
                         onError={e => { e.currentTarget.style.display = 'none'; }}/>
                     : <img src="../assets/note.png" style={{width:10, height:10, filter:'brightness(0) invert(1)', opacity:0.2, position:'absolute', inset:0, margin:'auto'}}/>}
+                  <CoverTint/>
                 </div>
                 <div style={{flex:1, minWidth:0}}>
                   <div style={{fontSize: 'var(--fs-sm)', color: isPlaying ? 'var(--accent)' : 'rgba(255,255,255,0.85)',
@@ -8132,6 +8481,7 @@ function SearchTopResult({ track, isLiked, onLike, onPlay, onSelect, isLoading, 
               style={{position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', clipPath:'inset(0 round 14px)', display:'block'}}
               onError={e => { e.currentTarget.style.display = 'none'; }}/>
           : <img src="../assets/note.png" alt="" style={{width:24, height:24, filter:'brightness(0) invert(1)', opacity:0.13}}/>}
+        <CoverTint/>
         <div className="home-card-overlay" style={{
           position:'absolute', inset:0, background:'rgba(0,0,0,0.36)',
           display:'flex', alignItems:'center', justifyContent:'center',
@@ -9311,15 +9661,23 @@ function App() {
     themeDefaults: THEME_DEFAULTS_VERSION,
     userThemes: [],      /* сохранённые вручную темы: [{id, name, v}] */
     ambientGlow: true,   /* пятно за обложкой в плеере; false = не рисуем вовсе */
+    /* «Обложки в цвет»: сила тонирования 0…1 (0 — выключено), источник цвета
+       и сам цвет для ручного режима. `cover` (дефолт) — ОДИН цвет на всё
+       приложение, взятый с текущей обложки: переключил трек — перекрасилось
+       всё. `color` — ручной из колор-пикера (дефолт чёрный: цветной дефолт
+       навязывал бы палитру, а ч/б читается как «выключить цвет», а не
+       «покрасить в синий»). */
+    coverTint: 0.45, coverTintMode: 'cover', coverTintColor: '#000000',
+    uiHidden: { ...UI_HIDDEN_NONE },   /* спрятанные куски интерфейса, см. выше */
     windowEffect: 'off',   /* 'off' | 'mica' — применяется эффектом ниже */
     lyricsSources: LYRICS_SOURCE_IDS.slice(),  /* включённые источники, сверху вниз */
     volume: 0.7,   /* gain 0..1 (не позиция ползунка) — переживает перезапуск */
     /* эквалайзер и транспорт (см. блок afx* выше). eqGains — дБ по полосам
        EQ_BANDS, порядок и длина заданы там; здесь только значения. speed —
-       множитель, preservePitch — держать высоту при смене скорости, pitch —
-       полутона поверх неё */
+       множитель, shiftPitch — высота едет вместе со скоростью (по умолчанию
+       да, как у любой скорости на кассете), pitch — полутона поверх неё */
     eqOn: false, eqGains: EQ_FLAT.slice(),
-    speed: 1, preservePitch: true, pitch: 0,
+    speed: 1, shiftPitch: true, pitch: 0,
   });
   const [sort,         setSort]         = useState('added');
   const [editingTitle, setEditingTitle] = useState(false);
@@ -9608,6 +9966,40 @@ function App() {
     LIVE_GLOW.on = !off;
     _accentSubs.forEach(fn => fn());
   }, [settings.accentMode]);
+
+  /* «Обложки в цвет»: две css-переменные, которые читает CoverTint.
+     Сила — прямо из настроек; ноль тоже валиден (слой просто прозрачный),
+     поэтому отдельного «рендерить или нет» не нужно — и обложки в десяти
+     местах не пришлось бы обвязывать условием.
+     Цвет — один на всё приложение, см. эффект ниже. */
+  useEffect(() => {
+    document.documentElement.style.setProperty('--cover-tint', String(settings.coverTint ?? 0));
+  }, [settings.coverTint]);
+
+  /* цвет: ОДИН на всё приложение. В режиме «от обложки» это оттенок ТЕКУЩЕГО
+     трека — переключил трек, и перекрасился весь список (переход делает
+     css-транзишн на самом слое, см. CoverTint).
+     оттенок берём из accentRGB, а не из appAccent: appAccent зависит от
+     «режима акцента» (бывает фиксированным цветом) и поднят по светлоте ради
+     читаемости текста, а обложкам нужен именно цвет картинки.
+     насыщенность поднимаем: у средней по обложке она 30–40%, и бленд color с
+     таким источником не дал бы цвета вовсе. ч/б обложку не трогаем — у серой
+     картинки оттенка нет, принудительная насыщенность дала бы случайный
+     красный. */
+  useEffect(() => {
+    let c = hexToRgb(settings.coverTintColor || '#000000') || { r: 0, g: 0, b: 0 };
+    if (settings.coverTintMode !== 'color') {
+      if (accentRGB) {
+        const hsv = rgbToHsv(accentRGB.r, accentRGB.g, accentRGB.b);
+        c = hsvToRgb(hsv.h, hsv.s < 10 ? hsv.s : 82, 55);
+      } else {
+        /* трека нет — тонировать нечем: нейтральный серый даёт мягкую
+           десатурацию вместо чужого цвета */
+        c = { r: 178, g: 178, b: 178 };
+      }
+    }
+    document.documentElement.style.setProperty('--cover-tint-rgb', `${c.r}, ${c.g}, ${c.b}`);
+  }, [settings.coverTintMode, settings.coverTintColor, accentRGB]);
 
   // push accent to CSS var so var(--accent) works everywhere
   // animated lerp: акцент плавно перетекает от текущего цвета к целевому
@@ -9958,6 +10350,8 @@ function App() {
       if (hotSwapping) return;
       audio.pause();
       audio.src = '';
+      if (audio.__sewTransport) audio.removeEventListener('loadstart', audio.__sewTransport);
+      audio.__sewTransport = null;
       destroyHls();
       cancelAnimationFrame(crossfadeRafRef.current);
       cancelAnimationFrame(xfadeRafRef.current);
@@ -9990,7 +10384,7 @@ function App() {
     const speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, Number(settings.speed) || 1));
     const pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, Math.round(Number(settings.pitch) || 0)));
     const eqOn  = !!settings.eqOn;
-    const keep  = settings.preservePitch !== false;
+    const keep  = settings.shiftPitch === false;   /* false = высота едет со скоростью */
 
     if (!eqOn && speed === 1 && pitch === 0) {
       /* всё по умолчанию. Граф, если он уже поднят, не рвём: createMediaElementSource
@@ -10007,7 +10401,7 @@ function App() {
     afxApplyEq(eqOn, gains);
     afxTransport({ speed, pitch, preserve: keep });
     afxResume();     /* контекст мог родиться посреди уже играющего трека */
-  }, [settings.eqOn, settings.eqGains, settings.speed, settings.pitch, settings.preservePitch]);
+  }, [settings.eqOn, settings.eqGains, settings.speed, settings.pitch, settings.shiftPitch]);
 
   /* Автоплей-политика: контекст, созданный не в жесте, стартует suspended, а
      звук из media-элемента идёт ТОЛЬКО через граф — то есть играет трек и
@@ -10930,6 +11324,8 @@ function App() {
   }, []);
   const handleToggleSource = useCallback(() => setSettings(s => ({ ...s, sourceMode: s.sourceMode === 'sc' ? 'local' : 'sc' })), []);
   const sourceMode = (settings.soundcloudAuth && settings.sourceMode === 'sc') ? 'sc' : 'local';
+  /* какие куски интерфейса спрятаны (Оформление → «Элементы интерфейса») */
+  const uiHidden = uiHiddenOf(settings);
 
   /* ── плейлисты ─────────────────────────────────────────────────────────── */
 
@@ -12675,7 +13071,7 @@ function App() {
       <TopBar navActive={navActive} onNav={handleNav}
         libCollapsed={libCollapsed} onToggleLib={()=>setLibCollapsed(v=>!v)}
         inPlayer={view==='player'} scAuth={settings.soundcloudAuth||null}
-        sourceMode={sourceMode} onToggleSource={handleToggleSource}/>
+        sourceMode={sourceMode} onToggleSource={handleToggleSource} hideSource={uiHidden.source}/>
 
       <div style={{
         position:'relative', flex:1, height:'100%',
@@ -12705,7 +13101,10 @@ function App() {
             {!showWelcome && <div style={{
               display:'flex', alignItems:'center', gap:14, marginBottom:22,
             }}>
-              {/* порядок: подпись слева, поиск по центру, действие справа */}
+              {/* порядок: подпись слева, поиск по центру, действие справа.
+                  подпись можно спрятать (Оформление → Элементы интерфейса):
+                  при этом поиск остаётся один и встаёт по центру сам */}
+              {!uiHidden.caption && (
               <div style={{flexShrink:0, lineHeight:1.3}}>
                 <div style={{fontSize: 'var(--fs-eyebrow)', fontWeight:500, color:'rgba(255,255,255,0.22)',
                   letterSpacing:'0.12em', textTransform:'uppercase'}}>
@@ -12722,6 +13121,7 @@ function App() {
                   </div>
                 ) : null}
               </div>
+              )}
               {sourceMode === 'sc' && scError && (
                 <div style={{fontSize: 'var(--fs-xs)', color:'rgba(255,80,60,0.75)', maxWidth:240, lineHeight:1.5, wordBreak:'break-all', flexShrink:0}}>
                   {scError} — <span style={{cursor:'pointer', textDecoration:'underline'}}
@@ -12765,7 +13165,9 @@ function App() {
                   )}
               </div>
               </div>
-              {sourceMode !== 'sc' && (
+              {/* чипсы сортировки можно спрятать: сортировка остаётся той,
+                  что выбрана, и вернуть ряд — там же в «Оформлении» */}
+              {sourceMode !== 'sc' && !uiHidden.sort && (
                 <div style={{display:'flex', gap:3, flexShrink:0}}>
                   {[['added',t('sort_added')],['artist',t('sort_artist')],['title',t('sort_title')],['duration',t('sort_dur')]].map(([k,label]) => (
                     <button key={k} onClick={() => setSort(k)} style={{
@@ -12927,9 +13329,13 @@ function App() {
                 border:'1px solid rgba(255,255,255,0.045)',
               }}>
                 {stationActive.origTrack.coverUrl ? (
-                  <img src={stationActive.origTrack.coverUrl} style={{
-                    width:26, height:26, borderRadius:7, objectFit:'cover',
-                    flexShrink:0, display:'block'}}/>
+                  <div style={{
+                    position:'relative', width:26, height:26, borderRadius:7,
+                    flexShrink:0, overflow:'hidden', background:'#111116'}}>
+                    <img src={stationActive.origTrack.coverUrl} style={{
+                      width:'100%', height:'100%', objectFit:'cover', display:'block'}}/>
+                    <CoverTint/>
+                  </div>
                 ) : (
                   <div style={{
                     width:26, height:26, borderRadius:7, background:'rgba(255,255,255,0.06)', flexShrink:0,
@@ -12986,9 +13392,13 @@ function App() {
                 border:'1px solid rgba(255,255,255,0.045)',
               }}>
                 {playlistActive.playlist.coverUrl ? (
-                  <img src={playlistActive.playlist.coverUrl} style={{
-                    width:26, height:26, borderRadius:7, objectFit:'cover',
-                    flexShrink:0, display:'block'}}/>
+                  <div style={{
+                    position:'relative', width:26, height:26, borderRadius:7,
+                    flexShrink:0, overflow:'hidden', background:'#111116'}}>
+                    <img src={playlistActive.playlist.coverUrl} style={{
+                      width:'100%', height:'100%', objectFit:'cover', display:'block'}}/>
+                    <CoverTint/>
+                  </div>
                 ) : (
                   <div style={{
                     width:26, height:26, borderRadius:7, background:'rgba(255,255,255,0.06)', flexShrink:0,
@@ -13322,7 +13732,10 @@ function App() {
           </div>
         </div>
 
-        {/* volume panel */}
+        {/* volume panel. Скрывается из «Оформление → Элементы интерфейса»:
+            громкость остаётся в микшере Windows, а полоса справа визуально
+            самая «лишняя» из всего плеера */}
+        {!uiHidden.volume && (
         <div style={{
           width:28, flexShrink:0, height:'100%',
           display:'flex', flexDirection:'column', alignItems:'center',
@@ -13333,6 +13746,7 @@ function App() {
         }}>
           <ThinVolumeSlider volume={volume} onChange={handleVolumeCommit} onLiveChange={handleVolumeLive}/>
         </div>
+        )}
           </div>
         )}
 

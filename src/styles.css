@@ -12,6 +12,11 @@
     --text:        #ededf4;
     --accent:      #b2b2b2;
     --accent-rgb:  178, 178, 178;
+    /* Тонирование обложек («Оформление → Обложки»). Силу и цвет пишет App из
+       settings.coverTint / coverTintColor. Значения здесь — страховка до
+       чтения настроек. */
+    --cover-tint:     0;
+    --cover-tint-rgb: 0, 0, 0;
     --titlebar-h:  46px;
 
     /* Оформление. Всё это перезаписывается из settings.theme эффектом в
@@ -483,11 +488,4 @@
   input.th-hex:hover  { background:rgba(255,255,255,0.08); }
   input.th-hex:focus   { background:rgba(var(--accent-rgb),0.1); }
   input.th-hex::selection { background:rgba(var(--accent-rgb),0.28); }
-  textarea.th-code {
-    display:block; width:100%; resize:vertical; min-height:104px;
-    background:rgba(0,0,0,0.28); border:1px solid rgba(255,255,255,0.06);
-    border-radius:10px; padding:10px 11px;
-    font-size:var(--fs-xs); font-family:ui-monospace,monospace; line-height:1.55;
-    color:rgba(255,255,255,0.62);
-  }
-  textarea.th-code:focus { border-color:rgba(var(--accent-rgb),0.28); }
+
