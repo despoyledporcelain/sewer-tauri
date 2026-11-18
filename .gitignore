@@ -4,3 +4,6 @@ src-tauri/target/
 src-tauri/gen/
 release/
 *.log
+
+# вложенный клон electron-версии (свой .git, 288 ћЅ) Ч в этот репозиторий не кладЄм
+seWer/

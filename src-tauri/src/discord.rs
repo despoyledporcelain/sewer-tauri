@@ -598,6 +598,18 @@ pub struct Presence {
     pub cover_key: String,
     pub is_playing: bool,
     pub timestamp: String,
+    /// unix-миллисекунды момента, в который фронтенд замерил `progress`.
+    ///
+    /// ⚠️ Именно этот момент, а не время отправки. `start` считается как
+    /// «якорь минус проигранное», и якорь обязан быть тем же, когда позиция
+    /// была измерена. Раньше якорем был `now_s()` в момент сборки activity, а
+    /// между замером и сборкой может пройти и двадцать секунд: загрузка
+    /// data-url обложки для локального трека (INITIATE_IMAGE_UPLOAD + POST,
+    /// до 8 с + 15 с, с повтором multipart ещё 15 с), троттлинг
+    /// ACTIVITY_MIN_GAP, ожидание ответа на SET_ACTIVITY. Каждая такая
+    /// задержка сдвигала полосу в дискорде ровно на столько же вперёд, и
+    /// ничего её не возвращало назад — периодического пересчёта нет.
+    pub sampled_at_ms: f64,
 }
 
 /// discord требует минимум два символа в name/details, иначе клиент сам
@@ -659,6 +671,32 @@ fn paused_state(p: &Presence) -> String {
     format!("{PAUSED_LABEL} · {} / {}", mmss(pos), mmss(dur))
 }
 
+/// Откуда отсчитывать «сейчас» при сборке timestamps.
+///
+/// Фронтенд шлёт `sampledAt` — unix-миллисекунды момента, когда была замерена
+/// позиция. Между замером и отправкой полоса уехала бы вперёд на всю задержку
+/// (загрузка обложки, троттлинг, ожидание ответа), поэтому якорь берём из
+/// замера, а не из часов на стороне отправки.
+///
+/// Значение проверяется на разумность: часы могли перевести, машина уснула,
+/// либо пришёл старый фронтенд без этого поля. Расхождение больше
+/// [`MAX_ANCHOR_SKEW_S`] означает, что доверять нельзя — берём текущее время.
+fn anchor_s(p: &Presence) -> i64 {
+    let now = now_s();
+    if !p.sampled_at_ms.is_finite() || p.sampled_at_ms <= 0.0 {
+        return now;
+    }
+    let ms = p.sampled_at_ms.min(i64::MAX as f64) as i64;
+    let s = ms / 1000;
+    let skew = (s - now).abs();
+    if skew > MAX_ANCHOR_SKEW_S { now } else { s }
+}
+
+/// Больше этого расхождения между замером и отправкой замерению не верим.
+/// Сон ноутбука или перевод часов дают разрывы в часы и сутки, и полоса с
+/// таким якорем была бы хуже, чем просто «сейчас».
+const MAX_ANCHOR_SKEW_S: i64 = 600;
+
 fn build_activity(p: &Presence, large_image_key: Option<&str>) -> Value {
     let title = p.title.trim();
     let artist = p.artist.trim();
@@ -711,7 +749,11 @@ fn build_activity(p: &Presence, large_image_key: Option<&str>) -> Value {
            overflow. Паника в этой горутине убивала не только обновление, но и
            всю машину состояний — присутствие переставало обновляться до
            перезапуска. `num_field` в lib.rs отсекает не-конечные значения, но
-           полагаться на один фильтр на границе IPC нельзя. */
+           полагаться на один фильтр на границе IPC нельзя.
+
+           `start` считается от момента ЗАМЕРА позиции (anchor_s), а не от
+           часов в момент отправки — иначе любая задержка на пути к дискорду
+           сдвигала бы полосу вперёд и ничего не возвращало обратно. */
         let dur_s = sane_duration(p.duration);
         if dur_s > 0 {
             /* progress тоже в [0,1]: иначе start уезжает в будущее и discord
@@ -722,7 +764,7 @@ fn build_activity(p: &Presence, large_image_key: Option<&str>) -> Value {
                 0.0
             };
             let elapsed = ((progress * dur_s as f64).round() as i64).min(dur_s);
-            let start = now_s().saturating_sub(elapsed);
+            let start = anchor_s(p).saturating_sub(elapsed);
             let mut ts = json!({ "start": start });
             if p.timestamp == "progress" {
                 /* saturating_add, а не `+`: start+b dur_s может переполнить
@@ -1438,12 +1480,20 @@ impl Rpc {
                        таймера» приходилось вычислять умозрительно: подходит
                        пять причин, и все они выглядят одинаково — тишина в
                        интерфейсе. Только итог, а не весь json: полный payload
-                       на каждый пульс позиции забивал sewer.log */
+                       на каждый пульс позиции забивал sewer.log
+
+                       `в_пути` — сколько payload пролежал между замером
+                       позиции во фронтенде и отправкой. Раньше эта задержка
+                       была невидима и целиком уходила в полосу: start
+                       считался от часов отправки, поэтому загрузка обложки
+                       на 15 секунд сдвигала таймер на 15 секунд вперёд. */
+                    let в_пути = now_s() - anchor_s(&p);
                     settings::log(&format!(
-                        "[discord] activity: play={} dur={} progress={} ts={} img={} → {}",
+                        "[discord] activity: play={} dur={} progress={} в_пути={}с ts={} img={} → {}",
                         p.is_playing,
                         p.duration,
                         p.progress,
+                        в_пути,
                         p.timestamp,
                         key.as_deref()
                             .map(|k| truncate(k, 40))
@@ -1591,9 +1641,66 @@ mod tests {
         let ts = &a["timestamps"];
         assert!(ts["start"].is_i64());
         assert!(ts["end"].is_i64());
-        /* начало = середина трека назад от сейчас */
-        let expected = now_s() - 126;
+        /* начало = середина трека назад от якоря */
+        let expected = anchor_s(&presence(true, 0.5, 252.0)) - 126;
         assert!((ts["start"].as_i64().unwrap() - expected).abs() <= 2);
+    }
+
+    /// Регрессия: якорь timestamps брался из часов В МОМЕНТ ОТПРАВКИ, а
+    /// `progress` — из замера, сделанного на несколько секунд (иногда на
+    /// двадцать) раньше. Обложка локального трека грузится в Discord по HTTP
+    /// прямо на пути к SET_ACTIVITY, и полоса уезжала ровно на эту задержку
+    /// вперёд — у всех зрителей одинаково и навсегда, до следующего паузы или
+    /// seek. Теперь start считается от момента замера.
+    #[test]
+    fn задержка_отправки_не_сдвигает_полосу() {
+        let замер = now_ms() - 20_000;
+        let mut p = presence(true, 0.5, 252.0);
+        p.sampled_at_ms = замер as f64;
+        let start = build_activity(&p, None)["timestamps"]["start"]
+            .as_i64()
+            .unwrap();
+        /* старый код сложил бы now_s() (сейчас) с проигранным — и полоса
+           встала бы на 20 секунд дальше */
+        let от_замера = замер / 1000 - 126;
+        assert!((start - от_замера).abs() <= 2, "start={start}, ждали {от_замера}");
+    }
+
+    /// Регрессия: end обязан быть start + длительность, иначе по краям
+    /// трека дискорд рисует таймер с минусом или с обрезкой.
+    #[test]
+    fn конец_равен_началу_плюс_длительность() {
+        let mut p = presence(true, 0.37, 200.0);
+        p.sampled_at_ms = now_ms() as f64;
+        let a = build_activity(&p, None);
+        let start = a["timestamps"]["start"].as_i64().unwrap();
+        let end = a["timestamps"]["end"].as_i64().unwrap();
+        assert_eq!(end - start, 200);
+    }
+
+    /// Без sampledAt (старый фронтенд, либо num_field отсёк мусор) отправка
+    /// не должна падать — просто берётся текущее время.
+    #[test]
+    fn без_замера_берётся_сейчас() {
+        let p = presence(true, 0.5, 252.0);
+        assert_eq!(p.sampled_at_ms, 0.0);
+        let start = build_activity(&p, None)["timestamps"]["start"]
+            .as_i64()
+            .unwrap();
+        assert!((start - (now_s() - 126)).abs() <= 2);
+    }
+
+    /// Часы перевели, машина уснула — замеру в миллионах секунд верить нельзя.
+    #[test]
+    fn неразумный_замер_игнорируется() {
+        let now = now_s();
+        for замер in [1.0, (now + MAX_ANCHOR_SKEW_S + 60) as f64 * 1000.0,
+                      (now - MAX_ANCHOR_SKEW_S - 60) as f64 * 1000.0,
+                      f64::NAN, -1000.0] {
+            let mut p = presence(true, 0.5, 252.0);
+            p.sampled_at_ms = замер;
+            assert_eq!(anchor_s(&p), now, "замер={замер} принят как якорь");
+        }
     }
 
     #[test]

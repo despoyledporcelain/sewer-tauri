@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node tools/shuffle.test.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "node tools/tauri.mjs",

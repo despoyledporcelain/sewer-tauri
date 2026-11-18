@@ -521,6 +521,9 @@ fn discord_update(state: State<'_, AppState>, data: Value) {
         cover_url: str_field(&data, "coverUrl"),
         cover_key: str_field(&data, "coverKey"),
         is_playing: data.get("isPlaying").and_then(Value::as_bool).unwrap_or(false),
+        /* момент замера позиции: в нём держится якорь timestamps. num_field
+           отсечёт NaN и отсутствие поля — тогда discord.rs возьмёт now_s() */
+        sampled_at_ms: num_field(&data, "sampledAt"),
         timestamp: {
             let t = str_field(&data, "timestamp");
             if t.is_empty() { "progress".into() } else { t }

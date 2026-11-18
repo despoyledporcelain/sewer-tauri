@@ -10,6 +10,8 @@ import gsap from 'gsap'
    фасад существовал до того, как App смонтируется (bridge ставит его на импорте) */
 import './bridge.js'
 import { fileSrc } from './bridge.js'
+/* порядок перемешивания: перестановка + курсор в одном месте (src/shuffle.js) */
+import { Shuffle } from './shuffle.js'
 
 
 /* десктоп-поведение вместо сайт-поведения:
@@ -1900,16 +1902,6 @@ function useLang() {
    ПРОИЗВОДИТСЯ из языка, а не переводится: имя своей темы по оттенку. */
 function useLangCode() {
   return React.useContext(LangContext);
-}
-
-function buildScShuffle(list, currentId) {
-  const ids = list.map(t => t.id);
-  const rest = currentId != null ? ids.filter(id => id !== currentId) : ids.slice();
-  for (let i = rest.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [rest[i], rest[j]] = [rest[j], rest[i]];
-  }
-  return currentId != null ? [currentId, ...rest] : rest;
 }
 
 /* ── MarqueeText ─────────────────────────────────────────────────────────── */
@@ -8631,10 +8623,12 @@ function App() {
   const membersBusyRef    = useRef({});   /* plId -> true, пока едет состав для чекбоксов */
   const albumKindLogged   = useRef(false); /* один лог playlist_kind за сессию */
   const playlistActiveRef = useRef(null); /* зеркало playlistActive для хендлеров вне рендера */
-  const scShuffleOrderRef = useRef([]);
-  const scShuffleIdxRef   = useRef(-1);
-/* «не пересобирать порядок» для эффекта [shuffle]: см. handleShuffleStart */
-const shuffleKeepRef    = useRef(false);
+  /* Порядок перемешивания — перестановка + курсор внутри одного объекта (см.
+     src/shuffle.js). Раньше здесь были три отдельных ref'а: массив порядка,
+     курсор и флаг «не пересобирай» для эффекта [shuffle]. Перестановку двигали
+     руками десять мест, и все они должны были сходиться; теперь у движка есть
+     peek() (ничего не меняет) и commit() (двигает). */
+  const shuffleStateRef = useRef(null);
   const scPlayingTrackRef = useRef(null);
   const volumeRef         = useRef(0.7);
   const settingsRef       = useRef({});
@@ -8653,8 +8647,13 @@ const shuffleKeepRef    = useRef(false);
   const xfadePrimeRef   = useRef(null);   // предзагруженный следующий трек
   /* очередь/режим нужны peek'у следующего трека, а он крутится из setInterval
      с пустым списком deps — читать state он не увидит, поэтому зеркалим */
-  const shuffleRef      = useRef(false);
+  const shuffleOnRef      = useRef(false);
   const repeatRef       = useRef('off');
+  /* Движок перемешивания один на приложение и создаётся один раз: он держит
+     позицию, и пересоздание на каждом рендере обнуляло бы её. */
+  if (!shuffleStateRef.current) {
+    shuffleStateRef.current = new Shuffle({ repeat: () => repeatRef.current });
+  }
   /* Узел обложки карточки в сетке — для hero (вперёд и назад). Кеш ref'ов берём
      ТОЛЬКО если узел живой: React вешает ref в null при размонтировании, но
      после перестановки списка (сортировка, оптимистичный лайк, догрузка
@@ -8678,7 +8677,7 @@ const shuffleKeepRef    = useRef(false);
   volumeRef.current    = volume;
   scPlayingTrackRef.current = scPlayingTrack;
   playlistActiveRef.current = playlistActive;
-  shuffleRef.current = shuffle;
+  shuffleOnRef.current = shuffle;
   repeatRef.current  = repeat;
   settingsRef.current  = settings;
   /* `trackIdx === -1` — «трек не выбран». Раньше индекс начинался с нуля, и
@@ -9327,6 +9326,15 @@ const shuffleKeepRef    = useRef(false);
         artist:    track.artist,
         duration:  track.duration,
         progress:  discordProgressRef.current,
+        /* Момент, в который прочитали progress — unix-мс. Discord рисует
+           полосу как (Date.now() клиента − start)/(end − start) на стороне
+           КАЖДОГО клиента его часами, поэтому start обязан считаться от
+           замера, а не от отправки: между замером и отправкой лежит
+           загрузка data-url обложки в Discord (до 8+15 с), троттлинг и
+           ожидание ответа — и каждый такой сдвиг уезжал вперёд навсегда,
+           потому что пересчёта по таймеру нет. Здесь тот же Date.now(), что
+           и у часов в системе: webview и main на одной машине. */
+        sampledAt: Date.now(),
         coverUrl,
         coverKey:  track.id,
         isPlaying: isPlayingRef.current,
@@ -9481,25 +9489,17 @@ const shuffleKeepRef    = useRef(false);
   useEffect(() => () => window.electronAPI?.discordClear?.(), []);
 
   useEffect(() => {
-    if (!shuffle) {
-      scShuffleOrderRef.current = [];
-      scShuffleIdxRef.current = -1;
-      shuffleKeepRef.current = false;
-      return;
-    }
-    /* handleShuffleStart уже положил готовый порядок со случайным первым
-       треком. эффект [shuffle] в этот момент как раз срабатывает (false→true)
-       и пересобрал бы порядок от ТЕКУЩЕГО трека, выбросив выбор. флаг
-       ставится только когда переключение реально будет — если shuffle уже
-       включён, setShuffle(true) это no-op, эффект не запустится, и висящий
-       флаг сломал бы следующий ручной переключатель */
-    if (shuffleKeepRef.current) { shuffleKeepRef.current = false; return; }
+    const eng = shuffleStateRef.current;
+    if (!shuffle) { eng.clear(); return; }
+    /* Порядок обычно уже собран тем, кто перемешивание включил
+       (handleShuffleToggle / handleShuffleStart) — и пересобирать его здесь
+       было бы ровно то, от чего раньше спасал флаг shuffleKeepRef. Пересборка
+       теперь живёт в самом движке и зовётся оттуда, где очередь правда
+       сменилась. Этот эффект остался только для кнопки в мини-плеере: она
+       включает перемешивание голым setShuffle, без выбора списка. */
+    if (eng.active) return;
     const cur = scPlayingTrackRef.current;
-    if (cur) {
-      const list = activeQueueList();
-      scShuffleOrderRef.current = buildScShuffle(list, cur.id);
-      scShuffleIdxRef.current = 0;
-    }
+    if (cur) eng.start(activeQueueList(), cur.id);
   }, [shuffle]);
 
   /* список, из которого реально играет next/prev — тот же приоритет, что и
@@ -9510,10 +9510,7 @@ const shuffleKeepRef    = useRef(false);
   function activeQueueList() {
     const s = settingsRef.current;
     const sc = (s?.soundcloudAuth && s?.sourceMode === 'sc') ? 'sc' : 'local';
-    if (sc === 'sc') {
-      return stationQueueRef.current || playlistQueueRef.current || searchQueueRef.current
-        || (searchRef.current ? filteredScRef.current : scTracksRef.current);
-    }
+    if (sc === 'sc') return scQueueList();
     return searchRef.current ? filteredRef.current : tracks;
   }
 
@@ -9534,15 +9531,19 @@ const shuffleKeepRef    = useRef(false);
   function handleShuffleStart(list) {
     const pool = (list || []).filter(Boolean);
     if (!pool.length) { showToast(t('shuffle_empty')); return; }
-    if (!shuffle) shuffleKeepRef.current = true;
     setShuffle(true);
+    const eng = shuffleStateRef.current;
     const s = settingsRef.current;
     const sc = (s?.soundcloudAuth && s?.sourceMode === 'sc') ? 'sc' : 'local';
     if (sc === 'sc') {
-      const order = buildScShuffle(pool, null);
-      scShuffleOrderRef.current = order;
-      scShuffleIdxRef.current = 0;
-      const first = pool.find(tr => tr.id === order[0]) || pool[0];
+      /* Порядок строим ЗДЕСЬ, из того списка, на который нажали. Ниже
+         handleScTrackClick идёт с autoSkip=true — пересборку «от клика» он
+         пропускает, и порядок остаётся выбранным пользователем, а не
+         активной очередью. Если эти списки разошлись, движок сам пересоберёт
+         порядок на следующем peek — раньше next в этом случае просто
+         останавливал плеер. */
+      eng.start(pool, null);
+      const first = eng.track(eng.order[0]) || pool[0];
       handleScTrackClick(first, -1, true, 0, -1);
     } else {
       const cur = tracks[trackIdx];
@@ -9583,18 +9584,15 @@ const shuffleKeepRef    = useRef(false);
       return;
     }
     if (scPlayingTrack) {
-      const list = stationQueueRef.current || playlistQueueRef.current || searchQueueRef.current || (searchRef.current ? filteredScRef.current : scTracksRef.current);
+      const list = scQueueList();
       if (shuffle) {
-        const remaining = scShuffleOrderRef.current.length - 1 - scShuffleIdxRef.current;
-        if (searchQueueRef.current && remaining <= 3) searchViewRef.current?.loadMore();
-        scShuffleIdxRef.current++;
-        if (scShuffleIdxRef.current >= scShuffleOrderRef.current.length) {
-          if (repeat === 'all') {
-            scShuffleOrderRef.current = buildScShuffle(list, null);
-            scShuffleIdxRef.current = 0;
-          } else { setIsPlaying(false); return; }
-        }
-        const nextTrack = list.find(t => t.id === scShuffleOrderRef.current[scShuffleIdxRef.current]);
+        const eng = shuffleStateRef.current;
+        eng.sync(list);
+        if (searchQueueRef.current && eng.left() <= 3) searchViewRef.current?.loadMore();
+        const step = eng.peek(1);
+        if (!step) { setIsPlaying(false); return; }
+        eng.commit(step);
+        const nextTrack = eng.track(step.id);
         if (nextTrack) handleScTrackClick(nextTrack, scTracksRef.current.indexOf(nextTrack), true);
         else setIsPlaying(false);
         return;
@@ -9657,14 +9655,18 @@ const shuffleKeepRef    = useRef(false);
       return;
     }
     if (scPlayingTrack) {
-      const list = stationQueueRef.current || playlistQueueRef.current || searchQueueRef.current || (searchRef.current ? filteredScRef.current : scTracksRef.current);
-      if (shuffle && scShuffleOrderRef.current.length > 0) {
-        const pi = scShuffleIdxRef.current - 1;
-        if (pi >= 0) {
-          scShuffleIdxRef.current = pi;
-          const prevTrack = list.find(t => t.id === scShuffleOrderRef.current[pi]);
-          if (prevTrack) handleScTrackClick(prevTrack, scTracksRef.current.indexOf(prevTrack), true, 0, -1);
-        }
+      const list = scQueueList();
+      if (shuffle) {
+        /* Назад по перемешанному порядку. Раньше здесь курсор двигали руками
+           прямо в обработчике; peek/commit делают то же, но позиция остаётся
+           в движке, а не в ref'е на стороне. */
+        const eng = shuffleStateRef.current;
+        eng.sync(list);
+        const step = eng.peek(-1);
+        if (!step) return;
+        eng.commit(step);
+        const prevTrack = eng.track(step.id);
+        if (prevTrack) handleScTrackClick(prevTrack, scTracksRef.current.indexOf(prevTrack), true, 0, -1);
         return;
       }
       const curIdx = list.findIndex(t => t.id === scPlayingTrack.id);
@@ -10440,10 +10442,10 @@ const shuffleKeepRef    = useRef(false);
   function handleSearchResultsLoaded(newTracks) {
     if (!searchQueueRef.current) return;
     searchQueueRef.current = [...searchQueueRef.current, ...newTracks];
-    if (scShuffleOrderRef.current.length > 0) {
-      const shuffledNew = buildScShuffle(newTracks, null);
-      scShuffleOrderRef.current = [...scShuffleOrderRef.current, ...shuffledNew];
-    }
+    /* Движок допишет новые id в конец порядка и запомнит их треки. Проверять
+       флаг перемешивания не нужно: при выключенном порядок пуст и extend() —
+       no-op. */
+    shuffleStateRef.current.extend(newTracks);
   }
 
   function showToast(msg) {
@@ -10527,24 +10529,17 @@ const shuffleKeepRef    = useRef(false);
     const list = scQueueList();
     const cur  = scPlayingTrackRef.current;
     if (!cur || !list.length) return null;
-    const r = repeatRef.current;
-    if (shuffleRef.current) {
-      const order = scShuffleOrderRef.current;
-      const ni = scShuffleIdxRef.current + 1;
-      if (ni >= 0 && ni < order.length) {
-        const t = list.find(x => x.id === order[ni]);
-        if (t) return { track: t, shuffleIdx: ni, shuffleOrder: null };
-      }
-      if (r === 'all') {
-        const fresh = buildScShuffle(list, null);
-        const t = list.find(x => x.id === fresh[0]);
-        if (t) return { track: t, shuffleIdx: 0, shuffleOrder: fresh };
-      }
-      return null;
+    const eng = shuffleStateRef.current;
+    eng.sync(list);
+    if (shuffleOnRef.current) {
+      const step = eng.peek(1);
+      if (!step) return null;
+      const t = eng.track(step.id);
+      return t ? { track: t, step } : null;
     }
     const ni = list.findIndex(t => t.id === cur.id) + 1;
-    if (ni >= 0 && ni < list.length) return { track: list[ni], shuffleIdx: null, shuffleOrder: null };
-    if (r === 'all' && list.length) return { track: list[0], shuffleIdx: null, shuffleOrder: null };
+    if (ni >= 0 && ni < list.length) return { track: list[ni], step: null };
+    if (repeatRef.current === 'all' && list.length) return { track: list[0], step: null };
     return null;
   }
 
@@ -10665,18 +10660,16 @@ const shuffleKeepRef    = useRef(false);
     /* Коммитим позицию в shuffle-порядке: следующий трек становится текущим
        уже сейчас. Откатить придётся, если переключение отменят (см.
        abortCrossfade) — без этого «вперёд» посреди перекрытия съедал бы
-       два трека сразу. */
+       два трека сразу. Снимок берём ДО peek'а иного трека: сам peek ничего
+       не меняет, но заворот при repeat-all возвращает новый порядок, и его
+       откатывать не нужно — откатываем ровно то, что было до перекрытия. */
     const xf = {
       from: cur, to: b, t0, dur: Math.min(cf * 1000, remainMs),
-      prevShuffleIdx: scShuffleIdxRef.current,
-      prevShuffleOrder: scShuffleOrderRef.current,
+      prevShuffle: shuffleStateRef.current.snapshot(),
       /* для отката, если вторую деку запустить не дадут */
       prevTrack: curTrack, prevProgress: progressRef.current,
     };
-    if (peek.shuffleIdx != null) {
-      scShuffleIdxRef.current = peek.shuffleIdx;
-      if (peek.shuffleOrder) scShuffleOrderRef.current = peek.shuffleOrder;
-    }
+    if (peek.step) shuffleStateRef.current.commit(peek.step);
 
     /* Подмена дек. audioRef теперь указывает на входящий трек — ProgressBar
        читает его currentTime каждый кадр и сам поедет по новому треку. */
@@ -10741,8 +10734,7 @@ const shuffleKeepRef    = useRef(false);
       deckBRef.current.pause();
       try { deckBRef.current.src = ''; } catch {}
     }
-    scShuffleIdxRef.current   = xf.prevShuffleIdx;
-    scShuffleOrderRef.current = xf.prevShuffleOrder;
+    shuffleStateRef.current.restore(xf.prevShuffle);
     xfadePrimeRef.current = null;
     trackSwitchingRef.current = false;
     setScPlayingTrack(xf.prevTrack);
@@ -10788,10 +10780,7 @@ const shuffleKeepRef    = useRef(false);
       o.audio.src = '';
       if (o.hls) { try { o.hls.destroy(); } catch {} }
     }
-    if (xf && revertQueue) {
-      scShuffleIdxRef.current   = xf.prevShuffleIdx;
-      scShuffleOrderRef.current = xf.prevShuffleOrder;
-    }
+    if (xf && revertQueue) shuffleStateRef.current.restore(xf.prevShuffle);
     /* Сбрасываем standby-деку БЕЗУСЛОВНО, даже если перекрытие не шло.
        Префетч живёт в фоне до 12 секунд, и всё это время на деке висит
        смонтированный hls. Если за это время трек переключили по клику,
@@ -10856,9 +10845,9 @@ const shuffleKeepRef    = useRef(false);
            выключится на середине альбома. Условия те же, что в handleNext. */
         const list = scQueueList();
         if (searchQueueRef.current) {
-          if (shuffleRef.current) {
-            const left = scShuffleOrderRef.current.length - 1 - scShuffleIdxRef.current;
-            if (left <= 3) searchViewRef.current?.loadMore();
+          const eng = shuffleStateRef.current;
+          if (shuffleOnRef.current) {
+            if (eng.left() <= 3) searchViewRef.current?.loadMore();
           } else if (list.findIndex(t => t.id === curTrack.id) + 1 >= list.length - 3) {
             searchViewRef.current?.loadMore();
           }
@@ -10903,9 +10892,13 @@ const shuffleKeepRef    = useRef(false);
     if (!auth) { setLoadingTrackId(null); setIsPlaying(false); return; }
 
     if (!autoSkip && shuffle) {
-      const list = stationQueueRef.current || playlistQueueRef.current || searchQueueRef.current || (searchRef.current ? filteredScRef.current : scTracksRef.current);
-      scShuffleOrderRef.current = buildScShuffle(list, scTrack.id);
-      scShuffleIdxRef.current = 0;
+      /* Клик по треку в перемешанном режиме: он встаёт первым, остальное
+         перемешивается заново. Пул синхронизируем с реальной очередью, а не с
+         тем списком, который пришёл кнопкой — иначе порядок остался бы от
+         чужого списка. */
+      const eng = shuffleStateRef.current;
+      eng.sync(scQueueList());
+      eng.rebuild(scTrack.id);
     }
 
     const markError = () => {
@@ -10915,23 +10908,34 @@ const shuffleKeepRef    = useRef(false);
     };
 
     const skipInDirection = () => {
-      const list = stationQueueRef.current || playlistQueueRef.current || searchQueueRef.current || (searchRef.current ? filteredScRef.current : scTracksRef.current);
+      const list = scQueueList();
       if (shuffle) {
-        const order = scShuffleOrderRef.current;
-        const ni = scShuffleIdxRef.current + direction;
-        if (skipCount < order.length && ni >= 0 && ni < order.length) {
-          scShuffleIdxRef.current = ni;
-          const nextTrack = list.find(t => t.id === order[ni]);
-          if (nextTrack) { handleScTrackClick(nextTrack, scTracksRef.current.indexOf(nextTrack), true, skipCount + 1, direction); return; }
+        /* Обход битых треков: идём по порядку в заданную сторону и не даём
+           себе закрутиться — skipCount ограничивает количество шагов размером
+           порядка. */
+        const eng = shuffleStateRef.current;
+        eng.sync(list);
+        if (skipCount < eng.order.length) {
+          const step = eng.peek(direction);
+          if (step) {
+            eng.commit(step);
+            const nextTrack = eng.track(step.id);
+            if (nextTrack) { handleScTrackClick(nextTrack, scTracksRef.current.indexOf(nextTrack), true, skipCount + 1, direction); return; }
+          }
+          /* Шаг упёрся в конец порядка. Заворачиваем только вперёд и только
+             при repeat-all: в этом случае движок сам вернёт новый порядок. */
+          if (direction > 0 && repeat === 'all') {
+            const nextStep = eng.peek(1);
+            if (nextStep) {
+              eng.commit(nextStep);
+              const nextTrack = eng.track(nextStep.id);
+              if (nextTrack) handleScTrackClick(nextTrack, scTracksRef.current.indexOf(nextTrack), true, skipCount + 1, direction);
+              else setIsPlaying(false);
+              return;
+            }
+          }
         }
-        if (repeat === 'all' && direction > 0 && skipCount < order.length) {
-          const newOrder = buildScShuffle(list, null);
-          scShuffleOrderRef.current = newOrder;
-          scShuffleIdxRef.current = 0;
-          const nextTrack = list.find(t => t.id === newOrder[0]);
-          if (nextTrack) handleScTrackClick(nextTrack, scTracksRef.current.indexOf(nextTrack), true, skipCount + 1, direction);
-          else setIsPlaying(false);
-        } else { setIsPlaying(false); }
+        setIsPlaying(false);
         return;
       }
       const curIdx = list.findIndex(t => t.id === scTrack.id);
