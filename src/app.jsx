@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue, useId } from 'react'
 /* createPortal шёл через глобальный ReactDOM из cdn-скрипта; в es-модуле
    глобала нет, поэтому импортируем точечно. Правка в PATCHES — замена
    ReactDOM.createPortal на createPortal. */
 import { createPortal } from 'react-dom'
-import { motion, AnimatePresence, LayoutGroup, Reorder, useSpring, useReducedMotion } from 'framer-motion'
+import { motion, AnimatePresence, LayoutGroup, Reorder, useSpring, useReducedMotion, useMotionValue, useTransform } from 'framer-motion'
 /* ⚠️ hls.js и gsap грузятся ЛЕНИВО, а не в шапке модуля. Оба нужны не на
    старте: hls — только когда включаем SC-трек (и только для hls-стримов),
    gsap — на первом hero-перелёте и на входе в плеер. Статический импорт
@@ -24,6 +24,10 @@ import { fileSrc } from './bridge.js'
 /* порядок перемешивания: перестановка + курсор в одном месте (src/shuffle.js) */
 import { Shuffle } from './shuffle.js'
 import { discordSnapshot, updateDiscordPlayback } from './discord-presence.js'
+import { CROSSFADE_MAX, crossfadeSettings, cleanCrossfadeSettings, crossfadeGains,
+  crossfadeDuration, crossfadeIntroPosition, crossfadeCurvePoints, mixCurvePoints,
+  mediaDuration, rotateDecks, CrossfadeEnvelope, waitForDeck } from './crossfade.js'
+import { sliderFraction, sliderValue, pointerFraction } from './slider.js'
 
 
 /* десктоп-поведение вместо сайт-поведения:
@@ -1895,6 +1899,11 @@ const STRINGS = {
        «От обложки / От обложки». Два одинаковых заголовка подряд — это шум,
        а не структура. `default_repeat` тоже был без единого обращения. */
     crossfade:'Кроссфейд', crossfade_sub:'Плавное перекрытие треков',
+    crossfade_length:'Длина перехода', crossfade_curve:'Характер перехода',
+    crossfade_power:'Ровно', crossfade_smooth:'Мягко', crossfade_linear:'Линейно',
+    crossfade_smart:'Умная длина для коротких треков', crossfade_intro:'Пропуск вступления',
+    crossfade_current:'Текущий трек', crossfade_next:'Следующий трек', crossfade_preview:'Кривая перехода',
+    crossfade_short:'Коротко', crossfade_flow:'Плавно', crossfade_mix:'Длинный микс',
     /* эквалайзер и транспорт */
     fx:'Эффекты',
     eq:'Эквалайзер', eq_on:'Включить', eq_on_sub:'Тембр в реальном времени — и для локальных, и для soundcloud',
@@ -2084,6 +2093,11 @@ const STRINGS = {
     /* ❌ removed card_audio, autoplay, autoplay_sub, default_repeat,
        card_discord, lyrics_sources, accent_title, accent_off_title — см. ru */
     crossfade:'Crossfade', crossfade_sub:'Smooth overlap between tracks',
+    crossfade_length:'Transition length', crossfade_curve:'Transition shape',
+    crossfade_power:'Even', crossfade_smooth:'Soft', crossfade_linear:'Linear',
+    crossfade_smart:'Adapt to short tracks', crossfade_intro:'Skip intro',
+    crossfade_current:'Current track', crossfade_next:'Next track', crossfade_preview:'Transition curve',
+    crossfade_short:'Short', crossfade_flow:'Smooth', crossfade_mix:'Long mix',
     fx:'Effects',
     eq:'Equalizer', eq_on:'Enable', eq_on_sub:'Real-time tone shaping — for local files and soundcloud alike',
     eqp_flat:'Flat', eqp_bass:'Bass', eqp_vocal:'Vocal', eqp_treble:'Treble', eq_reset:'reset',
@@ -2470,7 +2484,9 @@ function bindDeck(el, onTime, onEnded, onPlayback) {
   const events = ['playing', 'pause', 'waiting', 'seeking', 'seeked', 'ratechange', 'loadedmetadata', 'durationchange', 'ended', 'emptied', 'timeupdate'];
   if (el.__sewRpc) for (const event of events) el.removeEventListener(event, el.__sewRpc);
   el.__sewRpc = event => {
-    if (updateDiscordPlayback(el, event.type)) onPlayback?.();
+    const changed = updateDiscordPlayback(el, event.type);
+    if (event.type === 'playing') afxResume();
+    if (changed || event.type === 'playing') onPlayback?.(event);
   };
   for (const event of events) el.addEventListener(event, el.__sewRpc);
 }
@@ -5246,69 +5262,88 @@ const hzShort = hz => (hz >= 1000
   ? `${hz % 1000 ? (hz / 1000).toFixed(1) : hz / 1000}k`
   : String(hz));
 
-/* общий захват для всех полос панели. наружу отдаёт ref, факт протяжки и
-   готовые обработчики; вертикальная и горизонтальная полосы отличаются
-   только разметкой. `drag` нужен, чтобы на время протяжки выключить
-   transition: иначе ручка отстаёт от курсора на время анимации */
+/* Позиция непрерывна даже при дискретном шаге значения. Один критически
+   затухающий spring для настроек, эквалайзера и скорости. Двигается DOM,
+   а не React, поэтому анимация не пересобирает плеер каждым кадром. */
+function useSmoothPosition(value, min, max, dragging) {
+  const reduced = useReducedMotion();
+  const target = useMotionValue(sliderFraction(value, min, max));
+  const spring = useSpring(target, { stiffness: 700, damping: 38, mass: 0.45 });
+  useLayoutEffect(() => {
+    if (!dragging.current) target.set(sliderFraction(value, min, max));
+  }, [value, min, max, target, dragging]);
+  return { target, position: reduced ? target : spring };
+}
+
+/* Звук получает округлённое значение раз в кадр; ручка следует всем
+   событиям указателя, не прыгая по ступенькам 0.5 дБ. */
 function useRail({ value, min, max, step, vertical, onChange }) {
   const ref = useRef(null);
-  const [drag, setDrag] = useState(false);
-  /* значение уходит наверх РАЗ В КАДР, а не на каждое событие мыши: мышь
-     даёт до 240 событий в секунду, приложение рисует 60, а состояние
-     настроек живёт в App — setState на каждое событие пересобирал бы весь
-     плеер (та же история, что у ColorPad). последнее движение применяется
-     следующим кадром, то есть на глаз мгновенно */
+  const dragging = useRef(false);
+  const { target, position } = useSmoothPosition(value, min, max, dragging);
   const live = useRef(onChange);
   live.current = onChange;
   const pending = useRef(null);
   const frame = useRef(0);
+  const committed = useRef(value);
+  if (!dragging.current && pending.current === null) committed.current = value;
   const flush = useCallback(() => {
     frame.current = 0;
     if (pending.current !== null) {
       const v = pending.current;
       pending.current = null;
+      committed.current = v;
       live.current(v);
     }
   }, []);
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
   /* от чего считать шаг стрелками: от ещё не применённого значения, иначе
      быстрые нажатия считались бы от одного и того же props.value */
-  const base = () => (pending.current !== null ? pending.current : value);
+  const base = () => (pending.current !== null ? pending.current : committed.current);
   /* округление через *100: шаг 0.05 — это 0.05000000000000001 в двоичной
      дроби, и без него ползунок выдаёт значения вида 1.3000000000000003,
      которые потом не сравниваются ни с пресетом, ни с дефолтом */
   const apply = v => {
-    pending.current = clampNum(Math.round(Math.round(v / step) * step * 100) / 100, min, max);
+    pending.current = sliderValue(sliderFraction(v, min, max), min, max, step);
     if (!frame.current) frame.current = requestAnimationFrame(flush);
   };
   const pick = e => {
     const r = ref.current?.getBoundingClientRect();
     if (!r || !r.height || !r.width) return;
-    const t = clampNum(vertical ? (e.clientY - r.top) / r.height
-                                : (e.clientX - r.left) / r.width, 0, 1);
-    apply(vertical ? max - t * (max - min) : min + t * (max - min));
+    const fraction = pointerFraction(e, r, vertical);
+    target.set(fraction);
+    apply(min + fraction * (max - min));
+  };
+  const finish = () => {
+    cancelAnimationFrame(frame.current);
+    const final = pending.current ?? committed.current;
+    flush();
+    dragging.current = false;
+    target.set(sliderFraction(final, min, max));
   };
   return {
-    ref, drag,
-    pct: (value - min) / (max - min),
+    ref, position,
     onPointerDown: e => {
       if (e.button) return;                     /* правый клик — не наше дело */
       e.currentTarget.setPointerCapture(e.pointerId);
-      setDrag(true);
+      dragging.current = true;
       pick(e);
     },
     onPointerMove: e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) pick(e); },
     onPointerUp: e => {
       if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-      setDrag(false);
+      finish();
     },
-    onPointerCancel: () => setDrag(false),
+    onPointerCancel: finish,
+    onLostPointerCapture: () => { if (dragging.current) finish(); },
     /* мгновенный сброс (двойной клик по полосе). отменяем ещё не применённое
        значение от клика: иначе кадр после сброса вернул бы его обратно */
     reset: v => {
       pending.current = null;
       cancelAnimationFrame(frame.current);
       frame.current = 0;
+      committed.current = v;
+      target.set(sliderFraction(v, min, max));
       live.current(v);
     },
     onKeyDown: e => {
@@ -5317,6 +5352,7 @@ function useRail({ value, min, max, step, vertical, onChange }) {
       if (!dir) return;
       e.preventDefault();                       /* иначе стрелка крутит панель */
       apply(base() + dir * step * (e.shiftKey ? 5 : 1));
+      target.set(sliderFraction(pending.current, min, max));
     },
   };
 }
@@ -5330,20 +5366,17 @@ function useRail({ value, min, max, step, vertical, onChange }) {
    работы (а перерисовка App на смену настроек как раз на нём). translate и
    scale считает композитор, и ему эта работа не мешает. */
 function EqFader({ value, onChange, label, thumbRef }) {
-  const { ref, drag, pct, reset, ...events } = useRail({
+  const { ref, position, reset, ...events } = useRail({
     value, min: -EQ_GAIN_MAX, max: EQ_GAIN_MAX, step: 0.5, vertical: true, onChange,
   });
-  /* заливка — две половины от нулевой линии, сверху и снизу. одна из них
-     всегда нулевая, поэтому вместо пересчёта top/height достаточно
-     scaleY от основания каждой половины */
-  const up   = Math.max(0, pct * 2 - 1);
-  const down = Math.max(0, 1 - pct * 2);
-  const move = drag
-    ? 'box-shadow 0.18s ease'
-    : 'transform 0.42s cubic-bezier(0.22,1,0.36,1), opacity 0.2s ease, box-shadow 0.18s ease';
+  const up = useTransform(position, pct => Math.max(0, pct * 2 - 1));
+  const down = useTransform(position, pct => Math.max(0, 1 - pct * 2));
+  const upOpacity = useTransform(up, amount => amount > 0.001 ? 0.9 : 0);
+  const downOpacity = useTransform(down, amount => amount > 0.001 ? 0.9 : 0);
+  const thumbPosition = useTransform(position, pct => `translateY(${(1 - pct) * 100}%)`);
   const half = {
     position:'absolute', left:'50%', width:4, marginLeft:-2, borderRadius:2,
-    background:'var(--accent)', transition: move,
+    background:'var(--accent)',
   };
   return (
     <div ref={ref} className="eq-fader" role="slider" tabIndex={0}
@@ -5351,27 +5384,23 @@ function EqFader({ value, onChange, label, thumbRef }) {
       aria-valuemin={-EQ_GAIN_MAX} aria-valuemax={EQ_GAIN_MAX} aria-valuenow={value}
       onDoubleClick={() => reset(0)} {...events}>
       <div className="eq-slot"/>
-      {/* нулевая линия: без неё не видно, откуда отсчёт */}
       <div style={{position:'absolute', left:0, right:0, top:'50%', height:1, background:'rgba(255,255,255,0.08)'}}/>
-      <div style={{
+      <motion.div style={{
         ...half, bottom:'50%', height:'50%', transformOrigin:'bottom',
-        transform:`scaleY(${up})`, opacity: up ? 0.9 : 0,
+        scaleY: up, opacity: upOpacity,
       }}/>
-      <div style={{
+      <motion.div style={{
         ...half, top:'50%', height:'50%', transformOrigin:'top',
-        transform:`scaleY(${down})`, opacity: down ? 0.9 : 0,
+        scaleY: down, opacity: downOpacity,
       }}/>
-      {/* ручка. обёртка в высоту всей дорожки нужна ради translateY в
-          процентах: у самой ручки высота 5px, и 50% считались бы от пяти
-          пикселей, а не от дорожки */}
-      <div style={{
+      <motion.div style={{
         position:'absolute', left:0, right:0, top:0, height:'100%',
-        transform:`translateY(${(1 - pct) * 100}%)`, transition: move,
+        transform: thumbPosition,
         pointerEvents:'none',
       }}>
         <div className="eq-thumb" ref={thumbRef}
           style={{transition:'transform 0.16s ease, box-shadow 0.18s ease'}}/>
-      </div>
+      </motion.div>
     </div>
   );
 }
@@ -5386,14 +5415,11 @@ function EqFader({ value, onChange, label, thumbRef }) {
    translateX в процентах считается от СОБСТВЕННОЙ ширины элемента, а у
    заливки она равна дорожке, поэтому всё считается в процентах без пикселей. */
 function FxSlider({ value, min, max, step, origin, onChange, resetTo, label }) {
-  const { ref, drag, pct, reset, ...events } = useRail({ value, min, max, step, vertical: false, onChange });
-  const x    = pct * 100;
-  const o    = origin == null ? 0 : ((origin - min) / (max - min)) * 100;
-  const from = Math.min(x, o);
-  const w    = Math.abs(x - o);
-  const move = drag
-    ? 'box-shadow 0.18s ease'
-    : 'transform 0.28s cubic-bezier(0.22,1,0.36,1), opacity 0.2s ease, box-shadow 0.18s ease';
+  const { ref, position, reset, ...events } = useRail({ value, min, max, step, vertical: false, onChange });
+  const o = origin == null ? 0 : sliderFraction(origin, min, max);
+  const fillPosition = useTransform(position, pct => `translateX(${Math.min(pct, o) * 100}%) scaleX(${Math.abs(pct - o)})`);
+  const fillOpacity = useTransform(position, pct => Math.abs(pct - o) > 0.002 ? 0.9 : 0);
+  const thumbPosition = useTransform(position, pct => `translateX(${pct * 100}%)`);
   return (
     <div ref={ref} className="eq-rail" role="slider" tabIndex={0} aria-label={label}
       aria-valuemin={min} aria-valuemax={max} aria-valuenow={value}
@@ -5401,25 +5427,23 @@ function FxSlider({ value, min, max, step, origin, onChange, resetTo, label }) {
       <div className="eq-groove">
         {origin != null && (
           <div style={{
-            position:'absolute', left:`${o}%`, top:-3, width:1, height:10, marginLeft:-0.5,
+            position:'absolute', left:`${o * 100}%`, top:-3, width:1, height:10, marginLeft:-0.5,
             borderRadius:1, background:'rgba(255,255,255,0.13)',
           }}/>
         )}
-        <div style={{
+        <motion.div style={{
           position:'absolute', inset:0, borderRadius:2, background:'var(--accent)',
           transformOrigin:'left center',
-          transform:`translateX(${from}%) scaleX(${w / 100})`,
-          opacity: w > 0.2 ? 0.9 : 0, transition: move,
+          transform: fillPosition,
+          opacity: fillOpacity,
         }}/>
-        {/* точка едет в обёртке во всю дорожку: у самой точки ширина 12px, и
-            translateX в процентах считался бы от неё, а не от дорожки */}
-        <div style={{
+        <motion.div style={{
           position:'absolute', inset:0, pointerEvents:'none',
-          transform:`translateX(${x}%)`, transition: move,
+          transform: thumbPosition,
         }}>
           <div className="eq-dot"
             style={{transition:'transform 0.16s ease, box-shadow 0.18s ease'}}/>
-        </div>
+        </motion.div>
       </div>
     </div>
   );
@@ -6198,10 +6222,11 @@ function Card({ title, children, style }) {
 /* Строка настройки: подпись и пояснение слева, контрол справа.
    `dim` гасит всю строку целиком — так помечаются пункты, которые сейчас
    не применимы (материал окна гасит подсветку акцента). */
-function Row({ label, sub, badge, children, last, dim }) {
+function Row({ label, sub, badge, children, last, dim, wrap }) {
   return (
     <div style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+      flexWrap: wrap ? 'wrap' : undefined,
       padding: '13px 16px',
       borderBottom: (last || HIDE_DIVIDERS) ? 'none' : `1px solid ${SN.line}`,
       opacity: dim ? 0.4 : 1, transition: 'opacity 0.22s ease',
@@ -6250,12 +6275,29 @@ function Badge({ children }) {
    кружков: произвольный цвет, число и фон произвольной формы нечем было
    задать, поэтому всё это пришлось бы писать руками в каждом режиме. */
 
-/* Ползунок. Нативный input[type=range] вместо существующего CrossfadeSlider
-   сознательно: тот сделан под одну конкретную величину и ведёт себя как
-   мишень для колеса мыши, а здесь нужен обычный ряд настроек. Заливку
-   слева даёт --fill инлайном, саму дорожку красит css (.th-range). */
+/* Общий нативный ползунок настроек: клавиши работают, колесо не меняет
+   значение случайно при прокрутке раздела. Заливку задаёт --fill. */
 function MiniSlider({ label, value, min, max, step = 1, onChange, display, disabled }) {
-  const pct = ((value - min) / (max - min)) * 100;
+  const rail = useRef(null);
+  const dragging = useRef(false);
+  const { target, position } = useSmoothPosition(value, min, max, dragging);
+  const length = useMotionValue(0);
+  const thumbX = useTransform([position, length], ([fraction, width]) => fraction * width);
+  useLayoutEffect(() => {
+    const el = rail.current;
+    const measure = () => length.set(Math.max(0, el.getBoundingClientRect().width - 14));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [length]);
+  const follow = e => {
+    if (!disabled) target.set(pointerFraction(e, rail.current.getBoundingClientRect(), false, 7));
+  };
+  const finish = e => {
+    dragging.current = false;
+    target.set(sliderFraction(+e.currentTarget.value, min, max));
+  };
   return (
     <div style={{
       padding: '12px 16px 14px', opacity: disabled ? 0.4 : 1,
@@ -6270,10 +6312,27 @@ function MiniSlider({ label, value, min, max, step = 1, onChange, display, disab
           fontSize: 'var(--fs-xs)', color: SN.mid, fontVariantNumeric: 'tabular-nums',
         }}>{display ?? value}</span>
       </div>
-      <input type="range" className="th-range" min={min} max={max} step={step}
-        value={value} disabled={disabled}
-        style={{ '--fill': `${clampNum(pct, 0, 100)}%` }}
-        onChange={e => onChange(+e.target.value)}/>
+      <div className="smooth-slider" ref={rail} data-disabled={disabled || undefined}>
+        <div className="smooth-slider-track" aria-hidden="true">
+          <motion.div className="smooth-slider-fill" style={{ scaleX: position }}/>
+        </div>
+        <motion.div className="smooth-slider-thumb" aria-hidden="true" style={{ x: thumbX }}/>
+        <input type="range" className="th-range smooth-slider-input" min={min} max={max} step={step}
+          value={value} disabled={disabled} aria-label={label} aria-valuetext={display == null ? undefined : String(display)}
+          onPointerDown={e => {
+            if (e.button || disabled) return;
+            dragging.current = true;
+            e.currentTarget.setPointerCapture(e.pointerId);
+            follow(e);
+          }}
+          onPointerMove={e => { if (dragging.current) follow(e); }}
+          onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={finish}
+          onChange={e => {
+            const next = +e.target.value;
+            if (!dragging.current) target.set(sliderFraction(next, min, max));
+            onChange(next);
+          }}/>
+      </div>
     </div>
   );
 }
@@ -6609,9 +6668,13 @@ function ThemeTile({ label, theme, active, onClick, onDelete, deleteTitle, mica,
    `disabled` гасит только курсор и клик: гасить ещё и заливку нельзя —
    строка вокруг уже приглушена через Row dim, и две прозрачности подряд
    уронили бы тумблер в невидимость. */
-function Switch({ on, onChange, disabled }) {
+function Switch({ on, onChange, disabled, label }) {
   return (
     <div role="switch" aria-checked={!!on} aria-disabled={disabled || undefined}
+      aria-label={label} tabIndex={label && !disabled ? 0 : undefined}
+      onKeyDown={e => {
+        if (label && !disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onChange(!on); }
+      }}
       onClick={() => { if (!disabled) onChange(!on); }}
       style={{
         width: 36, height: 21, borderRadius: 11, flexShrink: 0, position: 'relative',
@@ -6643,9 +6706,9 @@ function Switch({ on, onChange, disabled }) {
    а не выбором. Убрана по просьбе. Взамен подложка поднята с 0.15 до 0.2:
    раньше часть контраста пилла давала рамка, и без неё он был бы заметно
    бледнее соседей. */
-function Segmented({ value, options, onChange, disabled, id, stretch }) {
+function Segmented({ value, options, onChange, disabled, id, stretch, label: groupLabel }) {
   return (
-    <div style={{
+    <div role={groupLabel ? 'group' : undefined} aria-label={groupLabel} style={{
       display: stretch ? 'flex' : 'inline-flex',
       gap: 2, padding: 3, borderRadius: 11, background: 'rgba(255,255,255,0.04)',
       opacity: disabled ? 0.4 : 1, pointerEvents: disabled ? 'none' : 'auto',
@@ -6655,6 +6718,11 @@ function Segmented({ value, options, onChange, disabled, id, stretch }) {
         const active = value === v;
         return (
           <div key={v} onClick={() => { if (active) return; onChange(v); }}
+            role={groupLabel ? 'button' : undefined} aria-pressed={groupLabel ? active : undefined}
+            tabIndex={groupLabel && !disabled ? 0 : undefined}
+            onKeyDown={e => {
+              if (groupLabel && !disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onChange(v); }
+            }}
             style={{
               position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center',
               gap: 6, padding: '6px 13px', borderRadius: 9, cursor: 'pointer',
@@ -6741,78 +6809,134 @@ function Stepper({ value, onChange, step = 5, min = 0, label }) {
   );
 }
 
-/* ── CrossfadeSlider ─────────────────────────────────────────────────────── */
-function CrossfadeSlider({ value, onChange }) {
+/* Геометрия морфится от уже показанного кадра: быстрые повторные клики не
+   сбрасывают линии. Разряд следует обеим кривым тем же кодом, что у EQ. */
+function CrossfadeCurvePreview({ curve }) {
   const t = useLang();
-  const hitRef    = useRef(null);   /* зона захвата указателя */
-  const fillRef   = useRef(null);   /* сама полоса: по ней считаем значение */
-  const onChangeRef = useRef(onChange);
-  const valueRef    = useRef(value);
-  onChangeRef.current = onChange;
-  valueRef.current    = value;
-
-  const calcVal = (clientX) => {
-    const rect = fillRef.current.getBoundingClientRect();
-    return Math.round(Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * 12);
+  const reduced = useReducedMotion();
+  const filterId = `crossfade-glow-${useId().replace(/:/g, '')}`;
+  const lines = useRef({});
+  const bolts = useRef({});
+  const shown = useRef(crossfadeCurvePoints(curve));
+  const previous = useRef(curve);
+  const path = points => points.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ');
+  const paint = points => {
+    shown.current = points;
+    lines.current.out?.setAttribute('d', path(points.out));
+    lines.current.in?.setAttribute('d', path(points.in));
   };
-
+  const clear = () => {
+    for (const el of Object.values(bolts.current)) {
+      el?.setAttribute('d', '');
+      if (el) el.style.opacity = 0;
+    }
+  };
+  useLayoutEffect(() => { paint(shown.current); }, []);
   useEffect(() => {
-    const el = hitRef.current;
-    const onWheel = e => {
-      e.preventDefault();
-      onChangeRef.current(Math.max(0, Math.min(12, valueRef.current + (e.deltaY > 0 ? -1 : 1))));
+    const changed = previous.current !== curve;
+    previous.current = curve;
+    const from = shown.current;
+    const to = crossfadeCurvePoints(curve);
+    clear();
+    if (!changed || reduced) { paint(to); return; }
+    let frame;
+    const start = performance.now();
+    const tick = now => {
+      const elapsed = Math.max(0, now - start);
+      const progress = Math.min(1, elapsed / 420);
+      const points = mixCurvePoints(from, to, 1 - (1 - progress) ** 4);
+      paint(points);
+      const alpha = boltEnv(elapsed) * 0.72;
+      if (!alpha) { clear(); return; }
+      const anchors = channel => points[channel].filter((_, i) => i % 6 === 0);
+      const outgoing = anchors('out'), incoming = anchors('in');
+      const d = `${boltPath(outgoing)} ${boltPath(incoming)}`;
+      bolts.current.main.setAttribute('d', d);
+      bolts.current.glow.setAttribute('d', d);
+      bolts.current.bits.setAttribute('d', `${boltBitsPath(outgoing)} ${boltBitsPath(incoming)}`);
+      bolts.current.main.style.opacity = alpha;
+      bolts.current.glow.style.opacity = alpha * 0.36;
+      bolts.current.bits.style.opacity = alpha * 0.5;
+      frame = requestAnimationFrame(tick);
     };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, []);
-
-  const v   = value || 0;
-  const pct = (v / 12) * 100;
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-      {/* hitRef шире полосы на 6px с каждой стороны: ручка в крайних
-         положениях наполовину уезжает за трек, и без этих полей кликнуть по
-         ней у края было нельзя. Значение считаем по fillRef, а не по зоне
-         захвата, иначе крайнее положение давало бы 11 вместо 12 */}
-      <div ref={hitRef}
-        style={{
-          width: 156, padding: '0 6px', display: 'flex', alignItems: 'center',
-          cursor: 'ew-resize', touchAction: 'none',
-        }}
-        onPointerDown={e => {
-          e.currentTarget.setPointerCapture(e.pointerId);
-          onChangeRef.current(calcVal(e.clientX));
-        }}
-        onPointerMove={e => {
-          if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-          onChangeRef.current(calcVal(e.clientX));
-        }}
-        onPointerUp={e => {
-          e.currentTarget.releasePointerCapture(e.pointerId);
-        }}>
-        <div ref={fillRef}
-          style={{ width: '100%', height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.08)', position: 'relative' }}>
-          <div style={{
-            position: 'absolute', left: 0, top: 0, height: '100%',
-            width: `${pct}%`, borderRadius: 3, background: 'var(--accent)',
-            boxShadow: pct > 0 ? '0 0 10px rgba(var(--accent-rgb),0.4)' : 'none',
-          }}/>
-          {/* Ручка. Её не было: голая полоса с курсором ew-resize читалась как
-             индикатор, а не как то, что тянут. */}
-          <div style={{
-            position: 'absolute', left: `${pct}%`, top: '50%',
-            width: 12, height: 12, marginTop: -6, marginLeft: -6, borderRadius: '50%',
-            background: '#fff', boxShadow: '0 1px 4px rgba(0,0,0,0.45)',
-          }}/>
-        </div>
-      </div>
-      <span style={{
-        fontSize: 'var(--fs-sm)', color: SN.dim, minWidth: 30, textAlign: 'right',
-        fontVariantNumeric: 'tabular-nums',
-      }}>{v === 0 ? t('off') : `${v} ${t('sec')}`}</span>
+    frame = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(frame); clear(); };
+  }, [curve, reduced]);
+  return <div className="crossfade-preview">
+    <svg viewBox="0 0 320 132" role="img" aria-label={t('crossfade_preview')}>
+      <defs>
+        <filter id={filterId} x="-30%" y="-80%" width="160%" height="260%">
+          <feGaussianBlur stdDeviation="3"/>
+        </filter>
+      </defs>
+      <path ref={el => { lines.current.out = el; }} fill="none" stroke="var(--text)" strokeOpacity="0.46" strokeWidth="2.6" strokeLinecap="round"/>
+      <path ref={el => { lines.current.in = el; }} fill="none" stroke="var(--accent)" strokeWidth="2.6" strokeLinecap="round"/>
+      <g aria-hidden="true" fill="none" strokeLinecap="round" strokeLinejoin="round">
+        <path ref={el => { bolts.current.glow = el; }} stroke="var(--accent)" strokeWidth="7" filter={`url(#${filterId})`} opacity="0"/>
+        <path ref={el => { bolts.current.bits = el; }} stroke="var(--accent)" strokeWidth="1" opacity="0"/>
+        <path ref={el => { bolts.current.main = el; }} stroke="var(--text)" strokeWidth="1.25" opacity="0"/>
+      </g>
+    </svg>
+    <div className="crossfade-preview-labels">
+      <span>{t('crossfade_current')}</span><span>{t('crossfade_next')}</span>
     </div>
-  );
+  </div>;
+}
+
+function CrossfadeCurvePicker({ value, onChange }) {
+  const t = useLang();
+  const reduced = useReducedMotion();
+  const id = useId();
+  return <div className="crossfade-curves" role="group" aria-label={t('crossfade_curve')}>
+    {['power', 'smooth', 'linear'].map(curve => {
+      const active = curve === value;
+      const sample = crossfadeCurvePoints(curve).in;
+      const path = sample.map((p, i) => `${i ? 'L' : 'M'}${(p.x - 12) / 296 * 38 + 3},${(p.y - 14) / 104 * 18 + 3}`).join(' ');
+      return <motion.button key={curve} type="button" className="crossfade-curve" aria-pressed={active}
+        whileTap={reduced ? undefined : { scale: 0.96 }} onClick={() => { if (!active) onChange(curve); }}>
+        {active && <motion.div className="crossfade-curve-active" layoutId={`crossfade-curve-${id}`}
+          transition={{ duration: reduced ? 0 : 0.28, ease: [0.16, 1, 0.3, 1] }}/>}
+        <svg viewBox="0 0 44 24" aria-hidden="true"><path d={path} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+        <span>{t('crossfade_' + curve)}</span>
+      </motion.button>;
+    })}
+  </div>;
+}
+
+/* Кривая на схеме и в звуке считается одной функцией. */
+function CrossfadeControls({ settings, onSettings }) {
+  const t = useLang();
+  const config = crossfadeSettings(settings);
+  const set = (key, value) => onSettings({ ...settings, [key]: value });
+  return <Card>
+    <Row label={t('crossfade')} last>
+      <Switch label={t('crossfade')} on={config.seconds > 0} onChange={on => onSettings({ ...settings,
+        crossfade: on ? (crossfadeSettings({ crossfade: settings.crossfadeLast ?? 5 }).seconds || 5) : 0,
+        crossfadeLast: config.seconds || settings.crossfadeLast || 5,
+      })}/>
+    </Row>
+    {config.seconds > 0 && <>
+      <MiniSlider label={t('crossfade_length')} min={0.5} max={CROSSFADE_MAX} step={0.5}
+        value={config.seconds} display={`${config.seconds} ${t('sec')}`}
+        onChange={value => set('crossfade', value)}/>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '0 16px 10px' }}>
+        {[['short', 2, 'smooth'], ['flow', 5, 'power'], ['mix', 8, 'smooth']].map(([label, seconds, curve]) =>
+          <Btn key={label} onClick={() => onSettings({ ...settings, crossfade: seconds, crossfadeCurve: curve, crossfadeSmart: true })}>
+            {t('crossfade_' + label)}
+          </Btn>)}
+      </div>
+      <Row label={t('crossfade_curve')} last wrap>
+        <CrossfadeCurvePicker value={config.curve} onChange={value => set('crossfadeCurve', value)}/>
+      </Row>
+      <CrossfadeCurvePreview curve={config.curve}/>
+      <Row label={t('crossfade_smart')} last>
+        <Switch label={t('crossfade_smart')} on={config.smart} onChange={value => set('crossfadeSmart', value)}/>
+      </Row>
+      <MiniSlider label={t('crossfade_intro')} min={0} max={10} step={0.5} value={config.intro}
+        display={config.intro ? `${config.intro} ${t('sec')}` : t('off')}
+        onChange={value => set('crossfadeIntro', value)}/>
+    </>}
+  </Card>;
 }
 
 /* ── ClearCacheCard ───────────────────────────────────────────────────────── */
@@ -7188,11 +7312,7 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
       </Card>
     ),
     playback: (<>
-      <Card>
-        <Row label={t('crossfade')} sub={t('crossfade_sub')} last>
-          <CrossfadeSlider value={settings.crossfade} onChange={v=>set('crossfade', v)}/>
-        </Row>
-      </Card>
+      <CrossfadeControls settings={settings} onSettings={onSettings}/>
 
       {/* Эквалайзер. Полосы — те же, что в графе (EQ_BANDS): подпись частоты
           считается отсюда, а не пишется руками, чтобы подпись и фильтр не
@@ -10507,7 +10627,7 @@ function App() {
      тот текст, который уже на экране, и выглядела бы сломанной */
   const lyricsBypassRef = useRef(false);
   const [settings,      setSettings]      = useState({
-    autoplay:false, crossfade:0, defaultRepeat:false,
+    autoplay:false, crossfade:0, crossfadeCurve:'power', crossfadeSmart:true, crossfadeIntro:0, defaultRepeat:false,
     startWithWindows:false, minimizeToTray:false, musicFolder:'', downloadsFolder:'',
     customTitles: {}, scTitles: {}, minDuration: 30, soundcloudAuth: null,
     /* найденный текст по запросу и ручные пары «артист / название» по треку
@@ -10691,19 +10811,15 @@ function App() {
   const scPlayingTrackRef = useRef(null);
   const volumeRef         = useRef(0.7);
   const settingsRef       = useRef({});
-  const crossfadeRafRef   = useRef(null);
-  /* ── Настоящий кроссфейд (две деки) ───────────────────────────────────
-     crossfadeRafRef выше — это СТАРЫЙ fade (тишина в конце трека + тишина
-     в начале следующего). Настоящее перекрытие двумя деками живёт в своих
-     ref'ах и намеренно их не делит: handleSeek гасит crossfadeRafRef, и если
-     бы кроссфейд писал туда же, seek посреди перекрытия навсегда оставил бы
-     уходящую деку на ненулевой громкости. */
+  /* Две разные деки меняются ролями после каждого перехода. */
   const xfadeRafRef     = useRef(null);   // rAF-цикл громкости двух дек
   const deckBRef        = useRef(null);   // второй <audio> — «standby»
   const deckBHlsRef     = useRef(null);   // hls-инстанс второй деки
   const outgoingRef     = useRef(null);   // { audio, hls } — уходящая дека
-  const xfadeRef        = useRef(null);   // { from, to, t0, dur, ... } — идущее перекрытие
+  const xfadeRef        = useRef(null);   // { from, to, envelope } — идущее перекрытие
   const xfadePrimeRef   = useRef(null);   // предзагруженный следующий трек
+  const xfadeTickRef    = useRef(null);
+  const localTracksRef  = useRef([]);
   /* очередь/режим нужны peek'у следующего трека, а он крутится из setInterval
      с пустым списком deps — читать state он не увидит, поэтому зеркалим */
   const shuffleOnRef      = useRef(false);
@@ -10739,6 +10855,7 @@ function App() {
   shuffleOnRef.current = shuffle;
   repeatRef.current  = repeat;
   settingsRef.current  = settings;
+  localTracksRef.current = tracks;
   /* `trackIdx === -1` — «трек не выбран». Раньше индекс начинался с нуля, и
      `tracks[trackIdx]` отдавал первый файл папки ещё до всякого клика: в
      плеере сразу стоял первый трек каталога, и он же считался текущим для
@@ -11072,6 +11189,7 @@ function App() {
             /* те же ворота для rpc: без них мусорное значение из старого файла
                настроек уезжало в main как есть (см. cleanDiscordSettings) */
             cleanDiscordSettings(m);
+            cleanCrossfadeSettings(m);
             /* булев гейт по образцу cleanDiscordSettings: мусор из старого
                файла настроек не должен превращать тумблер в «включено» */
             m.ambientGlow = m.ambientGlow !== false;
@@ -11234,7 +11352,7 @@ function App() {
     /* после hot-reload это ТОТ ЖЕ элемент, что играет прямо сейчас: новый дал
        бы тишину в интерфейсе, а старый остался бы в графе и продолжал играть
        мимо наших обработчиков, паузы и ползунков */
-    const audio = HOT_STORE.audio || new Audio();
+    const audio = audioRef.current || HOT_STORE.audio || new Audio();
     HOT_STORE.audio = audio;
     /* ⚠️ ДО первого `src` и всегда, даже если эквалайзер не включён.
        Как только элемент попадёт в AudioContext (createMediaElementSource),
@@ -11247,6 +11365,9 @@ function App() {
     audio.crossOrigin = 'anonymous';
     audio.volume = volume;
     audioRef.current = audio;
+    // React Refresh keeps refs. Settle an old transition without stopping the
+    // current deck, then bind both elements to this version of the handlers.
+    abortCrossfade();
 
     /* ⚠️ Обработчики общие для ОБЕИХ дек, а не только для первой. Проверка
        «эта дека вообще текущая» обязательна: уходящая дека во время
@@ -11255,9 +11376,9 @@ function App() {
        назад на каждом кадре кроссфейда. */
     const onTime  = handleDeckTime(audio);
     const onEnded = handleDeckEnded(audio);
-    bindDeck(audio, onTime, onEnded, () => {
-      if (audioRef.current === audio) discordPushRef.current?.(0);
-    });
+    bindDeck(audio, onTime, onEnded, handleDeckPlayback(audio));
+    const standby = deckBRef.current;
+    if (standby && standby !== audio) bindDeck(standby, handleDeckTime(standby), handleDeckEnded(standby), handleDeckPlayback(standby));
 
     return () => {
       if (audio.__sewTime)  audio.removeEventListener('timeupdate', audio.__sewTime);
@@ -11271,12 +11392,12 @@ function App() {
          навесит следующий mount. всё, что ниже, оборвало бы трек — а значит
          обрывало бы музыку на каждой правке файла */
       if (hotSwapping) return;
-      audio.pause();
-      audio.src = '';
+      abortCrossfade();
+      audioRef.current?.pause();
+      if (audioRef.current) audioRef.current.src = '';
       if (audio.__sewTransport) audio.removeEventListener('loadstart', audio.__sewTransport);
       audio.__sewTransport = null;
       destroyHls();
-      cancelAnimationFrame(crossfadeRafRef.current);
       cancelAnimationFrame(xfadeRafRef.current);
       /* вторая дека жила своей жизнью и про этот cleanup ничего не знала:
          на размонтировании оставался висящий hls и играющий <audio> */
@@ -11353,19 +11474,27 @@ function App() {
     /* hot-reload: тот же src уже стоит, а повторный `load()` начал бы трек с
        нуля прямо посреди прослушивания */
     const want = track.path ? fileSrc(track.path) : '';
-    if (HOT && HOT_STORE.trackSrc === want) return;
+    if (HOT_STORE.trackSrc === want && audio.__sewTrackPath === track.path) return;
+    abortCrossfade();
+    ++scReqRef.current; // a pending SoundCloud URL must not replace this local track
     HOT_STORE.trackSrc = want;
     destroyHls(); // если был HLS — уничтожить при переключении на локальный трек
     if (track.path) {
       audio.src = fileSrc(track.path);
+      audio.__sewTrackPath = track.path;
       audio.load();
       audio.addEventListener('loadedmetadata', () => {
+        if (audio.__sewTrackPath !== track.path || audioRef.current !== audio) return;
         const dur = Math.floor(audio.duration);
-        if (dur) setTracks(prev => prev.map((t, i) => i === trackIdx ? { ...t, duration: dur } : t));
+        if (Number.isFinite(dur) && dur > 0) setTracks(prev => prev.map(t => t.path === track.path ? { ...t, duration: dur } : t));
       }, { once: true });
       if (isPlayingRef.current) {
-        startFadeIn(audio);
-        audio.play().catch(() => setIsPlaying(false));
+        restorePlaybackVolume(audio);
+        audio.play().then(() => {
+          if (audioRef.current === audio && audio.__sewTrackPath === track.path) restorePlaybackVolume(audio);
+        }).catch(() => {
+          if (audioRef.current === audio && audio.__sewTrackPath === track.path) setIsPlaying(false);
+        });
       }
     } else {
       audio.src = '';
@@ -11381,9 +11510,9 @@ function App() {
     const audio = audioRef.current;
     if (!audio) return;
     if (isPlaying) {
+      restorePlaybackVolume(audio);
       audio.play().catch(() => setIsPlaying(false));
     } else {
-      cancelAnimationFrame(crossfadeRafRef.current);
       /* Пауза посреди перекрытия: уходящая дека встаёт на паузу и
          выбрасывается, следующая остаётся текущей. Раньше её просто не
          трогали — она продолжала играть в наушниках после того, как
@@ -11402,7 +11531,7 @@ function App() {
        ровно на один кадр и щёлкнет. */
     const xf = xfadeRef.current;
     if (xf) {
-      const g = xfadeGains(xf, performance.now());
+      const g = xfadeGains(xf);
       if (xf.from) xf.from.volume = g.out * volume;
       xf.to.volume = g.in * volume;
     } else if (audioRef.current) {
@@ -11416,7 +11545,7 @@ function App() {
     volumeRef.current = v;
     const xf = xfadeRef.current;
     if (xf) {
-      const g = xfadeGains(xf, performance.now());
+      const g = xfadeGains(xf);
       if (xf.from) xf.from.volume = g.out * v;
       xf.to.volume = g.in * v;
     } else if (audioRef.current) {
@@ -11808,10 +11937,8 @@ function App() {
   }
 
   function handleNext() {
-    /* Идёт перекрытие? Тогда следующий трек уже играет и УЖЕ стал текущим —
-       handleNext ниже сдвинул бы очередь ещё на раз. Отменяем перекрытие с
-       откатом позиции, чтобы этот самый вызов корректно взял «следующий». */
-    if (xfadeRef.current) abortCrossfade({ revertQueue: true });
+    /* Входящий трек уже текущий. Завершаем микс, не откатывая очередь. */
+    if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
     if (repeat === 'one') {
       const audio = audioRef.current;
       if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
@@ -11890,9 +12017,8 @@ function App() {
   handleNextRef.current = handleNext;
 
   function handlePrev() {
-    /* см. handleNext: откатываем перекрытие, иначе «назад»
-       посреди стыка прыгнет через два трека */
-    if (xfadeRef.current) abortCrossfade({ revertQueue: true });
+    /* «Назад» считается относительно уже выбранного входящего трека. */
+    if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
     if (progressRef.current > 0.05) {
       progressRef.current = 0;
       if (audioRef.current) audioRef.current.currentTime = 0;
@@ -11941,15 +12067,15 @@ function App() {
   const handleSeek = useCallback((v) => {
     progressRef.current = v;
     discordProgressRef.current = v;
-    cancelAnimationFrame(crossfadeRafRef.current); // отменяем fade если был
     /* Перемотка посреди перекрытия: обе деки надо остановить, иначе ушедшая
        продолжит играть на прежней позиции (звук идёт не с той точки, где
        стоит шкала). Позицию в очереди не откатываем — следующий трек к
        этому моменту уже текущий по-настоящему. */
-    if (xfadeRef.current || outgoingRef.current) abortCrossfade();
+    if (xfadeRef.current || outgoingRef.current || xfadePrimeRef.current) abortCrossfade();
     const audio = audioRef.current;
-    if (audio?.duration) {
-      audio.currentTime = v * audio.duration;
+    const duration = mediaDuration(audio, trackRef.current);
+    if (audio && duration) {
+      audio.currentTime = v * duration;
       audio.volume = volumeRef.current; // восстанавливаем громкость после seek
     }
     /* pushDiscord сам гасит прошлый таймер. раньше здесь стоял отдельный
@@ -12729,61 +12855,43 @@ function App() {
     }, 2200);
   }
 
-  function startFadeIn(audio) {
-    cancelAnimationFrame(crossfadeRafRef.current);
-    const cf = settingsRef.current?.crossfade || 0;
-    if (cf <= 0) { audio.volume = volumeRef.current; return; }
-    audio.volume = 0;
-    const target = volumeRef.current;
-    const startMs = performance.now();
-    const tick = (now) => {
-      const t = Math.min(1, (now - startMs) / (cf * 1000));
-      audio.volume = target * t;
-      if (t < 1) crossfadeRafRef.current = requestAnimationFrame(tick);
-    };
-    crossfadeRafRef.current = requestAnimationFrame(tick);
-  }
-
   function destroyHls() {
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
   }
 
-  /* ══ Настоящий кроссфейд для SoundCloud ═════════════════════════════════
-     Старый fade (startFadeIn + fade-out в timeupdate) — это «тишина в конце,
-     потом тишина в начале». Перекрытия в нём нет, и для SC это особенно
-     слышно: handleNext успевает ещё раз сходить в сеть за CDN-ссылкой
-     (scFetch по streamUrl/hlsUrl), поэтому в месте стыка выходит 0.5–2с
-     настоящей тишины.
-
-     Здесь треки играют ДВУМЯ деками одновременно. Схема:
-       1) за XFADE_PRIME_LEAD секунд до конца резолвим URL следующего трека и
-          монтируем его на деку B (hls начинает тянуть сегменты) — play() в
-          момент стыка обязан сработать мгновенно, а не после сети;
-       2) в последние cf секунд включаем play() деки B, МЕНЯЕМ деки местами
-          (audioRef перестаёт указывать на уходящий трек — с этого момента
-          шкала, перемотка и дискорд едут по следующему треку) и крутим rAF,
-          на котором громкость идёт по равномощностной кривой cos/sin;
-       3) ушедшая дека молчит (ended у неё игнорируется) и разбирается.
-
-     Если префетч не успел или play() запрещён — тихо откатываемся на старый
-     путь, хуже не становится. */
+  /* Один переход для локальных файлов и SoundCloud: сначала декодируем
+     следующую деку, затем запускаем, и только после play() меняем очередь.
+     Нет отдельного fade-out, который гасил трек ещё до готовности следующего. */
 
   const XFADE_PRIME_LEAD = 10;
-  const XFADE_MIN_MS     = 600;
+  /* Обычный запуск не зависит от UI-кадров или события playing: текущая
+     дека получает громкость синхронно. Ноль допустим лишь на standby,
+     во время настоящего перекрытия или при пользовательском mute. */
+  function restorePlaybackVolume(audio) {
+    if (!audio || audio !== audioRef.current) return;
+    afxResume();
+    const xf = xfadeRef.current;
+    if (xf) {
+      const gains = xfadeGains(xf);
+      xf.from.volume = gains.out * volumeRef.current;
+      xf.to.volume = gains.in * volumeRef.current;
+    } else {
+      audio.volume = volumeRef.current;
+    }
+  }
 
-  /* Равномощностная кривая: g_out = cos(π/2·t), g_in = sin(π/2·t).
-     Сумма квадратов постоянна, поэтому в середине перекрытия оба трека
-     складываются в ту же мощность, что и по одному. На линейной кривой
-     (как в старом fade) середина проваливается вниз — на слух это «яма». */
-  function xfadeGain(t) {
-    const k = Math.min(1, Math.max(0, t)) * (Math.PI / 2);
-    return { out: Math.cos(k), in: Math.sin(k) };
+  function handleDeckPlayback(audio) {
+    return event => {
+      if (audioRef.current !== audio) return;
+      if (event.type === 'playing') restorePlaybackVolume(audio);
+      discordPushRef.current?.(0);
+    };
   }
   /* Те же коэффициенты для любого момента перекрытия. Используется в rAF,
      в эффекте громкости и при драге ползунка — кривую нельзя дублировать,
      иначе правки в одном месте разъезжаются с остальными. */
-  function xfadeGains(xf, now) {
-    return xfadeGain((now - xf.t0) / xf.dur);
+  function xfadeGains(xf) {
+    return xf.envelope.sample(xf.to.currentTime, xf.to.playbackRate);
   }
 
   /* Список, по которому играет SC-очередь. Порядок веток повторяет
@@ -12841,16 +12949,14 @@ function App() {
   }
 
   function ensureDeckB() {
-    if (deckBRef.current) return deckBRef.current;
-    const b = HOT_STORE.deckB || new Audio();
+    if (deckBRef.current && deckBRef.current !== audioRef.current) return deckBRef.current;
+    const b = HOT_STORE.deckB && HOT_STORE.deckB !== audioRef.current ? HOT_STORE.deckB : new Audio();
     HOT_STORE.deckB = b;
     /* см. инициализацию Audio: атрибут обязан стоять до первого src */
     b.crossOrigin = 'anonymous';
     b.preload = 'auto';
     b.volume = 0;
-    bindDeck(b, handleDeckTime(b), handleDeckEnded(b), () => {
-      if (audioRef.current === b) discordPushRef.current?.(0);
-    });
+    bindDeck(b, handleDeckTime(b), handleDeckEnded(b), handleDeckPlayback(b));
     deckBRef.current = b;
     /* вторая дека создаётся лениво, уже после того, как могли включить
        эквалайзер — иначе она играла бы в обход фильтров */
@@ -12865,25 +12971,15 @@ function App() {
       /* уходящая дека шкалой не управляет: иначе прогресс-бар и полоса
          в дискорде откатывались бы назад на каждом её timeupdate */
       if (audioRef.current !== audio) return;
-      if (!audio.duration) return;
-      progressRef.current = audio.currentTime / audio.duration;
+      const duration = mediaDuration(audio, trackRef.current);
+      if (!duration) return;
+      progressRef.current = Math.min(1, audio.currentTime / duration);
       discordProgressRef.current = progressRef.current;
       /* полоска прогресса у края окна (вне плеера). Тот же timeupdate, что и у
          слайдера: своего rAF-цикла не заводим — плавность между тиками даёт
          linear-transition у #accent-fill */
       setMiniProgress(progressRef.current);
-      /* Старый fade-out — только когда настоящего перекрытия нет. Иначе он
-         погасил бы ВХОДЯЩУЮ деку: у неё в начале remaining большой, но
-         ровно в момент подмены audioRef она ещё считалась старой. */
-      const cf = settingsRef.current?.crossfade || 0;
-      if (cf > 0 && !xfadeRef.current) {
-        const remaining = audio.duration - audio.currentTime;
-        if (remaining <= cf && remaining > 0) {
-          audio.volume = Math.max(0, volumeRef.current * (remaining / cf));
-        } else if (remaining > cf && audio.volume !== volumeRef.current) {
-          audio.volume = volumeRef.current; // восстанавливаем если seek после fade
-        }
-      }
+      xfadeTickRef.current?.();
     };
   }
 
@@ -12893,19 +12989,65 @@ function App() {
          трек: следующий уже играет, он и есть текущий. Просто заканчиваем
          перекрытие (на всякий случай: если окно не доделалось). */
       if (outgoingRef.current?.audio === audio) { finishCrossfade(); return; }
+      /* Standby тоже может прислать ended после очистки src. */
+      if (audioRef.current !== audio) return;
+      const prime = xfadePrimeRef.current;
+      if (prime?.ready && startCrossfade(prime.next, prime)) return;
       handleNextRef.current?.();
     };
   }
 
   /* Стадия 1: заранее резолвим и монтируем следующий трек. */
-  async function primeNextSc(curId) {
-    const next = peekNextSc();
-    if (!next) return;
+  const playbackKey = t => t?.path ? `local:${t.path}` : `sc:${t?.id}`;
+
+  function peekNextPlayback() {
+    if (scPlayingTrackRef.current) return peekNextSc();
+    const current = trackRef.current;
+    if (!current?.path) return null;
+    const list = searchRef.current ? filteredRef.current : localTracksRef.current;
+    if (!list.length) return null;
+    if (shuffleOnRef.current) {
+      const candidates = list.filter(t => t.path !== current.path);
+      if (!candidates.length) return null;
+      return { track: candidates[Math.floor(Math.random() * candidates.length)], step: null };
+    }
+    const index = list.findIndex(t => t.path === current.path);
+    const next = list[index + 1] || (repeatRef.current === 'all' ? list[0] : null);
+    return next && next.path !== current.path ? { track: next, step: null } : null;
+  }
+
+  function primeStillValid(prime) {
+    if (!prime || prime.forId !== playbackKey(trackRef.current)
+      || prime.intro !== crossfadeSettings(settingsRef.current).intro
+      || prime.shuffle !== shuffleOnRef.current || prime.repeat !== repeatRef.current) return false;
+    const list = scPlayingTrackRef.current ? scQueueList()
+      : searchRef.current ? filteredRef.current : localTracksRef.current;
+    if (!list.some(t => playbackKey(t) === prime.trackId)) return false;
+    if (prime.shuffle) {
+      // peek() may construct a fresh random cycle at repeat-all. Keep the first
+      // reserved step, rather than drawing a different next track every tick.
+      const eng = shuffleStateRef.current;
+      return !scPlayingTrackRef.current || (prime.shuffleOrder === eng.order && prime.shufflePos === eng.pos);
+    }
+    return playbackKey(peekNextPlayback()?.track) === prime.trackId;
+  }
+
+  async function primeNextPlayback(current, next) {
     const b = ensureDeckB();
     if (!b) return;
-    const prime = { forId: curId, trackId: next.track.id, url: null, isHls: false, failed: false };
+    const config = crossfadeSettings(settingsRef.current);
+    const prime = { forId: playbackKey(current), trackId: playbackKey(next.track), next,
+      url: null, isHls: false, failed: false, ready: false, starting: false,
+      intro: config.intro, controller: new AbortController(), audio: b };
+    prime.shuffle = shuffleOnRef.current;
+    prime.repeat = repeatRef.current;
+    prime.shuffleOrder = shuffleStateRef.current.order;
+    prime.shufflePos = shuffleStateRef.current.pos;
     xfadePrimeRef.current = prime;
-    const r = await resolveScUrl(next.track);
+    b.__sewPrime = prime;
+    b.pause();
+    b.volume = 0;
+    const r = next.track.path ? { url: fileSrc(next.track.path), isHls: false } : await resolveScUrl(next.track);
     /* Пока шли запросы, могли сменить трек, ползунок или уйти из плейера —
        тогда prime уже никому не нужен, а смонтированный hls надо убить. */
     if (xfadePrimeRef.current !== prime) return;
@@ -12917,119 +13059,123 @@ function App() {
          ушли из плеера) — тогда смонтированный инстанс некому гасить,
          кроме нас: deckBHlsRef принадлежит уже другому префетчу, а этот
          осиротевший держал бы открытый стрим вечно. */
-      if (xfadePrimeRef.current !== prime || !Hls.isSupported()) {
-        prime.failed = true; return;
+      if (xfadePrimeRef.current !== prime) return;
+      if (Hls.isSupported()) {
+        const hls = new Hls({ maxBufferLength: 20, maxMaxBufferLength: 30,
+          startPosition: crossfadeIntroPosition(config.intro, next.track.duration) });
+        deckBHlsRef.current = hls;
+        hls.on(Hls.Events.ERROR, (_, data) => {
+          if (data.fatal && xfadePrimeRef.current === prime) {
+            prime.failed = true;
+            prime.controller.abort();
+          }
+        });
+        hls.loadSource(r.url);
+        hls.attachMedia(b);
+      } else {
+        b.src = r.url;
+        b.load();
       }
-      const hls = new Hls();
-      deckBHlsRef.current = hls;
-      hls.loadSource(r.url);
-      hls.attachMedia(b);          // с этого момента hls.js сам тянет буфер
     } else {
       b.src = r.url;
       b.load();
+    }
+    try {
+      await waitForDeck(b, { position: prime.intro, duration: next.track.duration,
+        bufferSeconds: Math.min(6, config.seconds + 1) * (b.playbackRate || 1), signal: prime.controller.signal });
+      if (xfadePrimeRef.current === prime) { prime.ready = true; xfadeTickRef.current?.(); }
+    } catch {
+      if (xfadePrimeRef.current === prime) prime.failed = true;
     }
   }
 
   /* Стадия 2: включаем вторую деку и пускаем перекрытие. */
   function startCrossfade(peek, prime) {
     const cur = audioRef.current;
-    const b   = deckBRef.current;
-    const cf  = settingsRef.current?.crossfade || 0;
-    const curTrack = scPlayingTrackRef.current;
-    if (!cur || !b || !cf || !prime?.url || !curTrack) return false;
-    /* Окно перекрытия не должно быть длиннее, чем осталось уходящего
-       трека: иначе ровно в момент его 'ended' fade ещё не закончен. */
-    const remainMs = Math.max(XFADE_MIN_MS, (cur.duration - cur.currentTime) * 1000);
-    const t0 = performance.now();
-    /* currentTime у ещё неготового элемента бросает InvalidStateError в части
-       движков — деку мы чаще всего запускаем сразу после load(), не дожидаясь
-       метаданных. Ноль там и так стоит у нового элемента. */
-    try { b.currentTime = 0; } catch {}
+    const b = prime?.audio;
+    const curTrack = trackRef.current;
+    if (prime?.starting && xfadePrimeRef.current === prime) return true;
+    if (!cur || !b || cur === b || !prime?.ready || prime.failed || !peek
+      || !isPlayingRef.current || cur.seeking || trackSwitchingRef.current || repeatRef.current === 'one'
+      || !primeStillValid(prime) || xfadePrimeRef.current !== prime
+      || crossfadeSettings(settingsRef.current).seconds <= 0) return false;
+    prime.starting = true;
+    cur.volume = volumeRef.current;
     b.volume = 0;
-
-    /* Коммитим позицию в shuffle-порядке: следующий трек становится текущим
-       уже сейчас. Откатить придётся, если переключение отменят (см.
-       abortCrossfade) — без этого «вперёд» посреди перекрытия съедал бы
-       два трека сразу. Снимок берём ДО peek'а иного трека: сам peek ничего
-       не меняет, но заворот при repeat-all возвращает новый порядок, и его
-       откатывать не нужно — откатываем ровно то, что было до перекрытия. */
-    const xf = {
-      from: cur, to: b, t0, dur: Math.min(cf * 1000, remainMs),
-      prevShuffle: shuffleStateRef.current.snapshot(),
-      /* для отката, если вторую деку запустить не дадут */
-      prevTrack: curTrack, prevProgress: progressRef.current,
+    let timer;
+    const fail = () => {
+      clearTimeout(timer);
+      if (xfadePrimeRef.current !== prime) return;
+      prime.failed = true;
+      prime.starting = false;
+      b.pause();
+      cur.volume = volumeRef.current;
+      if (cur.ended && audioRef.current === cur) handleNextRef.current?.();
     };
-    if (peek.step) shuffleStateRef.current.commit(peek.step);
-
-    /* Подмена дек. audioRef теперь указывает на входящий трек — ProgressBar
-       читает его currentTime каждый кадр и сам поедет по новому треку. */
-    outgoingRef.current = { audio: cur, hls: hlsRef.current };
-    hlsRef.current      = deckBHlsRef.current;
-    deckBHlsRef.current = null;
-    audioRef.current    = b;
-    xfadeRef.current    = xf;
-    xfadePrimeRef.current = null;
-    trackSwitchingRef.current = true;
-
-    const resolved = { ...peek.track, resolvedUrl: prime.url };
-    setScPlayingTrack(resolved);
-    setScPlayingIdx(scTracksRef.current.indexOf(peek.track));
-    progressRef.current = 0;
-    discordProgressRef.current = 0;
-
-    const run = (now) => {
-      const x = xfadeRef.current;
-      if (!x || x !== xf) return;         // перекрытие отменили
-      const g = xfadeGains(x, now);
-      const v = volumeRef.current;
-      if (x.from) x.from.volume = g.out * v;
-      x.to.volume = g.in * v;
-      if (g.in < 1) { xfadeRafRef.current = requestAnimationFrame(run); return; }
-      finishCrossfade();
-    };
-    xfadeRafRef.current = requestAnimationFrame(run);
-
-    b.play().catch(() => revertCrossfade());
+    (async () => {
+      try {
+        await Promise.race([b.play(), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('crossfade play timeout')), 4000);
+        })]);
+        clearTimeout(timer);
+        if (xfadePrimeRef.current !== prime || audioRef.current !== cur) {
+          if (b.__sewPrime === prime && b !== audioRef.current) b.pause();
+          return;
+        }
+        if (prime.controller.signal.aborted || !isPlayingRef.current || b.paused || b.ended
+          || !primeStillValid(prime) || crossfadeSettings(settingsRef.current).seconds <= 0) { fail(); return; }
+        const config = crossfadeSettings(settingsRef.current);
+        const rate = Math.max(0.1, cur.playbackRate || 1);
+        const duration = mediaDuration(cur, curTrack);
+        const nextDuration = mediaDuration(b, peek.track);
+        const seconds = Math.min(crossfadeDuration(config, duration, nextDuration, rate),
+          Math.max(0, (duration - cur.currentTime) / rate));
+        const xf = { from: cur, to: b,
+          envelope: new CrossfadeEnvelope({ seconds, curve: config.curve, position: b.currentTime }) };
+        if (peek.step) shuffleStateRef.current.commit(peek.step);
+        const pair = rotateDecks(cur, b);
+        outgoingRef.current = { audio: cur, hls: hlsRef.current };
+        hlsRef.current = deckBHlsRef.current;
+        deckBHlsRef.current = null;
+        audioRef.current = pair.current;
+        deckBRef.current = pair.standby;
+        HOT_STORE.audio = pair.current;
+        HOT_STORE.deckB = pair.standby;
+        xfadeRef.current = xf;
+        xfadePrimeRef.current = null;
+        b.__sewPrime = null;
+        trackSwitchingRef.current = false;
+        const resolved = { ...peek.track, duration: nextDuration || peek.track.duration, resolvedUrl: prime.url };
+        // Refs are updated before any playback event can publish the old track.
+        trackRef.current = resolved;
+        if (peek.track.path) {
+          b.__sewTrackPath = peek.track.path;
+          HOT_STORE.trackSrc = fileSrc(peek.track.path);
+          scPlayingTrackRef.current = null;
+          setScPlayingTrack(null);
+          setTrackIdx(localTracksRef.current.findIndex(t => t.path === peek.track.path));
+        } else {
+          HOT_STORE.trackSrc = null;
+          scPlayingTrackRef.current = resolved;
+          setScPlayingTrack(resolved);
+          setScPlayingIdx(scTracksRef.current.findIndex(t => t.id === peek.track.id));
+        }
+        progressRef.current = nextDuration > 0 ? b.currentTime / nextDuration : 0;
+        discordProgressRef.current = progressRef.current;
+        setMiniProgress(progressRef.current);
+        discordPushRef.current?.(0);
+        const run = () => {
+          if (xfadeRef.current !== xf) return;
+          const gains = xfadeGains(xf);
+          xf.from.volume = gains.out * volumeRef.current;
+          xf.to.volume = gains.in * volumeRef.current;
+          if (xf.envelope.done || xf.from.ended) { finishCrossfade(); return; }
+          xfadeRafRef.current = requestAnimationFrame(run);
+        };
+        run();
+      } catch { fail(); }
+    })();
     return true;
-  }
-
-  /* play() второй деки не разрешили (autoplay-политика webview). К этому
-     моменту деки уже поменяны местами и UI уже показывает следующий трек,
-     поэтому «просто отменить» мало — надо вернуть и звук, и карточку. */
-  function revertCrossfade() {
-    const xf = xfadeRef.current;
-    if (!xf) return;
-    cancelAnimationFrame(xfadeRafRef.current);
-    xfadeRafRef.current = 0;
-    xfadeRef.current = null;
-
-    /* hls ВХОДЯЩЕГО трека уже переехал в hlsRef. Убиваем его: он иначе
-       остался бы жить на деке, которая сейчас уходит обратно в standby, и
-       молча тянул бы сегменты. */
-    if (hlsRef.current) { try { hlsRef.current.destroy(); } catch {} }
-    hlsRef.current = null;
-
-    const o = outgoingRef.current;
-    outgoingRef.current = null;
-    if (o) {
-      /* Уходящая дека всё это время ИГРАЛА — её не глушим, наоборот:
-         возвращаем её в бой на прежней позиции. */
-      audioRef.current = o.audio;
-      hlsRef.current = o.hls || null;
-      o.audio.volume = volumeRef.current;
-      if (o.audio.paused) o.audio.play().catch(() => setIsPlaying(false));
-    }
-    xfadePrimeRef.current = null;
-    if (deckBRef.current && deckBRef.current !== audioRef.current) {
-      deckBRef.current.pause();
-      try { deckBRef.current.src = ''; } catch {}
-    }
-    shuffleStateRef.current.restore(xf.prevShuffle);
-    xfadePrimeRef.current = null;
-    trackSwitchingRef.current = false;
-    setScPlayingTrack(xf.prevTrack);
-    progressRef.current = xf.prevProgress;
-    discordProgressRef.current = xf.prevProgress;
   }
 
   function finishCrossfade() {
@@ -13046,6 +13192,8 @@ function App() {
     if (o) {
       o.audio.pause();
       o.audio.src = '';
+      o.audio.__sewTrackPath = null;
+      o.audio.volume = 0;
       if (o.hls) { try { o.hls.destroy(); } catch {} }
     }
     trackSwitchingRef.current = false;
@@ -13055,28 +13203,26 @@ function App() {
     discordPushRef.current?.(0);
   }
 
-  /* Отмена перекрытия. revertQueue=true для путей, которые СРАЗУ переключат
-     трек (next/prev/клик по строке): очередь возвращается на шаг назад,
-     иначе следующий peek увидит уже сдвинутую позицию. Для паузы/seek
-     откатывать нечего — следующий трек остаётся текущим по-настоящему. */
-  function abortCrossfade({ revertQueue = false } = {}) {
+  /* После коммита входящий трек действительно текущий. Отмена не откатывает
+     очередь: «вперёд» во время перехода должно брать следующий после него. */
+  function abortCrossfade() {
+    const prime = xfadePrimeRef.current;
+    xfadePrimeRef.current = null;
+    prime?.controller?.abort();
+    if (prime && prime.audio.__sewPrime === prime) prime.audio.__sewPrime = null;
     cancelAnimationFrame(xfadeRafRef.current);
     xfadeRafRef.current = 0;
-    const xf = xfadeRef.current;
     xfadeRef.current = null;
     const o = outgoingRef.current;
     outgoingRef.current = null;
     if (o) {
       o.audio.pause();
       o.audio.src = '';
+      o.audio.__sewTrackPath = null;
+      o.audio.volume = 0;
       if (o.hls) { try { o.hls.destroy(); } catch {} }
     }
-    if (xf && revertQueue) shuffleStateRef.current.restore(xf.prevShuffle);
-    /* Сбрасываем standby-деку БЕЗУСЛОВНО, даже если перекрытие не шло.
-       Префетч живёт в фоне до 12 секунд, и всё это время на деке висит
-       смонтированный hls. Если за это время трек переключили по клику,
-       handleScTrackClick повесит на тот же элемент hls.loadSource() и
-       audio.src = ... — два источника на один <audio>, и начинается каша. */
+    /* Сбрасываем standby и его HLS, даже если был лишь фоновый префетч. */
     if (deckBHlsRef.current) { try { deckBHlsRef.current.destroy(); } catch {} }
     deckBHlsRef.current = null;
     if (deckBRef.current && deckBRef.current !== audioRef.current) {
@@ -13085,74 +13231,80 @@ function App() {
     }
     xfadePrimeRef.current = null;
     trackSwitchingRef.current = false;
+    if (audioRef.current) audioRef.current.volume = volumeRef.current;
   }
 
-  /* Тик расписания. Крутится всегда, пока играет SC-трек: интервал в 250мс
-     дёшево, зато окно перекрытия нельзя пропустить — оно идёт по currentTime
-     элемента, а не по таймеру. */
+  /* Расписание обеих дек использует актуальные refs и аудиопозицию.
+     timeupdate дополняет интервал, в том числе в свёрнутом окне. */
   function xfadeTick() {
-    const cf = settingsRef.current?.crossfade || 0;
-    if (cf <= 0) return;
+    const config = crossfadeSettings(settingsRef.current);
+    if (config.seconds <= 0 || !isPlayingRef.current) return;
     const cur = audioRef.current;
-    const curTrack = scPlayingTrackRef.current;
-    if (!cur || !curTrack) return;
-    /* repeat-one — это перезапуск того же трека, кроссфейдить нечего */
-    if (repeatRef.current === 'one') return;
+    const curTrack = trackRef.current;
+    if (!cur || !curTrack || cur.paused || cur.seeking || trackSwitchingRef.current) return;
     /* Перекрытие уже идёт — крутим rAF, ничего трогать нельзя */
-    if (xfadeRef.current) return;
+    if (xfadeRef.current) {
+      const xf = xfadeRef.current;
+      const gains = xfadeGains(xf);
+      xf.from.volume = gains.out * volumeRef.current;
+      xf.to.volume = gains.in * volumeRef.current;
+      if (xf.envelope.done || xf.from.ended) finishCrossfade();
+      return;
+    }
+    /* repeat-one — это перезапуск того же трека, кроссфейдить нечего */
+    if (repeatRef.current === 'one') {
+      if (xfadePrimeRef.current) abortCrossfade();
+      return;
+    }
     /* hls-стрим иногда отдаёт duration = Infinity (плейлист ещё не разобран).
        Без подпорки окно не открылось бы никогда и кроссфейд молча
        не работал бы на части треков. */
-    const dur = (isFinite(cur.duration) && cur.duration > 0)
-      ? cur.duration
-      : (curTrack.duration || 0);
+    const dur = mediaDuration(cur, curTrack);
     if (!dur) return;
-    const remaining = dur - cur.currentTime;
-
-    if (remaining <= cf) {
-      const prime = xfadePrimeRef.current;
-      if (prime && !prime.failed && prime.url) {
-        const peek = peekNextSc();
-        if (peek && peek.track.id === prime.trackId && startCrossfade(peek, prime)) return;
-      }
-      return;   // префетча нет — старый fade доиграет, потом handleNext
+    const rate = Math.max(0.1, cur.playbackRate || 1);
+    const remaining = (dur - cur.currentTime) / rate;
+    let prime = xfadePrimeRef.current;
+    if (prime && (prime.forId !== playbackKey(curTrack) || prime.intro !== config.intro)) {
+      abortCrossfade();
+      prime = null;
     }
-    /* Окно для префетча. Ниже 6с ждать бессмысленно: сеть всё равно не
-       успеет, и второй play() придётся уже в стык. */
-    const primeAt = Math.max(cf + XFADE_PRIME_LEAD, 6);
+    if (prime) {
+      if (!primeStillValid(prime)) { abortCrossfade(); return; }
+      if (prime.failed || prime.starting) return;
+      const seconds = crossfadeDuration(config, dur, mediaDuration(prime.audio, prime.next.track), rate);
+      if (remaining <= seconds && prime.ready) startCrossfade(prime.next, prime);
+      return;
+    }
+    /* Сеть и декодер получают запас до начала перекрытия. */
+    const primeAt = config.seconds + XFADE_PRIME_LEAD;
     if (remaining <= primeAt) {
-      const prime = xfadePrimeRef.current;
-      if (prime && (prime.forId !== curTrack.id || prime.failed)) {
-        /* Префетч не подошёл: либо переключили трек, либо ссылка не
-           разрешилась. Сбрасываем и НЕ пробуем снова на этом треке: тик идёт
-           каждые 250мс, и повтор на каждый чих сети превратился бы в
-           4 запроса в секунду. На этом переходе просто отработает старый
-           fade — тишины будет столько же, сколько была раньше. */
-        if (deckBHlsRef.current) { try { deckBHlsRef.current.destroy(); } catch {} }
-        deckBHlsRef.current = null;
-        xfadePrimeRef.current = null;
-      } else if (!prime) {
-        /* Догрузка бесконечной ленты: без неё очередь кончится и кроссфейд
-           выключится на середине альбома. Условия те же, что в handleNext. */
-        const list = scQueueList();
-        if (searchQueueRef.current) {
-          const eng = shuffleStateRef.current;
-          if (shuffleOnRef.current) {
-            if (eng.left() <= 3) searchViewRef.current?.loadMore();
-          } else if (list.findIndex(t => t.id === curTrack.id) + 1 >= list.length - 3) {
-            searchViewRef.current?.loadMore();
-          }
+      /* Догрузка бесконечной ленты: без неё очередь кончится и кроссфейд
+         выключится на середине альбома. Условия те же, что в handleNext. */
+      const list = scQueueList();
+      if (scPlayingTrackRef.current && searchQueueRef.current) {
+        const eng = shuffleStateRef.current;
+        if (shuffleOnRef.current) {
+          if (eng.left() <= 3) searchViewRef.current?.loadMore();
+        } else if (list.findIndex(t => t.id === curTrack.id) + 1 >= list.length - 3) {
+          searchViewRef.current?.loadMore();
         }
-        primeNextSc(curTrack.id);
       }
+      const next = peekNextPlayback();
+      if (next && playbackKey(next.track) !== playbackKey(curTrack)) primeNextPlayback(curTrack, next)
+        .catch(() => { if (xfadePrimeRef.current?.forId === playbackKey(curTrack)) xfadePrimeRef.current.failed = true; });
     }
   }
 
+  xfadeTickRef.current = xfadeTick;
   useEffect(() => {
-    if (!isPlaying || !scPlayingTrack) return;
-    const id = setInterval(xfadeTick, 250);
+    if (!isPlaying || !settings.crossfade) return;
+    const id = setInterval(() => xfadeTickRef.current?.(), 150);
     return () => clearInterval(id);
-  }, [isPlaying, scPlayingTrack?.id]);
+  }, [isPlaying, settings.crossfade]);
+
+  useEffect(() => {
+    if (crossfadeSettings(settings).seconds <= 0 && (xfadeRef.current || xfadePrimeRef.current)) abortCrossfade();
+  }, [settings.crossfade]);
 
   async function handleScTrackClick(scTrack, idx, autoSkip = false, skipCount = 0, direction = 1) {
     /* Токен запроса. handleScTrackClick делает await'ы (streamUrl, потом HLS),
@@ -13180,7 +13332,7 @@ function App() {
     destroyHls();
 
     const auth = scAuthRef.current;
-    if (!auth) { setLoadingTrackId(null); setIsPlaying(false); return; }
+    if (!auth) { trackSwitchingRef.current = false; setLoadingTrackId(null); setIsPlaying(false); return; }
 
     if (!autoSkip && shuffle) {
       /* Клик по треку в перемешанном режиме: он встаёт первым, остальное
@@ -13270,6 +13422,8 @@ function App() {
     }
 
     const resolved = { ...scTrack, resolvedUrl };
+    scPlayingTrackRef.current = resolved;
+    trackRef.current = resolved;
     setScPlayingTrack(resolved);
 
     const audio = audioRef.current;
@@ -13278,12 +13432,13 @@ function App() {
        обязан сброситься, иначе после правки файла локальный трек, выбранный
        следом, не перезагрузится в элемент */
     HOT_STORE.trackSrc = null;
+    audio.__sewTrackPath = null;
 
-    const cf = settingsRef.current?.crossfade || 0;
-    audio.volume = cf > 0 ? 0 : volumeRef.current;
+    restorePlaybackVolume(audio);
     audio.addEventListener('playing', () => {
+      if (stale() || audioRef.current !== audio || scPlayingTrackRef.current?.id !== scTrack.id) return;
       trackSwitchingRef.current = false;
-      startFadeIn(audio);
+      restorePlaybackVolume(audio);
     }, { once: true });
 
     if (isHls) {
@@ -13308,6 +13463,7 @@ function App() {
         setIsPlaying(true);
       });
       hls.on(Hls.Events.LEVEL_LOADED, (_, data) => {
+        if (stale() || audioRef.current !== audio || scPlayingTrackRef.current?.id !== scTrack.id) return;
         const dur = Math.floor(data.details.totalduration || 0);
         if (dur) setScPlayingTrack(prev => prev ? { ...prev, duration: dur } : prev);
       });
@@ -13315,8 +13471,9 @@ function App() {
       audio.src = resolvedUrl;
       audio.load();
       audio.addEventListener('loadedmetadata', () => {
+        if (stale() || audioRef.current !== audio || scPlayingTrackRef.current?.id !== scTrack.id) return;
         const dur = Math.floor(audio.duration);
-        if (dur) setScPlayingTrack(prev => prev ? { ...prev, duration: dur } : prev);
+        if (Number.isFinite(dur) && dur > 0) setScPlayingTrack(prev => prev ? { ...prev, duration: dur } : prev);
       }, { once: true });
       audio.play().then(() => setLoadingTrackId(null)).catch(() => { setLoadingTrackId(null); setIsPlaying(false); });
       setIsPlaying(true);
@@ -13472,6 +13629,7 @@ function App() {
     }
     const idx = tracks.indexOf(t);
     if (idx < 0) return;
+    if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
     setScPlayingTrack(null);
     if (idx === trackIdx) {
       /* Клик по уже загруженному треку. Раньше здесь был
@@ -13492,7 +13650,7 @@ function App() {
            позиции. Подробности в ветке repeat === 'one' */
         discordProgressRef.current = 0;
         pushDiscord(0);
-        startFadeIn(audio);
+        restorePlaybackVolume(audio);
         audio.play().catch(() => setIsPlaying(false));
       }
       setIsPlaying(true);

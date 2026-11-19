@@ -487,15 +487,64 @@
     width:14px; height:14px; border:none; border-radius:50%; background:#fff;
     box-shadow:0 1px 4px rgba(0,0,0,0.5);
   }
+  /* Нативный input сохраняет управление и клавиатуру; видимая ручка
+     движется непрерывно, независимо от дискретного шага input.value. */
+  .smooth-slider { position:relative; height:28px; }
+  .smooth-slider-track {
+    position:absolute; left:7px; right:7px; top:12px; height:4px;
+    border-radius:2px; background:rgba(255,255,255,0.1); pointer-events:none;
+  }
+  .smooth-slider-fill {
+    position:absolute; inset:0; border-radius:inherit;
+    background:var(--accent); transform-origin:left center;
+  }
+  .smooth-slider-thumb {
+    position:absolute; left:0; top:7px; width:14px; height:14px;
+    border-radius:50%; background:var(--text); pointer-events:none;
+    box-shadow:0 1px 4px rgba(7,7,10,0.45);
+    transition:box-shadow 0.2s ease;
+  }
+  .th-range.smooth-slider-input {
+    position:absolute; inset:0; width:100%; height:100%; min-height:0;
+    margin:0; padding:0; border:0; opacity:0; touch-action:pan-y;
+  }
+  .smooth-slider:not([data-disabled]):hover .smooth-slider-thumb,
+  .smooth-slider:focus-within .smooth-slider-thumb {
+    box-shadow:0 0 0 4px rgba(var(--accent-rgb),0.12), 0 1px 4px rgba(7,7,10,0.45);
+  }
+  .crossfade-curves { display:flex; flex-wrap:wrap; gap:10px; }
+  .crossfade-curve {
+    position:relative; display:flex; align-items:center; justify-content:center; gap:8px;
+    padding:9px 12px; border:0; border-radius:10px; background:transparent;
+    font:inherit; font-size:var(--fs-sm); color:rgba(237,237,244,0.48);
+    cursor:pointer; isolation:isolate; transition:color 0.2s ease;
+  }
+  .crossfade-curve[aria-pressed="true"] { color:var(--text); }
+  .crossfade-curve-active {
+    position:absolute; inset:0; border-radius:inherit; z-index:-1;
+    background:rgba(var(--accent-rgb),0.15);
+  }
+  .crossfade-curve svg { display:block; width:34px; height:22px; flex-shrink:0; }
+  .crossfade-curve:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+  .crossfade-preview { padding:2px 16px 14px; }
+  .crossfade-preview > svg { display:block; width:100%; height:144px; overflow:visible; }
+  .crossfade-preview-labels {
+    display:flex; justify-content:space-between; gap:16px; margin-top:4px;
+    font-size:var(--fs-xs); color:rgba(237,237,244,0.46);
+  }
+  .crossfade-preview-labels > :last-child { color:var(--accent); }
+  @media (prefers-reduced-motion:reduce) {
+    .smooth-slider-thumb, .crossfade-curve { transition:none; }
+  }
+
   /* ── полосы панели эффектов (плеер) ─────────────────────────────────────
      Свои, а не .th-range, по двум причинам: у нативного трека заливка растёт
      от левого края, а вертикальному фейдеру эквалайзера и знаковому
      ползунку тона нужна центровка от нуля; плюс полоса шириной 30px
      системным бегунком не попадается мышью. Значения, позиции и transition
-     ставит компонент инлайном (transition зависит от того, тянут сейчас
-     ручку или нет), здесь — только внешний вид и отклик наведения.
-     transition в css намеренно НЕТ: инлайновый transition перекрыл бы его,
-     и hover-масштаб прыгал бы без анимации. */
+     ставит компонент через motion values, здесь только внешний вид и
+     отклик наведения. CSS-transition движения нет, spring уже сглаживает
+     позицию, а отдельный hover-масштаб ручки с ним не конфликтует. */
   .eq-fader {
     position:relative; width:100%; height:100%;
     cursor:ns-resize; touch-action:none; outline:none;
