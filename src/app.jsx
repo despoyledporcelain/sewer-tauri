@@ -23,6 +23,7 @@ import './bridge.js'
 import { fileSrc } from './bridge.js'
 /* порядок перемешивания: перестановка + курсор в одном месте (src/shuffle.js) */
 import { Shuffle } from './shuffle.js'
+import { discordSnapshot, updateDiscordPlayback } from './discord-presence.js'
 
 
 /* десктоп-поведение вместо сайт-поведения:
@@ -2459,13 +2460,19 @@ const AFX_SCHEMA = 14;
 
 /* перевесить обработчики деки так, чтобы после подмены модуля на элементе не
    остались прежние: иначе timeupdate обрабатывался бы дважды, трижды, ... */
-function bindDeck(el, onTime, onEnded) {
+function bindDeck(el, onTime, onEnded, onPlayback) {
   if (el.__sewTime)  el.removeEventListener('timeupdate', el.__sewTime);
   if (el.__sewEnded) el.removeEventListener('ended',      el.__sewEnded);
   el.__sewTime  = onTime;
   el.__sewEnded = onEnded;
   el.addEventListener('timeupdate', onTime);
   el.addEventListener('ended',      onEnded);
+  const events = ['playing', 'pause', 'waiting', 'seeking', 'seeked', 'ratechange', 'loadedmetadata', 'durationchange', 'ended', 'emptied', 'timeupdate'];
+  if (el.__sewRpc) for (const event of events) el.removeEventListener(event, el.__sewRpc);
+  el.__sewRpc = event => {
+    if (updateDiscordPlayback(el, event.type)) onPlayback?.();
+  };
+  for (const event of events) el.addEventListener(event, el.__sewRpc);
 }
 
 /* Звук правится ОДНИМ AudioContext на приложение: два контекста дали бы две
@@ -10653,6 +10660,7 @@ function App() {
   const libSearchRef      = useRef(null);
   const searchViewRef     = useRef(null);
   const discordTimerRef    = useRef(null);
+  const discordPushRef     = useRef(null);
   const discordProgressRef = useRef(0);
   /* статус rpc приходит из main ('off'|'connecting'|'connected'|'disconnected').
      раньше ошибки подключения глотались пустым catch и в ui было видно ровно
@@ -11247,12 +11255,18 @@ function App() {
        назад на каждом кадре кроссфейда. */
     const onTime  = handleDeckTime(audio);
     const onEnded = handleDeckEnded(audio);
-    bindDeck(audio, onTime, onEnded);
+    bindDeck(audio, onTime, onEnded, () => {
+      if (audioRef.current === audio) discordPushRef.current?.(0);
+    });
 
     return () => {
       if (audio.__sewTime)  audio.removeEventListener('timeupdate', audio.__sewTime);
       if (audio.__sewEnded) audio.removeEventListener('ended',      audio.__sewEnded);
       audio.__sewTime = audio.__sewEnded = null;
+      if (audio.__sewRpc) {
+        for (const event of ['playing', 'pause', 'waiting', 'seeking', 'seeked', 'ratechange', 'loadedmetadata', 'durationchange', 'ended', 'emptied', 'timeupdate']) audio.removeEventListener(event, audio.__sewRpc);
+        audio.__sewRpc = null;
+      }
       /* подмена модуля: элемент и граф продолжают жить, обработчики заново
          навесит следующий mount. всё, что ниже, оборвало бы трек — а значит
          обрывало бы музыку на каждой правке файла */
@@ -11539,51 +11553,25 @@ function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [view, editingPlaylist]);
 
-  /* единственная точка сборки присутствия. раньше таких было две (эффект
-     ниже + копия внутри handleSeek) — они делили ОДИН discordTimerRef,
-     поэтому взаимно отменяли дебаунс друг друга и расходились в мелочах
-     (в seek-копии при !discordRpc был `return` вместо discordClear, а
-     isPlaying брался из ref, здесь — из state) */
+  /* Один снимок текущей деки; backend хранит последний и доставляет его
+     независимо от обложки, сети и переподключения Discord. */
   const pushDiscord = useCallback((delay) => {
     clearTimeout(discordTimerRef.current);
     discordTimerRef.current = setTimeout(() => {
       const s = settingsRef.current;
-      if (!s.discordRpc || !track) return;   /* выключенным rpc'ом рулит main */
-      if (!isPlayingRef.current && s.discordPause === 'hide') { window.electronAPI?.discordClear?.(); return; }
-      let coverUrl = null;
-      if (s.discordCover !== false) {
-        const direct = track.coverUrl || '';
-        /* sc-обложки — обычные https-ссылки, их discord берёт сам.
-           локальные приходят data-url'ом (getCoverArt) — их надо сначала
-           загрузить в дискорд, этим занимается main по coverKey */
-        if (direct.startsWith('https://') || direct.startsWith('data:image')) coverUrl = direct;
-        if (!coverUrl && scPlayingTrack) {
-          const cached = scCacheMapRef.current.get(track.id);
-          if (cached?.coverUrl?.startsWith('https://')) coverUrl = cached.coverUrl;
-        }
-      }
-      window.electronAPI?.discordUpdate?.({
-        title:     track.title,
-        artist:    track.artist,
-        duration:  track.duration,
-        progress:  discordProgressRef.current,
-        /* Момент, в который прочитали progress — unix-мс. Discord рисует
-           полосу как (Date.now() клиента − start)/(end − start) на стороне
-           КАЖДОГО клиента его часами, поэтому start обязан считаться от
-           замера, а не от отправки: между замером и отправкой лежит
-           загрузка data-url обложки в Discord (до 8+15 с), троттлинг и
-           ожидание ответа — и каждый такой сдвиг уезжал вперёд навсегда,
-            потому что пересчёта по таймеру нет. Значение измерено теми же
-            системными часами, что видит main; main затем снимает их сдвиг по
-            HTTP Date, прежде чем отправить абсолютный unix-time в Discord. */
-        sampledAt: Date.now(),
-        coverUrl,
-        coverKey:  track.id,
-        isPlaying: isPlayingRef.current,
-        timestamp: s.discordTimestamp || 'progress',
+      const currentTrack = trackRef.current;
+      if (!s.discordRpc) return;
+      const snapshot = discordSnapshot({
+        track: currentTrack,
+        originalTrack: scPlayingTrackRef.current ? scCacheMapRef.current.get(currentTrack?.id) : null,
+        audio: audioRef.current, settings: s, playing: isPlayingRef.current,
+        switching: trackSwitchingRef.current, progress: discordProgressRef.current,
       });
+      if (!snapshot) { window.electronAPI?.discordClear?.(); return; }
+      window.electronAPI?.discordUpdate?.(snapshot)?.catch?.(error => console.warn('[discord]', error));
     }, delay);
   }, [track, scPlayingTrack]);
+  discordPushRef.current = pushDiscord;
 
   /* deps по полям трека, а не по track?.id: coverUrl у локальных приезжает
      асинхронно (loadCovers), duration уточняется в loadedmetadata. при
@@ -11592,9 +11580,22 @@ function App() {
      pushDiscord в списке обязателен: он пересобирается на каждый новый объект
      трека, и без него переименование (commitEdit) меняло title в state, но
      эффект держал старое замыкание — присутствие оставалось с прежним названием */
-  useEffect(() => { pushDiscord(800); },
+  useEffect(() => { pushDiscord(0); },
     [pushDiscord, track?.id, track?.coverUrl, track?.duration, isPlaying, scPlayingTrack,
-     settings.discordRpc, settings.discordTimestamp, settings.discordPause, settings.discordCover]);
+      rpcWanted, settings.discordRpc, settings.discordTimestamp, settings.discordPause, settings.discordCover]);
+
+  useEffect(() => {
+    const timer = setInterval(() => discordPushRef.current?.(0), 5000);
+    const wake = () => discordPushRef.current?.(0);
+    window.addEventListener('focus', wake);
+    document.addEventListener('visibilitychange', wake);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(discordTimerRef.current);
+      window.removeEventListener('focus', wake);
+      document.removeEventListener('visibilitychange', wake);
+    };
+  }, []);
 
   /* ── Медиа-панель ОС (Windows «Сейчас играет» / громкость) ────────────────
      ⚠️ ЭТО НЕ ДУБЛИРУЕТ globalShortcut в main.js, а дополняет его.
@@ -11724,7 +11725,9 @@ function App() {
      main в connect, и пользователь с выключенным rpc получал лишний
      connect/disconnect на каждом запуске. реальное значение ставит
      загрузка настроек ниже (cleanDiscordSettings) */
-  useEffect(() => { window.electronAPI?.discordSetEnabled?.(rpcWanted === true); }, [rpcWanted]);
+  useEffect(() => {
+    window.electronAPI?.discordSetEnabled?.(rpcWanted !== null && settings.discordRpc !== false);
+  }, [rpcWanted, settings.discordRpc]);
 
   useEffect(() => {
     const off = window.electronAPI?.onDiscordStatus?.(setDiscordStatus);
@@ -12845,7 +12848,9 @@ function App() {
     b.crossOrigin = 'anonymous';
     b.preload = 'auto';
     b.volume = 0;
-    bindDeck(b, handleDeckTime(b), handleDeckEnded(b));
+    bindDeck(b, handleDeckTime(b), handleDeckEnded(b), () => {
+      if (audioRef.current === b) discordPushRef.current?.(0);
+    });
     deckBRef.current = b;
     /* вторая дека создаётся лениво, уже после того, как могли включить
        эквалайзер — иначе она играла бы в обход фильтров */
@@ -13047,6 +13052,7 @@ function App() {
     if (audioRef.current && audioRef.current.volume !== volumeRef.current) {
       audioRef.current.volume = volumeRef.current;
     }
+    discordPushRef.current?.(0);
   }
 
   /* Отмена перекрытия. revertQueue=true для путей, которые СРАЗУ переключат
