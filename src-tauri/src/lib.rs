@@ -15,9 +15,11 @@ mod soundcloud;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::{json, Value};
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -35,6 +37,17 @@ pub struct AppState {
     http: reqwest::Client,
     sc: soundcloud::ScState,
     rpc: tokio::sync::mpsc::UnboundedSender<discord::Cmd>,
+    clock: Arc<tokio::sync::Mutex<ClockSync>>,
+}
+
+#[derive(Default)]
+struct ClockSync {
+    /// Успешная сверка. От неё настоящее время продолжается монотонно, даже
+    /// если Windows-часы после этого поправили вручную или через NTP.
+    checked_at: Option<Instant>,
+    true_at_ms: Option<i64>,
+    /// Неуспешную сверку повторяем не на каждый rpc-пульс, а через минуту.
+    failed_at: Option<Instant>,
 }
 
 fn http_client() -> reqwest::Client {
@@ -120,6 +133,7 @@ fn exit_now(app: &AppHandle) {
 
 pub fn run() {
     let http = http_client();
+    let clock = Arc::new(tokio::sync::Mutex::new(ClockSync::default()));
 
     tauri::Builder::default()
         /* порядок плагинов значим: single-instance должен быть первым */
@@ -149,6 +163,15 @@ pub fn run() {
                 http: http.clone(),
                 sc: soundcloud::ScState::default(),
                 rpc,
+                clock: clock.clone(),
+            });
+
+            /* Сверяемся сразу при старте. Если первый discord-update придёт
+               раньше, он подождёт этот же mutex и уйдёт уже с поправкой. */
+            let clock_http = http.clone();
+            let clock_state = clock.clone();
+            tauri::async_runtime::spawn(async move {
+                refresh_clock(&clock_http, &clock_state).await;
             });
 
             build_tray(&handle)?;
@@ -326,6 +349,181 @@ fn set_window_effect(window: tauri::WebviewWindow, effect: String) -> bool {
 #[tauri::command(rename = "system-accent")]
 fn system_accent() -> Option<String> {
     backdrop::accent_hex()
+}
+
+// ── сверка часов ──────────────────────────────────────────────────────────
+
+fn local_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// `Thu, 19 Nov 2026 14:47:54 GMT` → unix-секунды. Разбор свой: формат у
+/// `Date` фиксированный (IMF-fixdate), и тащить ради одной строки крейт незачем.
+fn parse_http_date(s: &str) -> Option<i64> {
+    /* «Thu, » отбрасываем: день недели нам не нужен, он только мешает */
+    let rest = s.trim().splitn(2, ", ").nth(1)?;
+    let mut parts = rest.split(' ');
+    let day: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = match parts.next()? {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year: i64 = parts.next()?.parse().ok()?;
+    let mut hms = parts.next()?.split(':');
+    let h: i64 = hms.next()?.parse().ok()?;
+    let m: i64 = hms.next()?.parse().ok()?;
+    let sec: i64 = hms.next()?.parse().ok()?;
+    if hms.next().is_some()
+        || parts.next()? != "GMT"
+        || parts.next().is_some()
+        || !(1..=31).contains(&day)
+        || !(0..=23).contains(&h)
+        || !(0..=59).contains(&m)
+        || !(0..=60).contains(&sec)
+    {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + h * 3_600 + m * 60 + sec)
+}
+
+/// Дни с 1970-01-01 по григорианскому календарю (алгоритм Хауарда Хиннанта).
+/// Вычитание с константой вместо библиотеки дат: нужно ровно это, и только тут.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Одна проба сетевого времени. `Date` имеет точность только до секунды,
+/// поэтому берём середину этой секунды и середину оборота запроса. `Age`
+/// добавляется для кэшированного ответа: по HTTP текущее время такого ответа
+/// приблизительно равно `Date + Age`.
+async fn clock_sample(http: reqwest::Client, host: &'static str) -> Option<i64> {
+    let t0 = local_ms();
+    let res = tokio::time::timeout(Duration::from_secs(4), http.head(host).send())
+        .await
+        .ok()?
+        .ok()?;
+    let t1 = local_ms();
+    let rtt = t1.checked_sub(t0)?;
+    /* Если часы перевели прямо во время запроса либо сеть зависла, проба хуже
+       отсутствующей. Внешний timeout — 4 с, 5 с оставлены с запасом округления. */
+    if !(0..=5_000).contains(&rtt) {
+        return None;
+    }
+    let headers = res.headers();
+    let date_s = headers
+        .get(reqwest::header::DATE)?
+        .to_str()
+        .ok()
+        .and_then(parse_http_date)?;
+    let age_s = headers
+        .get(reqwest::header::AGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0)
+        .clamp(0, 86_400);
+    let server_ms = date_s
+        .saturating_add(age_s)
+        .saturating_mul(1000)
+        .saturating_add(500);
+    Some(t0.saturating_add(rtt / 2).saturating_sub(server_ms))
+}
+
+/// Насколько местные часы ушли вперёд относительно сети, в миллисекундах.
+/// Все хосты и повторы идут параллельно: мёртвый Discord не должен задержать
+/// живой SoundCloud. Медиана отсекает кэшированный или кривой одиночный ответ.
+async fn measure_clock_offset(http: &reqwest::Client) -> Option<i64> {
+    const HOSTS: [&str; 3] = [
+        "https://api-v2.soundcloud.com/",
+        "https://www.cloudflare.com/",
+        "https://discord.com/api/v9/gateway",
+    ];
+    let mut pending = FuturesUnordered::new();
+    for host in HOSTS {
+        pending.push(clock_sample(http.clone(), host));
+        pending.push(clock_sample(http.clone(), host));
+    }
+    let mut samples: Vec<i64> = Vec::with_capacity(4);
+    while let Some(sample) = pending.next().await {
+        if let Some(v) = sample {
+            samples.push(v);
+            /* Обычно это по две пробы SoundCloud и Cloudflare за 100–300 мс.
+               Мёртвый Discord после этого ждать до timeout уже незачем. */
+            if samples.len() >= 4 {
+                break;
+            }
+        }
+    }
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_unstable();
+    let mid = samples.len() / 2;
+    Some(if samples.len() % 2 == 0 {
+        samples[mid - 1].saturating_add(samples[mid]) / 2
+    } else {
+        samples[mid]
+    })
+}
+
+/// Раз в десять минут сверяем часы: discord рисует прогресс на своей стороне
+/// как `его сейчас − наш start`, поэтому наше отставание видно всем зрителям
+/// (а владельцу нет — у него позиция из `currentTime`). Ошибка часов в
+/// полминуты — это полминуты разъезда у каждого, кто смотрит профиль.
+async fn refresh_clock(http: &reqwest::Client, state: &tokio::sync::Mutex<ClockSync>) {
+    const EVERY: Duration = Duration::from_secs(10 * 60);
+    const RETRY: Duration = Duration::from_secs(60);
+
+    /* Mutex держится и во время сети намеренно: параллельный discord-update
+       ждёт ту же сверку, а не успевает отправить activity с нулевой поправкой. */
+    let mut sync = state.lock().await;
+    if let (Some(at), Some(true_at_ms)) = (sync.checked_at, sync.true_at_ms) {
+        /* Продолжаем последнее сетевое время через монотонный Instant. Так
+           ручная правка Windows-часов не портит presence даже без новой сети. */
+        let elapsed_ms = at.elapsed().as_millis().min(i64::MAX as u128) as i64;
+        let true_now = true_at_ms.saturating_add(elapsed_ms);
+        let live_offset = local_ms().saturating_sub(true_now);
+        discord::set_clock_offset_ms(live_offset);
+        if at.elapsed() < EVERY {
+            return;
+        }
+    }
+    if sync.failed_at.is_some_and(|t| t.elapsed() < RETRY) {
+        return;
+    }
+
+    if let Some(offset) = measure_clock_offset(http).await {
+        discord::set_clock_offset_ms(offset);
+        sync.checked_at = Some(Instant::now());
+        sync.true_at_ms = Some(local_ms().saturating_sub(offset));
+        sync.failed_at = None;
+        settings::log(&format!(
+            "[clock] поправка времени для discord: {:+.3} с",
+            -(offset as f64) / 1000.0
+        ));
+    } else {
+        sync.failed_at = Some(Instant::now());
+        settings::log("[clock] не удалось сверить время; повтор через минуту");
+    }
 }
 
 #[tauri::command(rename = "win-minimize")]
@@ -564,7 +762,10 @@ fn discord_rpc_enabled(state: State<'_, AppState>, r#on: bool) {
 }
 
 #[tauri::command(rename = "discord-update")]
-fn discord_update(state: State<'_, AppState>, data: Value) {
+async fn discord_update(state: State<'_, AppState>, data: Value) -> Result<(), String> {
+    /* перед сборкой presence: иначе первый апдейт уедет с часами этой машины.
+       Обычно это заглушка за отметкой времени, запрос — раз в десять минут */
+    refresh_clock(&state.http, &state.clock).await;
     let presence = discord::Presence {
         title: str_field(&data, "title"),
         artist: str_field(&data, "artist"),
@@ -582,6 +783,7 @@ fn discord_update(state: State<'_, AppState>, data: Value) {
         },
     };
     let _ = state.rpc.send(discord::Cmd::Update(Box::new(presence)));
+    Ok(())
 }
 
 #[tauri::command(rename = "discord-clear")]
@@ -600,4 +802,33 @@ fn num_field(data: &Value, key: &str) -> f64 {
         .and_then(Value::as_f64)
         .filter(|v| v.is_finite())
         .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Сверка часов держится на этом разборе: ошибка в нём сдвинула бы таймеры
+    /// у всех зрителей и была бы незаметной — поэтому даты проверяем явно.
+    #[test]
+    fn http_date_parses() {
+        assert_eq!(parse_http_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        /* пример из RFC 9110 */
+        assert_eq!(
+            parse_http_date("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(1_445_412_480)
+        );
+        /* настоящий ответ сервера, на котором это и всплыло */
+        assert_eq!(
+            parse_http_date("Thu, 19 Nov 2026 14:47:54 GMT"),
+            Some(1_795_099_674)
+        );
+        /* 29 февраля: високосный год не должен уехать на сутки */
+        assert_eq!(
+            parse_http_date("Thu, 29 Feb 2024 23:59:59 GMT"),
+            Some(1_709_251_199)
+        );
+        assert_eq!(parse_http_date("мусор"), None);
+        assert_eq!(parse_http_date("Thu, 19 Nov 2026 14:47:54 CET"), None);
+    }
 }

@@ -19,7 +19,7 @@
 //! с проверками — в docs/discord-rpc-audit.md.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -687,7 +687,9 @@ fn anchor_s(p: &Presence) -> i64 {
         return now;
     }
     let ms = p.sampled_at_ms.min(i64::MAX as f64) as i64;
-    let s = ms / 1000;
+    /* замер сделан местными часами, а start уходит в discord настоящим:
+       без этой поправки полоса у зрителей уезжает на всё отставание часов */
+    let s = apply_clock_offset(ms, clock_offset_ms()) / 1000;
     let skew = (s - now).abs();
     if skew > MAX_ANCHOR_SKEW_S { now } else { s }
 }
@@ -784,10 +786,40 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Насколько местные часы ушли от настоящего времени, в миллисекундах:
+/// положительное — спешат. Ставит `refresh_clock` из lib.rs, сверившись по
+/// `Date` от сервера.
+///
+/// Зачем: discord рисует полосу сам, `их сейчас − наш start`. start —
+/// абсолютный unix-таймстамп из часов этой машины, поэтому чужие часы
+/// сдвигают прогресс у ВСЕХ зрителей на столько же и в ту же сторону.
+/// Здесь часы отставали на 32 секунды — у зрителей трек был на 32 секунды
+/// впереди, а у владельца всё правильно: плеер считает по `currentTime`.
+static CLOCK_OFFSET_MS: AtomicI64 = AtomicI64::new(0);
+
+pub fn set_clock_offset_ms(v: i64) {
+    CLOCK_OFFSET_MS.store(v, Ordering::Relaxed);
+}
+
+fn clock_offset_ms() -> i64 {
+    CLOCK_OFFSET_MS.load(Ordering::Relaxed)
+}
+
+fn apply_clock_offset(local_ms: i64, offset_ms: i64) -> i64 {
+    /* offset = local − network. Поэтому местные часы, которые отстают на 20с,
+       дают offset=-20с и получают +20с. saturating — защита от мусора. */
+    local_ms.saturating_sub(offset_ms)
+}
+
+/// Местные часы с поправкой — то, что discord должен видеть как «сейчас».
+fn true_ms() -> i64 {
+    apply_clock_offset(now_ms(), clock_offset_ms())
+}
+
 /// Секунды unix — именно в них discord ждёт `timestamps.start/end`.
 /// В миллисекундах таймер отображается как 0:00.
 fn now_s() -> i64 {
-    now_ms() / 1000
+    true_ms() / 1000
 }
 
 fn data_url_to_bytes(data_url: &str) -> Option<(String, Vec<u8>)> {
@@ -1657,6 +1689,15 @@ mod tests {
             retry_delay: Duration::from_millis(1500),
             fatal: None,
         }
+    }
+
+    #[test]
+    fn поправка_часов_имеет_правильный_знак() {
+        /* местные часы отстают: local-network=-20с, значит к ним надо +20с */
+        assert_eq!(apply_clock_offset(1_000_000, -20_000), 1_020_000);
+        /* местные часы спешат: вычитаем опережение */
+        assert_eq!(apply_clock_offset(1_000_000, 12_000), 988_000);
+        assert_eq!(apply_clock_offset(i64::MAX, -1), i64::MAX);
     }
 
     #[test]
