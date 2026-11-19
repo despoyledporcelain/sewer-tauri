@@ -36,6 +36,10 @@
     --grain:        0.022;   /* сила зерна поверх панели */
     --vignette:     0.5;      /* затемнение краёв */
     --bg-image:     none;    /* градиент поверх --bg */
+    /* Поверхность всплывающих панелей (меню ПКМ, форма карандаша, диалоги).
+       App пересчитывает её из фона темы (popupSurface), здесь — страховка на
+       первый кадр и на случай, пока настройки не прочитаны. */
+    --pop-bg:       rgba(24,24,24,0.97);
 
     /* типографическая лестница — 7 ступеней вместо 16 разрозненных значений.
        раньше каждое подбиралось под конкретный элемент: соседние 10.5/11/11.5
@@ -341,6 +345,37 @@
     transition:transform 0.3s cubic-bezier(0.34,1.56,0.64,1), opacity 0.16s ease;
   }
   .home-card:hover .home-card-play { transform:scale(1); opacity:1; }
+  /* Появление карточки в сетке (поиск/первый рендер). Анимируются только
+     opacity и transform — их считает композитор, раскладка не пересобирается.
+     `backwards` держит карточку прозрачной, пока идёт задержка каскада, а
+     после окончания снимает transform — поэтому hover ниже снова работает
+     (у framer инлайновый transform перебивал css :hover, см. выше).
+     Отдельный класс, а не общий `.home-card`: тот же класс носят карточки
+     плейлистов и станций, и подъём при наведении им не заказывали. */
+  @keyframes cardIn {
+    from { opacity:0; transform:translateY(8px) scale(0.97); }
+    to   { opacity:1; transform:none; }
+  }
+  .home-card-anim {
+    animation: cardIn 0.26s cubic-bezier(0.22,1,0.36,1) backwards;
+    transition: transform 0.22s cubic-bezier(0.22,1,0.36,1);
+  }
+  /* каскад первой дюжины карточек; остальные стартуют вместе с двенадцатой —
+     ждать полсекунды сороковой строке незачем */
+  .home-card-anim:nth-child(1)  { animation-delay: 0s; }
+  .home-card-anim:nth-child(2)  { animation-delay: 0.018s; }
+  .home-card-anim:nth-child(3)  { animation-delay: 0.036s; }
+  .home-card-anim:nth-child(4)  { animation-delay: 0.054s; }
+  .home-card-anim:nth-child(5)  { animation-delay: 0.072s; }
+  .home-card-anim:nth-child(6)  { animation-delay: 0.09s; }
+  .home-card-anim:nth-child(7)  { animation-delay: 0.108s; }
+  .home-card-anim:nth-child(8)  { animation-delay: 0.126s; }
+  .home-card-anim:nth-child(9)  { animation-delay: 0.144s; }
+  .home-card-anim:nth-child(10) { animation-delay: 0.162s; }
+  .home-card-anim:nth-child(11) { animation-delay: 0.18s; }
+  .home-card-anim:nth-child(12) { animation-delay: 0.198s; }
+  .home-card-anim:nth-child(n+13) { animation-delay: 0.198s; }
+  .home-card-anim:hover { transform:scale(1.03); }
   /* like: spring pop + accent glow (var(--accent-rgb) перетекает с глобальным акцентом) */
   @keyframes likePop {
     0%   { transform:scale(1); }
@@ -391,6 +426,29 @@
      вместе с transform предка. С translateY пилл перепроецируется и дёргается
      на первом кадре (тот же грабли, что описаны в SettingsView). */
   @keyframes setIn { from { opacity:0 } to { opacity:1 } }
+  /* появление строки текста: снизу и с прозрачностью. Волна по строкам — не
+     transition, а именно анимация: строки пересоздаются (key списка меняется
+     при каждом открытии панели и при смене источника), и анимация на свежем
+     узле играет всегда, а transition на «уже проявленном» узле — нет.
+     `backwards` держит строку прозрачной, пока идёт её задержка: без него
+     нижние строки успевали бы мелькнуть до старта. */
+  @keyframes lyricLineIn {
+    from { opacity:0; transform:translateY(7px); }
+    to   { opacity:1; transform:none; }
+  }
+
+  /* вспышка текущей строки текста: в момент, когда строка становится
+     текущей, акцентное свечение вспыхивает и оседает до рабочего уровня.
+     Это keyframes, а не transition: transition ведёт переход между двумя
+     значениями, а вспышка — короткий пик, которого в конечном стиле нет.
+     перезапуск получается сам: у новой строки animation меняется с none на
+     имя, и браузер играет её заново. Конечный кадр совпадает с инлайновым
+     text-shadow, поэтому после анимации ничего не дёргается. */
+  @keyframes lyricLit {
+    from { text-shadow: 0 0 40px rgba(var(--accent-rgb),0.9), 0 0 9px rgba(var(--accent-rgb),0.65); }
+    to   { text-shadow: 0 0 26px rgba(var(--accent-rgb),0.42), 0 0 4px rgba(var(--accent-rgb),0.35); }
+  }
+
   /* редактор плейлиста: hover обложки и карандаш у названия */
   div:hover > .pl-art-hover { opacity:1; }
   .pl-title-edit:hover .pl-title-pencil { opacity:1; }

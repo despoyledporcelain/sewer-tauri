@@ -28,10 +28,12 @@
 use std::ffi::c_void;
 
 use tauri::WebviewWindow;
+use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DwmSetWindowAttribute, DWMSBT_MAINWINDOW, DWMSBT_NONE,
-    DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
+    DwmGetColorizationColor, DwmGetWindowAttribute, DwmSetWindowAttribute,
+    DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMWA_SYSTEMBACKDROP_TYPE,
+    DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
     DWMWCP_DONOTROUND, DWMWCP_ROUND,
 };
 
@@ -167,4 +169,28 @@ pub fn apply(window: &WebviewWindow, on: bool) -> bool {
         return true;
     }
     get(hwnd, ATTR_BACKDROP) == Some(DWMSBT_MAINWINDOW)
+}
+
+/// Акцент Windows в виде `#rrggbb` — тот самый цвет, которым система красит
+/// заголовки окон, границы и материал. Нужен тонировке обложек «в цвет
+/// системы»: без него третий режим пришлось бы держать на своём акценте, и он
+/// не совпадал бы с микой.
+///
+/// `DwmGetColorizationColor` отдаёт AARRGGBB вместе с флагом непрозрачности.
+/// Старшие байты альфы нас не интересуют: тонировка — это `mix-blend-mode:
+/// color`, где берутся оттенок и насыщенность источника, а яркость остаётся у
+/// обложки. Поэтому возвращаем только RGB.
+pub fn accent_hex() -> Option<String> {
+    let mut argb: u32 = 0;
+    let mut opaque: BOOL = 0;
+    let hr = unsafe { DwmGetColorizationColor(&mut argb, &mut opaque) } as i32;
+    if hr < HRESULT_OK {
+        return None;
+    }
+    Some(format!(
+        "#{:02x}{:02x}{:02x}",
+        (argb >> 16) & 0xff,
+        (argb >> 8) & 0xff,
+        argb & 0xff
+    ))
 }

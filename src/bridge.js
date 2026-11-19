@@ -72,6 +72,9 @@ window.electronAPI = {
      ниже 22H2 принимает вызов и не рисует ничего, и без этой проверки тумблер
      выглядел бы включённым, но нерабочим (см. src-tauri/src/backdrop.rs) */
   setWindowEffect: effect => invoke('set-window-effect', { effect }),
+  /* Акцент Windows ('#rrggbb') — источник для тонировки обложек «в цвет
+     системы». Может прийти null, если DWM не отдал цвет. */
+  systemAccent: () => invoke('system-accent'),
 
   /* ── локальная библиотека ─────────────────────────────────────────────── */
   selectMusicFolder: () => invoke('dialog-select-folder'),
@@ -177,6 +180,7 @@ window.electronAPI = {
   scLoadLikesCache: () => invoke('sc-load-likes-cache'),
   scSaveLikesCache: data => invoke('sc-save-likes-cache', { data }),
   scDownloadTrack: t => invoke('sc-download-track', { t }),
+  scHasFfmpeg: () => invoke('sc-has-ffmpeg'),
   onDownloadProgress: cb => on('download-progress', cb),
 
   /* ── discord rpc ──────────────────────────────────────────────────────── */

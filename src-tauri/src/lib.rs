@@ -14,7 +14,8 @@ mod settings;
 mod soundcloud;
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -71,25 +72,48 @@ fn minimize_to_tray() -> bool {
         .unwrap_or(false)
 }
 
+/// Выход уже пошёл. Ставится в [`exit_now`] первым делом: повторный крестик
+/// или трей-«Выйти» во время очистки не должен запускать вторую задачу выхода
+/// и второй `discord::Cmd::SetEnabled(false)`.
+static EXITING: AtomicBool = AtomicBool::new(false);
+
 /// Выход с очисткой присутствия. Electron делал это в before-quit с
 /// preventDefault: библиотека discord не имеет таймаута на запрос, и
 /// висящий клиент (pipe полуоткрыт) держал закрытие навсегда.
 ///
-/// ⚠️ 250 мс тут больше не хватает. Раньше `SetEnabled(false)` уходил в
-/// `CLEAR_ACTIVITY`, который дискорд отклоняет кодом 4002, то есть очистка
-/// не работала вовсе и ждать было нечего. Теперь это настоящий
-/// `SET_ACTIVITY` с `activity: null` — round-trip по каналу плюс `shutdown()`,
-/// который ждёт выхода обоих потоков (до 1.2 с). 250 мс обрывало это
-/// на полпути, и карточка оставалась на экране discord до следующего запуска.
-/// Ждём generously: сетевого round-trip тут нет, всё локально, так что 1.5 с
-/// это в основном время выхода потоков, а не «на всякий случай».
+/// ⚠️ Раньше здесь стоял фиксированный `sleep(1500)` до `handle.exit`, и всё
+/// это время окно оставалось на экране и не отвечало — фронтенд к моменту
+/// закрытия уже не живёт, так что крестик выглядел как «приложение зависло на
+/// секунду-две». Ждать действительно нужно (дискорд снимает карточку только
+/// после настоящего `SET_ACTIVITY` с `activity: null` плюс выхода потоков
+/// канала, см. `discord::drop_conn`), но ждать его ОКНОМ не обязательно:
+/// окно убираем сразу, а процесс выходит, когда очистка закончилась.
+///
+/// Сигнал приходит из `discord::is_quiet()`. 1.5 с остались потолком на
+/// случай, когда очередь дискорда занята чем-то долгим (например загрузкой
+/// обложки), а нормой стал круг по локальному каналу и выход потоков — обычно
+/// сотни миллисекунд, и окна к этому моменту на экране уже нет.
 fn exit_now(app: &AppHandle) {
+    if EXITING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    /* приложение для пользователя закрыто здесь, одним кадром. остальное —
+       уже его личные дела с discord, и они не должны держать окно */
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Some(state) = handle.try_state::<AppState>() {
             let _ = state.rpc.send(discord::Cmd::SetEnabled(false));
         }
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        /* 20 мс — шаг опроса: сигнал выставляется в другой задаче, и ждать
+           его событием здесь нечем (oneshot потребовал бы тащить ответ через
+           очередь команд). полторы секунды такого опроса — это 75 проб */
+        while !discord::is_quiet() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         handle.exit(0);
     });
 }
@@ -100,7 +124,13 @@ pub fn run() {
     tauri::Builder::default()
         /* порядок плагинов значим: single-instance должен быть первым */
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            /* второй запуск просто поднимает уже открытое окно */
+            /* второй запуск просто поднимает уже открытое окно. Но если мы в
+               этот момент уже выходим (окно скрыто, ждём очистку discord), то
+               показывать его нельзя: через доли секунды процесс умрёт, и
+               пользователь увидит окно, которое тут же исчезло само */
+            if EXITING.load(Ordering::SeqCst) {
+                return;
+            }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.set_focus();
@@ -200,10 +230,12 @@ pub fn run() {
             sc_load_likes_cache,
             sc_save_likes_cache,
             sc_download_track,
+            sc_has_ffmpeg,
             discord_update,
             discord_clear,
             discord_rpc_enabled,
             set_window_effect,
+            system_accent,
         ])
         .run(tauri::generate_context!())
         .expect("seWer: запуск tauri");
@@ -287,6 +319,13 @@ fn register_media_keys(app: &AppHandle) {
 #[tauri::command(rename = "set-window-effect")]
 fn set_window_effect(window: tauri::WebviewWindow, effect: String) -> bool {
     backdrop::apply(&window, effect == "mica")
+}
+
+/// Акцент Windows для тонировки обложек. `None` — система не отдала цвет;
+/// рендерер в этом случае держит нейтральный серый, а не красит всё в чёрный.
+#[tauri::command(rename = "system-accent")]
+fn system_accent() -> Option<String> {
+    backdrop::accent_hex()
 }
 
 #[tauri::command(rename = "win-minimize")]
@@ -511,6 +550,14 @@ async fn sc_download_track(
     t: download::DownloadReq,
 ) -> Result<Value, String> {
     Ok(download::sc_download_track(&app, &state.http, t).await)
+}
+
+/// Есть ли ffmpeg: от этого зависит, будет ли hls-трек в mp3 или в m4a.
+/// Спрашивает диалог скачивания, чтобы не обещать в имени файла одно,
+/// а сохранить другое.
+#[tauri::command(rename = "sc-has-ffmpeg")]
+fn sc_has_ffmpeg(app: AppHandle) -> bool {
+    download::has_ffmpeg(&app)
 }
 
 // ── discord ───────────────────────────────────────────────────────────────
