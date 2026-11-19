@@ -24,10 +24,16 @@ import { fileSrc } from './bridge.js'
 /* порядок перемешивания: перестановка + курсор в одном месте (src/shuffle.js) */
 import { Shuffle } from './shuffle.js'
 import { discordSnapshot, updateDiscordPlayback } from './discord-presence.js'
-import { CROSSFADE_MAX, crossfadeSettings, cleanCrossfadeSettings, crossfadeGains,
+import { CROSSFADE_MAX, crossfadeSettings, cleanCrossfadeSettings,
   crossfadeDuration, crossfadeIntroPosition, crossfadeCurvePoints, mixCurvePoints,
   mediaDuration, rotateDecks, CrossfadeEnvelope, waitForDeck } from './crossfade.js'
 import { sliderFraction, sliderValue, pointerFraction } from './slider.js'
+import { Disclosure, DisclosureLayout } from './disclosure.jsx'
+import { MiniPlayer } from './mini-player.jsx'
+import { addListeningHistory, cleanListeningHistory, historyTrackKey } from './listening-history.js'
+import { useListeningHistory } from './use-listening-history.js'
+import { useHistoryCovers } from './use-history-covers.js'
+import { HistoryIcon, ListeningHistory } from './listening-history.jsx'
 
 
 /* десктоп-поведение вместо сайт-поведения:
@@ -1873,6 +1879,15 @@ const STRINGS = {
     nav_tracks:'Треки', nav_search:'Поиск', nav_player:'Плеер', nav_playlists:'Плейлисты',
     nav_local:'Локальная библиотека', nav_settings:'Настройки',
     player_pick:'Выбери трек',
+    mini_player:'Миниплеер', playback_previous:'Предыдущий трек', playback_next:'Следующий трек',
+    mini_player_open:'Открыть плеер',
+    nav_history:'История прослушиваний', history_title:'История', history_subtitle:'Прослушанное в этом приложении',
+    history_count:'Прослушиваний: {n}', history_clear:'Очистить', history_confirm_clear:'Удалить историю?',
+    history_empty:'Здесь будет твоя музыка', history_empty_hint:'Включи трек. Через несколько секунд он появится здесь.',
+    history_play_error:'Не удалось включить трек', history_login:'Войди в soundcloud, чтобы включить этот трек',
+    history_local:'локально', history_unavailable:'Файл больше не в библиотеке',
+    history_today:'Сегодня', history_yesterday:'Вчера',
+    playback_play:'Воспроизвести', playback_pause:'Пауза', track_untitled:'Без названия',
     card_window:'Окно',
     /* ⚠️ Три строки текста в этой плашке были абзацем на весь ряд. Правило
        «что именно несовместимо» осталось, порядок действий («сначала выключи
@@ -2041,6 +2056,7 @@ const STRINGS = {
     ui_vignette:'Виньетка', ui_vignette_sub:'Затемнение по краям окна',
     card_ui:'Элементы интерфейса', ui_hide_sub:'Спрятать лишнее. Всё возвращается здесь же — ничего не пропадает насовсем',
     ui_hide_source:'Переключатель источника', ui_hide_source_sub:'Иконка папки в шапке: локальные треки ↔ облако. Переключать можно и в «Аккаунте»',
+    ui_hide_mini_player:'Миниплеер в шапке', ui_hide_mini_player_sub:'Обложка и управление треком вне плеера',
     ui_hide_volume:'Громкость в плеере', ui_hide_volume_sub:'Тонкий ползунок справа. Громкость остаётся в микшере Windows',
     ui_hide_caption:'Подпись списка', ui_hide_caption_sub:'«Все треки» и счётчик под ним',
     ui_hide_sort:'Сортировка списка', ui_hide_sort_sub:'Чипсы «Добавлено / Артист / Название / Время»',
@@ -2073,6 +2089,15 @@ const STRINGS = {
     nav_tracks:'Tracks', nav_search:'Search', nav_player:'Player', nav_playlists:'Playlists',
     nav_local:'Local library', nav_settings:'Settings',
     player_pick:'Pick a track',
+    mini_player:'Mini player', playback_previous:'Previous track', playback_next:'Next track',
+    mini_player_open:'Open player',
+    nav_history:'Listening history', history_title:'History', history_subtitle:'Played in this app',
+    history_count:'Listens: {n}', history_clear:'Clear', history_confirm_clear:'Delete history?',
+    history_empty:'Your music will appear here', history_empty_hint:'Play a track. It will appear here after a few seconds.',
+    history_play_error:'Could not play this track', history_login:'Sign in to soundcloud to play this track',
+    history_local:'local', history_unavailable:'File is no longer in your library',
+    history_today:'Today', history_yesterday:'Yesterday',
+    playback_play:'Play', playback_pause:'Pause', track_untitled:'Untitled track',
     card_window:'Window',
     /* см. ru — текст ужат до одной строки */
     mica_accent_lock:'Window material is incompatible with the accent glow and a custom background: while it is on, both are off.',
@@ -2227,6 +2252,7 @@ const STRINGS = {
     ui_vignette:'Vignette', ui_vignette_sub:'Darkens the edges of the window',
     card_ui:'Interface elements', ui_hide_sub:'Hide the extra chrome. Everything comes back from here — nothing is lost for good',
     ui_hide_source:'Source switch', ui_hide_source_sub:'Folder icon in the titlebar: local tracks ↔ cloud. You can also switch it in Account',
+    ui_hide_mini_player:'Titlebar mini player', ui_hide_mini_player_sub:'Artwork and playback controls outside the player',
     ui_hide_volume:'Player volume', ui_hide_volume_sub:'Thin slider on the right. Volume stays available in the Windows mixer',
     ui_hide_caption:'List caption', ui_hide_caption_sub:'“All tracks” and the counter under it',
     ui_hide_sort:'List sorting', ui_hide_sort_sub:'“Added / Artist / Title / Time” chips',
@@ -6053,11 +6079,12 @@ function HeroClone({ hero, exiting, reverse = false }) {
 }
 
 /* ── TopBar ──────────────────────────────────────────────────────────────── */
-/* навигация в тайтлбаре: слева аватар→настройки→source-тумблер, по центру
+/* навигация в тайтлбаре: слева настройки→source-тумблер→миниплеер, по центру
    (абсолютно на окно) сегмент Плейлисты|Треки|Плеер|Поиск с горизонтальным
    пиллом, справа collapse библиотеки (только в плеере). рендерится порталами в
    #topbar-slot и #titlebar (тайтлбар — статический html вне react-root) */
-function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth, sourceMode, onToggleSource, hideSource }) {
+function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth, sourceMode, onToggleSource, hideSource, hideMiniPlayer,
+  track, hasTrack, isPlaying, onPrev, onTogglePlayback, onNext }) {
   const t = useLang();
   const navImg = (src, s=17) => <img src={src} style={{width:s, height:s, filter:'brightness(0) invert(1)', display:'block'}}/>;
   const NAV = [
@@ -6065,19 +6092,20 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
     { id:"home",    label:t('nav_tracks'),  icon: navImg('../assets/tracks.png')  },
     { id:"library", label:t('nav_player'),  icon: navImg('../assets/player.png', 19), size:38 },
     { id:"search",  label:t('nav_search'),  icon: navImg('../assets/search.png')  },
+    { id:"history", label:t('nav_history'), icon:<span style={{color:'var(--text)', display:'flex'}}><HistoryIcon/></span> },
   ];
   const folderIcon = navImg('../assets/local.png');
 
   const navRefs = useRef({});
   const navWrapRef = useRef(null);
   const [pillRect, setPillRect] = useState({ left: 0, width: 34, visible: false });
-  /* вкладка «Плеер» стоит ровно по центру окна: сегмент смещается так,
-     чтобы центр library-кнопки попал на 50% ширины (слева 2 вкладки, справа 1) */
+   /* вкладка «Плеер» стоит ровно по центру окна: сегмент смещается так,
+      чтобы центр library-кнопки попал на 50% ширины (по две вкладки с краёв) */
   const [navShift, setNavShift] = useState(0);
 
   useLayoutEffect(() => {
     const el = navRefs.current[navActive];
-    if (!el || (navActive !== 'playlists' && navActive !== 'home' && navActive !== 'search' && navActive !== 'library')) {
+    if (!el || (navActive !== 'playlists' && navActive !== 'home' && navActive !== 'search' && navActive !== 'library' && navActive !== 'history')) {
       setPillRect(p => ({ ...p, visible: false }));
       return;
     }
@@ -6085,17 +6113,23 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
   }, [navActive]);
 
   useLayoutEffect(() => {
+    const bar = document.getElementById('titlebar');
     const measure = () => {
       const wrap = navWrapRef.current, el = navRefs.current['library'];
-      if (!wrap || !el) return;
-      setNavShift(wrap.offsetWidth / 2 - (el.offsetLeft + el.offsetWidth / 2));
+      if (!wrap || !el || !bar) return;
+      const playerCenter = el.offsetLeft + el.offsetWidth / 2;
+      setNavShift(wrap.offsetWidth / 2 - playerCenter);
+      /* Reserve the actual space BEFORE navigation. Covers and text collapse
+         inside this lane, so playback controls cannot push the middle tabs. */
+      bar.style.setProperty('--topbar-left-width', `${Math.max(0, bar.clientWidth / 2 - playerCenter - 10)}px`);
     };
     measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
+    const observer = new ResizeObserver(measure);
+    if (bar) observer.observe(bar);
+    if (navWrapRef.current) observer.observe(navWrapRef.current);
+    return () => { observer.disconnect(); bar?.style.removeProperty('--topbar-left-width'); };
   }, []);
 
-  const NoDrag = { WebkitAppRegion:'no-drag' };
   const slot = document.getElementById('topbar-slot');
   const bar  = document.getElementById('titlebar');
   if (!slot || !bar) return null;
@@ -6126,17 +6160,22 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
     <>
       {createPortal(
         <div style={{display:'flex', alignItems:'center', width:'100%', height:'100%'}}>
-          {/* левый кластер: настройки → source-тумблер */}
-          <div style={{display:'flex', alignItems:'center', gap:2, paddingLeft:10}}>
-            <div style={{WebkitAppRegion:'no-drag'}}>
+          {/* миниплеер остаётся на месте и при паузе; навигация не смещается */}
+          <div className="topbar-left">
+            <div style={{WebkitAppRegion:'no-drag', flexShrink:0}}>
               <NavIcon label={t('nav_settings')} active={navActive==='settings'} onClick={()=>onNav('settings')} size={32}
                 icon={<img src="../assets/settings.png" style={{width:17,height:17,filter:'brightness(0) invert(1)',display:'block'}}/>}/>
             </div>
             {scAuth && !hideSource && (
-              <div style={{WebkitAppRegion:'no-drag'}}>
+              <div style={{WebkitAppRegion:'no-drag', flexShrink:0}}>
                 <NavIcon label={t('nav_local')} active={sourceMode==='local'} onClick={onToggleSource} size={32} icon={folderIcon}/>
               </div>
             )}
+            <MiniPlayer visible={hasTrack && !inPlayer && !hideMiniPlayer} track={track} isPlaying={isPlaying}
+              onPrev={onPrev} onToggle={onTogglePlayback} onNext={onNext} onOpen={()=>onNav('library')}
+              labels={{ player:t('mini_player'), previous:t('playback_previous'), next:t('playback_next'),
+                play:t('playback_play'), pause:t('playback_pause'), untitled:t('track_untitled'),
+                openPlayer:t('mini_player_open') }}/>
           </div>
 
           {/* правая зона: collapse библиотеки (только в плеере) */}
@@ -6212,7 +6251,8 @@ function Card({ title, children, style }) {
           color: SN.faint, marginBottom: 9, paddingLeft: 3,
         }}>{title}</div>
       )}
-      <div style={{ background: SN.panel, borderRadius: 'var(--radius, 14px)', overflow: 'hidden' }}>
+      <div data-disclosure-surface="" style={{ position: 'relative', isolation: 'isolate', borderRadius: 'var(--radius, 14px)' }}>
+        <div data-disclosure-background="" aria-hidden="true" style={{ background: SN.panel }}/>
         {children}
       </div>
     </div>
@@ -6706,7 +6746,14 @@ function Switch({ on, onChange, disabled, label }) {
    а не выбором. Убрана по просьбе. Взамен подложка поднята с 0.15 до 0.2:
    раньше часть контраста пилла давала рамка, и без неё он был бы заметно
    бледнее соседей. */
-function Segmented({ value, options, onChange, disabled, id, stretch, label: groupLabel }) {
+/* Каждая подложка живёт у своего пункта. Никаких общих layoutId:
+   активный чип только проявляется на месте, в том числе при входе в раздел. */
+function SelectionFill({ active, className = '', style }) {
+  return <div aria-hidden="true" className={`selection-fill ${className}`}
+    data-active={String(!!active)} style={style}/>;
+}
+
+function Segmented({ value, options, onChange, disabled, stretch, label: groupLabel }) {
   return (
     <div role={groupLabel ? 'group' : undefined} aria-label={groupLabel} style={{
       display: stretch ? 'flex' : 'inline-flex',
@@ -6730,14 +6777,10 @@ function Segmented({ value, options, onChange, disabled, id, stretch, label: gro
               color: active ? 'rgba(255,255,255,0.92)' : SN.mid,
               transition: 'color 0.18s ease',
             }}>
-            {active && (
-              <motion.div layoutId={id}
-                transition={{ type: 'spring', stiffness: 420, damping: 34, mass: 0.7 }}
-                style={{
-                  position: 'absolute', inset: 0, borderRadius: 9,
-                  background: 'rgba(var(--accent-rgb),0.2)',
-                }}/>
-            )}
+            <SelectionFill active={active} style={{
+              position: 'absolute', inset: 0, borderRadius: 9,
+              background: 'rgba(var(--accent-rgb),0.2)',
+            }}/>
             <span style={{
               position: 'relative', display: 'flex', alignItems: 'center', gap: 6,
               fontSize: 'var(--fs-sm)', fontWeight: active ? 600 : 500, whiteSpace: 'nowrap',
@@ -6886,7 +6929,6 @@ function CrossfadeCurvePreview({ curve }) {
 function CrossfadeCurvePicker({ value, onChange }) {
   const t = useLang();
   const reduced = useReducedMotion();
-  const id = useId();
   return <div className="crossfade-curves" role="group" aria-label={t('crossfade_curve')}>
     {['power', 'smooth', 'linear'].map(curve => {
       const active = curve === value;
@@ -6894,8 +6936,7 @@ function CrossfadeCurvePicker({ value, onChange }) {
       const path = sample.map((p, i) => `${i ? 'L' : 'M'}${(p.x - 12) / 296 * 38 + 3},${(p.y - 14) / 104 * 18 + 3}`).join(' ');
       return <motion.button key={curve} type="button" className="crossfade-curve" aria-pressed={active}
         whileTap={reduced ? undefined : { scale: 0.96 }} onClick={() => { if (!active) onChange(curve); }}>
-        {active && <motion.div className="crossfade-curve-active" layoutId={`crossfade-curve-${id}`}
-          transition={{ duration: reduced ? 0 : 0.28, ease: [0.16, 1, 0.3, 1] }}/>}
+        <SelectionFill active={active} className="crossfade-curve-active"/>
         <svg viewBox="0 0 44 24" aria-hidden="true"><path d={path} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
         <span>{t('crossfade_' + curve)}</span>
       </motion.button>;
@@ -6903,7 +6944,8 @@ function CrossfadeCurvePicker({ value, onChange }) {
   </div>;
 }
 
-/* Кривая на схеме и в звуке считается одной функцией. */
+/* Кривая на схеме и в звуке считается одной функцией. Дополнительные
+   настройки остаются в дереве до завершения плавного закрытия. */
 function CrossfadeControls({ settings, onSettings }) {
   const t = useLang();
   const config = crossfadeSettings(settings);
@@ -6915,7 +6957,7 @@ function CrossfadeControls({ settings, onSettings }) {
         crossfadeLast: config.seconds || settings.crossfadeLast || 5,
       })}/>
     </Row>
-    {config.seconds > 0 && <>
+    <Disclosure open={config.seconds > 0}>
       <MiniSlider label={t('crossfade_length')} min={0.5} max={CROSSFADE_MAX} step={0.5}
         value={config.seconds} display={`${config.seconds} ${t('sec')}`}
         onChange={value => set('crossfade', value)}/>
@@ -6935,34 +6977,38 @@ function CrossfadeControls({ settings, onSettings }) {
       <MiniSlider label={t('crossfade_intro')} min={0} max={10} step={0.5} value={config.intro}
         display={config.intro ? `${config.intro} ${t('sec')}` : t('off')}
         onChange={value => set('crossfadeIntro', value)}/>
-    </>}
+    </Disclosure>
   </Card>;
 }
 
 /* ── ClearCacheCard ───────────────────────────────────────────────────────── */
 function ClearCacheCard({ onClearCoversCache, onClearLikesCache }) {
   const t = useLang();
+  const reduced = useReducedMotion();
   const [confirm, setConfirm] = useState(null);
   /* один confirm на оба кэша вместо двух: подтверждение относится к строке,
      а не к карточке, и два независимых флага держали в состоянии то, что
      всегда нужно не больше одного */
   const row = (label, sub, key, action, last) => (
     <Row label={label} sub={sub} last={last}>
-      {confirm === key ? (
-        <>
+      <Disclosure inline open={confirm === key} style={{ marginLeft: confirm === key ? 0 : -7 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
           <Btn onClick={() => setConfirm(null)}>{t('cancel')}</Btn>
           <Btn tone="danger" onClick={() => { action(); setConfirm(null); }}>{t('del')}</Btn>
-        </>
-      ) : (
+        </div>
+      </Disclosure>
+      <Disclosure inline open={confirm !== key} style={{ marginLeft: confirm === key ? -7 : 0 }}>
         <Btn onClick={() => setConfirm(key)}>{t('clear')}</Btn>
-      )}
+      </Disclosure>
     </Row>
   );
   return (
-    <Card title={t('cache')}>
-      {row(t('covers_cache'), t('covers_cache_sub'), 'covers', onClearCoversCache)}
-      {row(t('likes_cache'), t('likes_cache_sub'), 'likes', onClearLikesCache, true)}
-    </Card>
+    <DisclosureLayout motionKey={confirm} reduced={reduced}>
+      <Card title={t('cache')}>
+        {row(t('covers_cache'), t('covers_cache_sub'), 'covers', onClearCoversCache)}
+        {row(t('likes_cache'), t('likes_cache_sub'), 'likes', onClearLikesCache, true)}
+      </Card>
+    </DisclosureLayout>
   );
 }
 
@@ -7044,14 +7090,13 @@ function LyricsSettings({ settings, onSettings }) {
         </div>
       ))}
 
-      {enabled.length === 0 && (
+      <Disclosure open={enabled.length === 0}>
         <div style={{
           padding: '2px 16px 15px', fontSize: 'var(--fs-xs)', color: SN.faint, lineHeight: 1.45,
         }}>{t('lyrics_all_off')}</div>
-      )}
+      </Disclosure>
 
-      {disabled.length > 0 && (
-        <>
+      <Disclosure open={disabled.length > 0}>
           <div style={{
             padding: '12px 16px 5px',
             fontSize: 'var(--fs-eyebrow)', letterSpacing: '0.1em', textTransform: 'uppercase',
@@ -7070,23 +7115,23 @@ function LyricsSettings({ settings, onSettings }) {
               <Switch on={false} onChange={() => toggle(s.id)}/>
             </div>
           ))}
-        </>
-      )}
+      </Disclosure>
     </Card>
   );
 }
 
 /* ── SettingsView ─────────────────────────────────────────────────────────── */
 /* ── что можно спрятать в интерфейсе ──────────────────────────────────────────
-   Оформление → «Элементы интерфейса». Один объект, а не четыре отдельных поля
-   настроек: все четыре ключа читаются одним смыслом («этот кусок скрыт»), и
-   «вернуть всё» получается одной записью, а не четырьмя.
+   Оформление → «Элементы интерфейса». Один объект вместо отдельных полей
+   настроек: все ключи читаются одним смыслом («этот кусок скрыт»), и
+   «вернуть всё» получается одной записью.
 
    Ключи: source — переключатель источника в шапке, volume — вертикальная
-   громкость в плеере, caption — подпись и счётчик списка, sort — чипсы
+   громкость в плеере, miniPlayer — миниплеер в шапке, caption — подпись и счётчик списка, sort — чипсы
    сортировки. Функциональных тупиков нет: источник переключается в «Аккаунте»,
-   громкость остаётся в микшере Windows, а подпись и чипсы — только оформление. */
-const UI_HIDDEN_NONE = { source:false, volume:false, caption:false, sort:false };
+   громкость остаётся в микшере Windows, управление треками — в плеере,
+   а подпись и чипсы — только оформление. */
+const UI_HIDDEN_NONE = { source:false, miniPlayer:false, volume:false, caption:false, sort:false };
 /* файл настроек может быть старее ключа: недостающее добираем дефолтом, иначе
    `settings.uiHidden.source` — это TypeError на первом же запуске */
 const uiHiddenOf = s => ({ ...UI_HIDDEN_NONE, ...(s && s.uiHidden) });
@@ -7094,6 +7139,7 @@ const uiHiddenOf = s => ({ ...UI_HIDDEN_NONE, ...(s && s.uiHidden) });
 function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFolder, onClearCoversCache, onClearLikesCache, appAccent, scAuth, onScLogin, onScLogout, sec, setSec, discordStatus, winAccent }) {
   const t = useLang();
   const lang = useLangCode();
+  const reduced = useReducedMotion();
   /* Материал окна выключает подсветку акцента — см. карточку акцента */
   const micaOn = settings.windowEffect === 'mica';
   const [scLoading, setScLoading] = useState(false);
@@ -7140,18 +7186,13 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     setScLoading(false);
   };
   const set = (k, v) => onSettings({ ...settings, [k]: v });
-  /* Эквалайзер и транспорт. Значения нормализуются на КАЖДОМ чтении, как и
-     тема: файл мог остаться от версии без этих полей, а ползунок с NaN — это
-     пустая дорожка и `-Infinity` в dB. */
-  const eqGains = Array.isArray(settings.eqGains) && settings.eqGains.length === EQ_BANDS.length
-    ? settings.eqGains.map(v => clampNum(Number(v) || 0, -EQ_GAIN_MAX, EQ_GAIN_MAX))
-    : EQ_FLAT;
+  /* Транспорт: битые настройки не должны давать ползунок с NaN. */
   const speed = clampNum(Number(settings.speed) || 1, SPEED_MIN, SPEED_MAX);
   const pitch = Math.round(clampNum(Number(settings.pitch) || 0, -PITCH_MAX, PITCH_MAX));
   const holdPitch = settings.shiftPitch === false;
 
   /* «Элементы интерфейса»: что из хрома спрятано. Пишем функциональной формой
-     onSettings, а не {...settings}: четыре тумблера пишут один объект, и
+     onSettings, а не {...settings}: тумблеры пишут один объект, и
      замыкание из прошлого рендера теряло бы соседнюю правку */
   const uiHidden  = uiHiddenOf(settings);
   /* цвет тонирования обложек; пустое/битое значение из старого файла → чёрный */
@@ -7163,12 +7204,6 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     ...s,
     uiHidden: k === null ? { ...UI_HIDDEN_NONE } : { ...uiHiddenOf(s), [k]: v },
   }));
-  const setEqGain = (i, v) => onSettings(s => {
-    const g = Array.isArray(s.eqGains) && s.eqGains.length === EQ_BANDS.length
-      ? s.eqGains.slice() : EQ_FLAT.slice();
-    g[i] = v;
-    return { ...s, eqGains: g };
-  });
   /* Тема. Значение нормализуется на КАЖДОМ чтении, а не только на записи:
      мусор из старого settings.json (или из чужой вставки) обязан молча
      чиниться, иначе любой потребитель ниже получил бы NaN в градиенте.
@@ -7302,41 +7337,17 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             шапке — а её можно спрятать (Оформление → Элементы интерфейса), и
             тогда переключение осталось бы без единой ручки в интерфейсе.
             Здесь же оно и по смыслу: облако — это про аккаунт. */}
-        {scAuth && (
+        <Disclosure open={!!scAuth}>
           <Row label={t('source_label')} sub={t('source_sub')}>
             <Segmented id="segSource" value={settings.sourceMode === 'sc' ? 'sc' : 'local'}
               onChange={v => set('sourceMode', v)}
               options={[{ v:'local', label:t('source_local') }, { v:'sc', label:t('source_sc') }]}/>
           </Row>
-        )}
+        </Disclosure>
       </Card>
     ),
     playback: (<>
       <CrossfadeControls settings={settings} onSettings={onSettings}/>
-
-      {/* Эквалайзер. Полосы — те же, что в графе (EQ_BANDS): подпись частоты
-          считается отсюда, а не пишется руками, чтобы подпись и фильтр не
-          разъехались после правки набора. */}
-      <Card title={t('eq')}>
-        <Row label={t('eq_on')} sub={t('eq_on_sub')} last={!settings.eqOn}>
-          <Switch on={!!settings.eqOn} onChange={v=>set('eqOn', v)}/>
-        </Row>
-        {settings.eqOn && (<>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '2px 16px 4px' }}>
-            {Object.keys(EQ_PRESETS).map(k => (
-              <Btn key={k} onClick={() => set('eqGains', EQ_PRESETS[k].slice())}>{t('eqp_' + k)}</Btn>
-            ))}
-            <Btn onClick={() => set('eqGains', EQ_FLAT.slice())}>{t('eq_reset')}</Btn>
-          </div>
-          {EQ_BANDS.map((b, i) => (
-            <MiniSlider key={b.hz}
-              label={b.hz >= 1000 ? `${b.hz / 1000} ${t('khz')}` : `${b.hz} ${t('hz')}`}
-              value={eqGains[i]} min={-EQ_GAIN_MAX} max={EQ_GAIN_MAX} step={0.5}
-              display={`${eqGains[i] > 0 ? '+' : ''}${eqGains[i].toFixed(1)} ${t('db')}`}
-              onChange={v => setEqGain(i, v)}/>
-          ))}
-        </>)}
-      </Card>
 
       <Card title={t('speed_pitch')}>
         <MiniSlider label={t('speed')} value={speed} min={SPEED_MIN} max={SPEED_MAX} step={0.01}
@@ -7346,7 +7357,7 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             скорость меняет и темп, и тон, как у магнитофона. кому это мешает
             (подкаст, вокал) — включает и получает чистый тайм-стретч */}
         <Row label={t('hold_pitch')} sub={t('hold_pitch_sub')}>
-          <Switch on={holdPitch} onChange={v => set('shiftPitch', !v)}/>
+          <Switch label={t('hold_pitch')} on={holdPitch} onChange={v => set('shiftPitch', !v)}/>
         </Row>
         <MiniSlider label={t('pitch')} value={pitch} min={-PITCH_MAX} max={PITCH_MAX} step={1}
           display={`${pitch > 0 ? '+' : ''}${pitch} ${t('semitones')}`}
@@ -7397,7 +7408,7 @@ appearance: (<>
             { id: newThemeId(), name: themeHueName(th.accent, lang), v: { ...th, preset: null } },
           ])}>{t('theme_save')}</Btn>
         </div>
-        {userThemes.length > 0 && (
+        <Disclosure open={userThemes.length > 0}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, padding: '0 16px 14px' }}>
             {userThemes.map(u => (
               <ThemeTile key={u.id} label={u.name} theme={cleanTheme(u.v)}
@@ -7406,7 +7417,7 @@ appearance: (<>
                 onDelete={() => setUserThemes(list => list.filter(x => x.id !== u.id))}/>
             ))}
           </div>
-        )}
+        </Disclosure>
         {/* Нижний ряд навыков. «Удиви меня» собирает тему из новых цветов и
             заодно снимает метку пресета: получившееся ни с чем не совпадёт,
             и подсветка осталась бы на чужой карточке. */}
@@ -7442,38 +7453,20 @@ appearance: (<>
         <div style={{ padding: '14px 16px 0', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
           {t('accent_sub')}
         </div>
-        {/* Плашка замка. Всегда в дереве и раскрывается transition — как
-            аккордеон discord ниже: пересборка блока дёргает всё под ним, а
-            высота у плашки меняется с 0. */}
-        <div style={{
-          display:'flex', gap:8, overflow:'hidden',
-          margin: micaOn ? '12px 16px 0' : 0,
-          padding: micaOn ? '8px 11px' : 0,
-          maxHeight: micaOn ? 120 : 0,
-          opacity: micaOn ? 1 : 0,
-          transform: micaOn ? 'translateY(0)' : 'translateY(-4px)',
-          /* visibility: свёрнутая плашка невидима, но её кнопки ставили
-             pointerEvents:auto и ловили клики по карточке под ней */
-          visibility: micaOn ? 'visible' : 'hidden',
-          pointerEvents: micaOn ? 'auto' : 'none',
-          /* ⚠️ Рамку задаём именно здесь, а не через `borderWidth` рядом с
-             `border` ниже. React ставит стили по порядку ключей, а шорткат
-             `border` идёт ПОСЛЕ и обнуляет ширину обратно в 1px: плашка в
-             свёрнутом виде занимала 2px высоты, то есть место в разметке,
-             хоть и была невидимой. */
-          border: micaOn ? `1px solid ${SN.line}` : 'none',
-          transition:'max-height 0.32s cubic-bezier(0.22,1,0.36,1), opacity 0.2s ease,'
-            + 'margin 0.32s ease, padding 0.32s ease, transform 0.32s ease',
-          borderRadius:9, background:'rgba(255,255,255,0.028)',
-          fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.34)', lineHeight:1.45,
-        }}>
+        <Disclosure open={micaOn}>
           <div style={{
-            width:6, height:6, borderRadius:'50%', marginTop:5, flexShrink:0,
-            background:'var(--accent)', opacity: micaOn ? 0.7 : 0,
-            transition:'opacity 0.24s ease 0.06s',
-          }}/>
-          <div>{t('mica_accent_lock')}</div>
-        </div>
+            display:'flex', gap:8, margin:'12px 16px 0', padding:'8px 11px',
+            border:`1px solid ${SN.line}`,
+            borderRadius:9, background:'rgba(255,255,255,0.028)',
+            fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.34)', lineHeight:1.45,
+          }}>
+            <div style={{
+              width:6, height:6, borderRadius:'50%', marginTop:5, flexShrink:0,
+              background:'var(--accent)', opacity:0.7,
+            }}/>
+            <div>{t('mica_accent_lock')}</div>
+          </div>
+        </Disclosure>
         {(() => {
           const mode = settings.accentMode || 'color';
           const segIcon = paths => (
@@ -7497,16 +7490,10 @@ appearance: (<>
                   onChange={id => onSettings(s => ({ ...s, accentMode: id }))}
                   options={SEGS.map(([v, label, icon]) => ({ v, label, icon }))}/>
               </div>
-              {/* Контекст под выбранным режимом.
-                  ⚠️ Здесь стояли `key={mode}` и `animation:'fadeInUp'`, и
-                  оба были причиной рывка при первом входе в настройки.
-                  `key` перемонтировал блок при смене режима, а высота у
-                  режимов разная (палитра — образцы, «выкл» — одна
-                  короткая плашка), так что перемонтирование дёргало всё,
-                  что ниже. Сама анимация тут лишняя: переключение сегмента
-                  уже показывает пилл на layoutId. */}
+              {/* Режимы остаются смонтированными: открытие и закрытие
+                  продолжаются от текущего кадра даже при быстрых кликах. */}
               <div style={{ padding: '16px 16px 0' }}>
-                {mode === 'color' && (
+                <Disclosure open={mode === 'color'}>
                   <div style={{ display: 'flex', gap: 14 }}>
                     <ColorPad hex={th.accent} onChange={hex => setTh({ accent: hex })}/>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -7545,19 +7532,19 @@ appearance: (<>
                           {/* Пикер показываем только когда второй цвет реально
                               на что-то влияет: выключенный кубик с полем рядом
                               читался как «уже задано», но не влияло ни на что */}
-                          {th.accentGrad && (
-                            <ColorField value={th.accent2} onChange={hex => setTh({ accent2: hexOr(hex, th.accent2) })}/>
-                          )}
+                           <Disclosure inline open={th.accentGrad} style={{ marginLeft: th.accentGrad ? 0 : -7 }}>
+                             <ColorField value={th.accent2} onChange={hex => setTh({ accent2: hexOr(hex, th.accent2) })}/>
+                           </Disclosure>
                         </div>
                       </div>
                     </div>
                   </div>
-                )}
+                </Disclosure>
                 {/* Пять образцов остались как шорткаты: свой цвет теперь
                     можно задать чем угодно, а эти — то, что хочется достать в
                     одно нажатие. Набор цветов теперь в THEME_PRESETS и
                     ACCENT_PRESETS, а список подписей — тут единственный. */}
-                {mode === 'color' && (
+                <Disclosure open={mode === 'color'}>
                   <div style={{ marginTop: 14 }}>
                     <div style={{
                       fontSize: 'var(--fs-eyebrow)', letterSpacing: '0.1em',
@@ -7595,12 +7582,12 @@ appearance: (<>
                       })}
                     </div>
                   </div>
-                )}
+                </Disclosure>
                 {/* «От обложки» и «Выкл» раньше показывали карточку с
                     заголовком, который просто повторял уже выбранный
                     сегмент. Осталось по одной строке: живой образец цвета
                     либо объяснение, что именно выключено. */}
-                {mode === 'cover' && (
+                <Disclosure open={mode === 'cover'}>
                   <div style={{ display:'flex', alignItems:'center', gap:11 }}>
                     <div style={{
                       width:26, height:26, borderRadius:8, flexShrink:0,
@@ -7612,12 +7599,12 @@ appearance: (<>
                       {t('accent_cover_sub')}
                     </div>
                   </div>
-                )}
-                {mode === 'off' && (
+                </Disclosure>
+                <Disclosure open={mode === 'off'}>
                   <div style={{ fontSize:'var(--fs-xs)', color: SN.dim, lineHeight:1.45 }}>
                     {t('accent_off_sub')}
                   </div>
-                )}
+                </Disclosure>
               </div>
             </>
           );
@@ -7654,34 +7641,29 @@ appearance: (<>
             просто одноцветной подложкой. Поэтому включая его, мы включаем
             и акцент от обложки — обратно выбор акцента пользователь
             делает сам, а фон просто перестанет за ним следовать. */}
-        {th.bgMode === 'cover' && settings.accentMode !== 'cover' && (
+        <Disclosure open={th.bgMode === 'cover' && settings.accentMode !== 'cover'}>
           <div style={{ padding: '0 16px 14px' }}>
             <Btn onClick={() => onSettings(s => ({ ...s, accentMode: 'cover' }))}>
               {t('bg_cover_turn_on')}
             </Btn>
           </div>
-        )}
+        </Disclosure>
         {/* Поля каждого режима. Базовый цвет у «цвета» и «градиента» общий:
             у градиента он же один из его концов. */}
-        {!micaOn && th.bgMode === 'color' && (
+        <Disclosure open={!micaOn && ['color', 'gradient'].includes(th.bgMode)}>
           <ThRow label={t('bg_from')}>
             <ColorField value={th.bgColor} onChange={hex => setTh({ bgColor: hexOr(hex, th.bgColor) })}/>
           </ThRow>
-        )}
-        {!micaOn && th.bgMode === 'gradient' && (
-          <>
-            <ThRow label={t('bg_from')}>
-              <ColorField value={th.bgColor} onChange={hex => setTh({ bgColor: hexOr(hex, th.bgColor) })}/>
-            </ThRow>
-            <ThRow label={t('bg_to')}>
-              <ColorField value={th.bgColor2} onChange={hex => setTh({ bgColor2: hexOr(hex, th.bgColor2) })}/>
-            </ThRow>
-            <div style={{ padding: '4px 16px 14px' }}>
-              <MiniSlider label={t('bg_angle')} value={th.bgAngle} min={0} max={360} step={1}
-                display={`${th.bgAngle}°`} onChange={v => setTh({ bgAngle: v })}/>
-            </div>
-          </>
-        )}
+        </Disclosure>
+        <Disclosure open={!micaOn && th.bgMode === 'gradient'}>
+          <ThRow label={t('bg_to')}>
+            <ColorField value={th.bgColor2} onChange={hex => setTh({ bgColor2: hexOr(hex, th.bgColor2) })}/>
+          </ThRow>
+          <div style={{ padding: '4px 16px 14px' }}>
+            <MiniSlider label={t('bg_angle')} value={th.bgAngle} min={0} max={360} step={1}
+              display={`${th.bgAngle}°`} onChange={v => setTh({ bgAngle: v })}/>
+          </div>
+        </Disclosure>
       </Card>
 
       {/* Свечение и форма. Четыре ползунка, каждый пишет ровно одну
@@ -7727,14 +7709,14 @@ appearance: (<>
               { v: 'color', label: t('cover_tint_by_color') },
             ]}/>
         </div>
-        {tintMode === 'color' && (
+        <Disclosure open={tintMode === 'color'}>
           <div style={{ padding: '14px 16px 0', display: 'flex', gap: 14, alignItems: 'flex-start' }}>
             <ColorPad hex={tintColor} onChange={hex => set('coverTintColor', hex)}/>
             <div style={{ flex: 1, minWidth: 0 }}>
               <ColorField value={tintColor} onChange={hex => set('coverTintColor', hexOr(hex, tintColor))}/>
             </div>
           </div>
-        )}
+        </Disclosure>
         <MiniSlider label={t('cover_tint')} value={settings.coverTint ?? 0} min={0} max={1} step={0.02}
           display={settings.coverTint > 0 ? `${Math.round(settings.coverTint * 100)}%` : t('cover_tint_off')}
           onChange={v => set('coverTint', v)}/>
@@ -7752,6 +7734,9 @@ appearance: (<>
         <Row label={t('ui_hide_source')} sub={t('ui_hide_source_sub')}>
           <Switch on={!!uiHidden.source} onChange={v => setHidden('source', v)}/>
         </Row>
+        <Row label={t('ui_hide_mini_player')} sub={t('ui_hide_mini_player_sub')}>
+          <Switch on={!!uiHidden.miniPlayer} onChange={v => setHidden('miniPlayer', v)}/>
+        </Row>
         <Row label={t('ui_hide_volume')} sub={t('ui_hide_volume_sub')}>
           <Switch on={!!uiHidden.volume} onChange={v => setHidden('volume', v)}/>
         </Row>
@@ -7761,11 +7746,11 @@ appearance: (<>
         <Row label={t('ui_hide_sort')} sub={t('ui_hide_sort_sub')} last={!anyHidden}>
           <Switch on={!!uiHidden.sort} onChange={v => setHidden('sort', v)}/>
         </Row>
-        {anyHidden && (
+        <Disclosure open={anyHidden}>
           <div style={{ padding: '2px 16px 14px' }}>
             <Btn onClick={() => setHidden(null)}>{t('ui_show_all')}</Btn>
           </div>
-        )}
+        </Disclosure>
       </Card>
 
       {/* ❌ УДАЛЕНА карточка «Код темы» (показ/копирование/вставка темы
@@ -7813,20 +7798,15 @@ appearance: (<>
     discord: (
       <Card>
         <Row label={t('discord_rpc')} sub={t('discord_rpc_sub')} last={!settings.discordRpc}>
-          <Switch on={!!settings.discordRpc} onChange={v => set('discordRpc', v)}/>
+          <Switch label={t('discord_rpc')} on={!!settings.discordRpc} onChange={v => set('discordRpc', v)}/>
         </Row>
         {/* Раскрывающийся блок. Раньше он лежал вложенной карточкой с отступом
             и скруглением — читался как отдельный экран внутри экрана. Теперь
             это подряд идущие строки на одной подложке, и единственный намёк на
             уровень — чуть более светлая заливка: пунктов внутри нет, они все
             принадлежат тумблеру выше. */}
-        <div style={{
-          maxHeight: settings.discordRpc ? 400 : 0,
-          opacity: settings.discordRpc ? 1 : 0,
-          overflow: 'hidden',
-          background: 'rgba(255,255,255,0.022)',
-          transition: 'max-height 0.38s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease',
-        }}>
+        <Disclosure open={settings.discordRpc}>
+        <div style={{ background: 'rgba(255,255,255,0.022)', borderRadius: '0 0 var(--radius, 14px) var(--radius, 14px)' }}>
           {/* статус подключения. без него «RPC включён, но ничего не видно»
              и «Discord не запущен» выглядят одинаково — а это разные вещи,
              и чинить их надо по-разному (перезапустить клиент vs ждать) */}
@@ -7871,6 +7851,7 @@ appearance: (<>
             <Switch on={!!settings.discordCover} onChange={v => set('discordCover', v)}/>
           </Row>
         </div>
+        </Disclosure>
       </Card>
     ),
     system: (<>
@@ -7899,7 +7880,9 @@ appearance: (<>
               ? '...' + settings.musicFolder.slice(-42)
               : settings.musicFolder
             : t('no_folder')}>
-          {settings.musicFolder && <Btn tone="danger" onClick={() => onClearFolder()}>{t('remove')}</Btn>}
+          <Disclosure inline open={!!settings.musicFolder} style={{ marginLeft: settings.musicFolder ? 0 : -7 }}>
+            <Btn tone="danger" onClick={() => onClearFolder()}>{t('remove')}</Btn>
+          </Disclosure>
           <Btn onClick={async () => {
             const folder = await window.electronAPI.selectMusicFolder();
             if (folder) { set('musicFolder', folder); onScanTracks(folder); }
@@ -7994,12 +7977,15 @@ appearance: (<>
         {/* Заголовок раздела над контентом удалён: он дублировал название
            слева в навигации, и оба менялись синхронно — при переключении
            раздела читались два одинаковых слова подряд.
-           Ширину подняли с 480 до 520: строка «Папка с музыкой» держит путь,
-           а «Кроссфейд» — ползунок с подписью, и на 480 колонка ужимала
-           пояснения до переноса через три строки. */}
-        <div key={sec} style={{ maxWidth:520, animation:'setIn 0.24s ease' }}>
+            Ширина 520 оставляет место для длинных подписей и пути к музыке. */}
+        <DisclosureLayout key={sec} reduced={reduced}
+          motionKey={[micaOn, settings.accentMode, th.accentGrad, th.bgMode, tintMode,
+            anyHidden, settings.discordRpc, crossfadeSettings(settings).seconds > 0,
+            !!scAuth, !!settings.musicFolder, userThemes.length,
+            cleanLyricsSources(settings.lyricsSources).join(',')].join('|')}
+          style={{ maxWidth:520, animation:reduced ? 'none' : 'setIn 0.24s ease' }}>
           {content[sec]}
-        </div>
+        </DisclosureLayout>
       </div>
     </div>
   );
@@ -9063,9 +9049,8 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
                         color: active ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.38)',
                         transition:'color 0.18s ease',
                       }}>
-                        {active && <motion.div layoutId="plEdTabPill"
-                          transition={{ type:'spring', stiffness:420, damping:34, mass:0.7 }}
-                          style={{position:'absolute', inset:0, borderRadius:8, background:'rgba(255,255,255,0.07)'}}/>}
+                        <SelectionFill active={active}
+                          style={{position:'absolute', inset:0, borderRadius:8, background:'rgba(255,255,255,0.07)'}}/>
                         <span style={{position:'relative'}}>{label}</span>
                       </div>
                     );
@@ -10464,14 +10449,10 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
                 onMouseLeave={e => { if (tab !== tb.id) e.currentTarget.style.color = 'rgba(255,255,255,0.34)'; }}
               >
                 {tb.label}
-                {tab === tb.id && (
-                  <motion.div layoutId="artistTabLine"
-                    style={{
-                      position: 'absolute', left: 0, right: 0, bottom: 0, height: 1.5,
-                      background: 'var(--accent)', borderRadius: 2,
-                    }}
-                    transition={{ type: 'spring', stiffness: 460, damping: 36, mass: 0.6 }}/>
-                )}
+                <SelectionFill active={tab === tb.id} style={{
+                  position: 'absolute', left: 0, right: 0, bottom: 0, height: 1.5,
+                  background: 'var(--accent)', borderRadius: 2,
+                }}/>
               </button>
             ))}
           </div>
@@ -10634,6 +10615,7 @@ function App() {
        (см. lyricsQueryKey / lyricsTrackKey). и то и другое переживает
        перезапуск — ровно ради этого и живёт в настройках */
     lyricsCache: {}, lyricsQueries: {},
+    listeningHistory: [],
     /* прокси для soundcloud (см. карточку аккаунта): пусто — напрямую */
     scProxy: '',
     sourceMode: 'local', discordRpc: true,
@@ -11194,6 +11176,7 @@ function App() {
                файла настроек не должен превращать тумблер в «включено» */
             m.ambientGlow = m.ambientGlow !== false;
             m.scTitles = cleanScTitles(m.scTitles);
+            m.listeningHistory = cleanListeningHistory(m.listeningHistory);
             return m;
           });
           /* SC_TITLES заполняем СРАЗУ и СИНХРОННО, до всего, что зовёт
@@ -13306,6 +13289,82 @@ function App() {
     if (crossfadeSettings(settings).seconds <= 0 && (xfadeRef.current || xfadePrimeRef.current)) abortCrossfade();
   }, [settings.crossfade]);
 
+  /* Local observer only: no SoundCloud history request or listening telemetry. */
+  const onHistoryListen = useCallback(entry => setSettings(s => ({
+    ...s, listeningHistory: addListeningHistory(s.listeningHistory, entry),
+  })), []);
+  useListeningHistory({ track: hasTrack ? track : null, source: scPlayingTrack ? 'sc' : 'local', audioRef,
+    playingRef: isPlayingRef, switchingRef: trackSwitchingRef, onListen: onHistoryListen });
+  const listeningHistory = useMemo(() => cleanListeningHistory(settings.listeningHistory), [settings.listeningHistory]);
+  const historyCovers = useHistoryCovers({ visible: view === 'history', entries: listeningHistory, auth: settings.soundcloudAuth });
+  const [historyLoadingId, setHistoryLoadingId] = useState(null);
+  const [historyErrorId, setHistoryErrorId] = useState(null);
+  const historyRequestRef = useRef(0);
+
+  const handleHistoryPlay = async entry => {
+    const request = ++historyRequestRef.current;
+    setHistoryErrorId(null);
+    if (historyTrackKey(track, scPlayingTrack ? 'sc' : 'local') === entry.key) {
+      // Resuming a local selection also cancels a pending SC request.
+      if (entry.source === 'local') {
+        ++scReqRef.current;
+        trackSwitchingRef.current = false;
+        setLoadingTrackId(null);
+      }
+      setIsPlaying(true);
+      setHistoryLoadingId(null);
+      return;
+    }
+    if (entry.source === 'local') {
+      const idx = tracks.findIndex(local => local.path?.toLowerCase() === entry.track.path.toLowerCase());
+      if (idx < 0) { setHistoryLoadingId(null); showToast(t('history_unavailable')); return; }
+      ++scReqRef.current;
+      if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
+      trackSwitchingRef.current = false;
+      setLoadingTrackId(null);
+      setHistoryLoadingId(null);
+      stationQueueRef.current = playlistQueueRef.current = searchQueueRef.current = null;
+      setStationActive(null);
+      setPlaylistActive(null);
+      setSettings(s => ({ ...s, sourceMode: 'local' }));
+      setScPlayingTrack(null);
+      setTrackIdx(idx);
+      progressRef.current = 0;
+      setIsPlaying(true);
+      return;
+    }
+    const auth = scAuthRef.current;
+    if (!auth) { setHistoryLoadingId(null); showToast(t('history_login')); return; }
+    setHistoryLoadingId(entry.id);
+    const scRequest = scReqRef.current;
+    const previousTrack = trackRef.current;
+    const stale = () => request !== historyRequestRef.current || scRequest !== scReqRef.current
+      || auth.token !== scAuthRef.current?.token || auth.userId !== scAuthRef.current?.userId
+      || previousTrack !== trackRef.current;
+    try {
+      let fresh = scCacheMapRef.current.get(Number(entry.track.id));
+      if (!fresh?.streamUrl && !fresh?.hlsUrl) {
+        const result = await window.electronAPI.scFetch(`https://api-v2.soundcloud.com/tracks/${entry.track.id}`, auth.token, auth.clientId);
+        if (stale()) return;
+        if (result?.error || String(result?.data?.id) !== String(entry.track.id)) throw new Error('unavailable');
+        fresh = mapScTrack(result.data, t('track_untitled'));
+      }
+      if (stale()) return;
+      if (!fresh.streamUrl && !fresh.hlsUrl) throw new Error('unavailable');
+      // Replay in the normal library context, never in an unrelated old station.
+      stationQueueRef.current = playlistQueueRef.current = null;
+      setStationActive(null);
+      setPlaylistActive(null);
+      searchQueueRef.current = [fresh, ...scTracksRef.current.filter(item => item.id !== fresh.id)];
+      setSettings(s => ({ ...s, sourceMode: 'sc' }));
+      await handleScTrackClick(fresh, scTracksRef.current.findIndex(item => item.id === fresh.id));
+    } catch {
+      if (!stale()) { setHistoryErrorId(entry.id); showToast(t('history_play_error')); }
+    } finally {
+      if (request === historyRequestRef.current) setHistoryLoadingId(null);
+    }
+  };
+
   async function handleScTrackClick(scTrack, idx, autoSkip = false, skipCount = 0, direction = 1) {
     /* Токен запроса. handleScTrackClick делает await'ы (streamUrl, потом HLS),
        и без guard'а два быстрых клика давали гонку: первый запрос резолвился
@@ -14199,7 +14258,7 @@ function App() {
         setPlayerVisible(false);
         setHomeVisible(true);
         setView('home');
-      } else if (view === 'settings' || view === 'search' || view === 'artist' || view === 'playlists' || view === 'playlistEditor') {
+      } else if (view === 'settings' || view === 'search' || view === 'history' || view === 'artist' || view === 'playlists' || view === 'playlistEditor') {
         setHomeVisible(true);
         setView('home');
       } else if (view === 'home') {
@@ -14214,6 +14273,10 @@ function App() {
       if (view === 'home') setHomeVisible(false);
       if (view === 'player') setPlayerVisible(false);
       setView('playlists');
+    } else if (id === 'history') {
+      if (view === 'home') setHomeVisible(false);
+      if (view === 'player') setPlayerVisible(false);
+      setView('history');
     } else if (id === 'settings') {
       if (view === 'player') setPlayerVisible(false);
       if (view === 'home') setHomeVisible(false);
@@ -14243,7 +14306,7 @@ function App() {
     } else if (view === 'settings') {
       setPlayerVisible(true);
       setView('player');
-    } else if (view === 'search') {
+    } else if (view === 'search' || view === 'history') {
       setPlayerVisible(true);
       setView('player');
     } else if (view === 'artist') {
@@ -14371,7 +14434,10 @@ function App() {
       <TopBar navActive={navActive} onNav={handleNav}
         libCollapsed={libCollapsed} onToggleLib={()=>setLibCollapsed(v=>!v)}
         inPlayer={view==='player'} scAuth={settings.soundcloudAuth||null}
-        sourceMode={sourceMode} onToggleSource={handleToggleSource} hideSource={uiHidden.source}/>
+        track={track} hasTrack={hasTrack} isPlaying={isPlaying} onPrev={handlePrev} onNext={handleNext}
+        onTogglePlayback={()=>{ if (hasTrack) setIsPlaying(p=>!p); }}
+        sourceMode={sourceMode} onToggleSource={handleToggleSource} hideSource={uiHidden.source}
+        hideMiniPlayer={uiHidden.miniPlayer}/>
 
       <div style={{
         position:'relative', flex:1, height:'100%',
@@ -15062,6 +15128,16 @@ function App() {
         )}
 
         <SettingsView settings={settings} onSettings={setSettings} visible={view==='settings'} onScanTracks={handleScanTracks} onClearFolder={handleClearFolder} onClearCoversCache={handleClearCoversCache} onClearLikesCache={handleClearLikesCache} appAccent={appAccent} winAccent={winAccent} scAuth={settings.soundcloudAuth||null} onScLogin={handleScLogin} onScLogout={handleScLogout} sec={settingsSec} setSec={setSettingsSec} discordStatus={discordStatus}/>
+        <ListeningHistory visible={view==='history'} entries={listeningHistory} localTracks={tracks} cloudTracks={scTracks} covers={historyCovers}
+          currentKey={hasTrack ? historyTrackKey(track, scPlayingTrack ? 'sc' : 'local') : null} isPlaying={isPlaying}
+          loadingId={historyLoadingId || listeningHistory.find(entry => entry.source==='sc' && String(entry.track.id)===String(loadingTrackId))?.id}
+          errorId={historyErrorId || listeningHistory.find(entry => entry.source==='sc' && String(entry.track.id)===String(errorTrackId))?.id}
+          onPlay={handleHistoryPlay} onClear={()=>setSettings(s=>({ ...s, listeningHistory:[] }))}
+          locale={lang==='en' ? 'en-US' : 'ru-RU'}
+          labels={{ title:t('history_title'), subtitle:t('history_subtitle'), count:t('history_count'), clear:t('history_clear'),
+            confirmClear:t('history_confirm_clear'), cancel:t('cancel'), empty:t('history_empty'), emptyHint:t('history_empty_hint'),
+            local:t('history_local'), unavailable:t('history_unavailable'), today:t('history_today'), yesterday:t('history_yesterday'),
+            playError:t('history_play_error'), play:t('playback_play'), untitled:t('track_untitled') }}/>
         <PlaylistsView visible={view==='playlists'} scAuth={settings.soundcloudAuth||null}
           playlists={playlists} loading={playlistsLoading} error={playlistsError} creating={creatingPlaylist}
           onOpen={handleOpenPlaylist} onEdit={pl => handleOpenPlEditor(pl, 'playlists')}

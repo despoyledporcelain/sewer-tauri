@@ -52,6 +52,12 @@
     "longDescription": "музыкальный плеер с парсингом soundcloud",
     "windows": {
       "nsis": {
+        "template": "installer/installer.nsi",
+        "installerHooks": "installer/branding.nsh",
+        "sidebarImage": "installer/sidebar.bmp",
+        "headerImage": "installer/header.bmp",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "installMode": "currentUser",
         "languages": ["Russian"],
         "displayLanguageSelector": false

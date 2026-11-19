@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test tools/shuffle.test.mjs tools/discord-presence.test.mjs tools/crossfade.test.mjs tools/slider.test.mjs",
+    "test": "node --test tools/shuffle.test.mjs tools/discord-presence.test.mjs tools/crossfade.test.mjs tools/slider.test.mjs tools/disclosure.test.mjs tools/installer.test.mjs tools/mini-player.test.mjs tools/listening-history.test.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "node tools/tauri.mjs",
