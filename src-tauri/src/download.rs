@@ -13,6 +13,7 @@
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use futures_util::StreamExt;
 use lofty::config::WriteOptions;
@@ -25,10 +26,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
 
 const DL_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
-const DL_REDIRECT_LIMIT: usize = 5;
-/// Провайдер рвёт соединение примерно после 16 КБ: обычный GET отдаёт первые
-/// 15–16 КБ и висит до таймаута — снаружи это «загрузка на 0%». Кусками по
-/// 16 КБ через Range сервер отвечает мгновенно и закрывает ответ сам.
+/// Провайдер рвёт соединение после ~16 КБ: в одном соединении успевает пройти
+/// примерно столько, дальше висит до таймаута — снаружи это «загрузка на 0%».
+/// Поэтому качаем кусками по 16 КБ, каждый в новом соединении (см. dl_http):
+/// такой кусок приходит за ~0.12 с, и ответ закрывается сам.
 const DL_CHUNK: u64 = 16 * 1024;
 
 #[derive(Deserialize, Default)]
@@ -136,115 +137,98 @@ fn bad_payload(head: &[u8]) -> &'static str {
     }
 }
 
-fn is_redirect(status: u16) -> bool {
-    matches!(status, 301 | 302 | 303 | 307 | 308)
-}
-
 fn drop_file(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
-/// GET с редиректами, тело пишется в dest. Отдаёт total.
+/// Клиент для самой загрузки. Отличается от общего двумя вещами:
+///   * только http/1.1: по h2 всё едет в одном соединении, а провайдер режет
+///     соединение после ~16 КБ — второй кусок уходит в мёртвый сокет;
+///   * пул выключен: каждая порция должна ехать в новом соединении, потому что
+///     старое после ответа уже мертво. Проверено на живом CDN: 13 кусков по
+///     16 КБ проходят за ~1.5 с, а через пул падает второй же.
+fn dl_http() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .http1_only()
+                .pool_max_idle_per_host(0)
+                .connect_timeout(std::time::Duration::from_secs(20))
+                .read_timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("dl client")
+        })
+        .clone()
+}
+
+/// Прогресс загрузки. Отдельной структурой, потому что куски шлют его из
+/// середины цикла, а `base` (сколько уже легло на диск до текущего url) нужен,
+/// чтобы полоса не прыгала назад на каждом новом сегменте.
+struct Progress<'a> {
+    app: &'a AppHandle,
+    id: &'a Value,
+    base: u64,
+    /// суммарный размер, если известен заранее (у hls считаем по сегментам)
+    hint: u64,
+    last: u64,
+}
+
+impl<'a> Progress<'a> {
+    fn new(app: &'a AppHandle, id: &'a Value, base: u64, hint: u64) -> Self {
+        Self { app, id, base, hint, last: base }
+    }
+
+    fn report(&mut self, own_got: u64, total: u64) {
+        let got = self.base + own_got;
+        let total = if self.hint > 0 { self.hint } else { total };
+        /* emit на каждый 16-килобайтный кусок — ipc-спам: 250 сообщений на
+           трек ради полосы, на которой разницу не видно */
+        if got.saturating_sub(self.last) < 128 * 1024 && (total == 0 || got < total) {
+            return;
+        }
+        self.last = got;
+        emit(self.app, json!({ "id": self.id, "got": got, "total": total }));
+    }
+}
+
+/// Прогрессивная загрузка: один url, но всё равно кусками (см. append_url).
 async fn download_to_file(
-    client: &reqwest::Client,
     url: &str,
     dest: &Path,
     token: Option<&str>,
     app: &AppHandle,
     id: &Value,
 ) -> Result<u64, String> {
-    let mut hops = 0usize;
-    let mut current = url.to_string();
-    let mut current_token = token.map(str::to_string);
+    use tokio::io::AsyncWriteExt;
 
-    loop {
-        let mut req = client
-            .get(&current)
-            .header("User-Agent", DL_UA)
-            .header("Accept", "audio/*,*/*;q=0.8");
-        if let Some(t) = current_token.as_deref() {
-            req = req.header("Authorization", format!("OAuth {t}"));
-        }
-        let res = req.send().await.map_err(|e| e.to_string())?;
-        let status = res.status().as_u16();
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut prog = Progress::new(app, id, 0, 0);
+    let (got, total) = append_url(&dl_http(), url, token, &mut file, &mut prog).await?;
+    file.flush().await.map_err(|e| e.to_string())?;
 
-        if is_redirect(status) {
-            let Some(location) = res
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-            else {
-                return Err(format!("HTTP {status} без Location"));
-            };
-            hops += 1;
-            if hops > DL_REDIRECT_LIMIT {
-                return Err("too many redirects".into());
-            }
-            let next = Url::parse(&current)
-                .and_then(|base| base.join(&location))
-                .map_err(|e| e.to_string())?
-                .to_string();
-            /* на CDN токен не нужен и иногда мешает — рвём его на другом хосте */
-            let same_host = match (Url::parse(&next), Url::parse(&current)) {
-                (Ok(a), Ok(b)) => a.host_str() == b.host_str(),
-                _ => false,
-            };
-            if !same_host {
-                current_token = None;
-            }
-            current = next;
-            continue;
-        }
-
-        if status != 200 {
-            return Err(format!("HTTP {status}"));
-        }
-
-        let total = res.content_length().unwrap_or(0);
-        let mut file = tokio::fs::File::create(dest)
-            .await
-            .map_err(|e| e.to_string())?;
-        use tokio::io::AsyncWriteExt;
-
-        let mut got: u64 = 0;
-        let mut head: Vec<u8> = Vec::with_capacity(3);
-        let mut last_report = 0u64;
-        let mut stream = res.bytes_stream();
-
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| e.to_string())?;
-            if head.len() < 3 {
-                let take = 3usize - head.len();
-                head.extend_from_slice(&chunk[..chunk.len().min(take)]);
-                if head.len() == 3 && !looks_like_audio(&head) {
-                    drop_file(dest);
-                    return Err(bad_payload(&head).to_string());
-                }
-            }
-            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
-            got += chunk.len() as u64;
-            /* прогресс шлём не на каждый чанк: emit на 64кб — это ipc-спам
-               ради полосы, на которой разницу никто не увидит */
-            if got - last_report >= 128 * 1024 {
-                last_report = got;
-                emit(app, json!({ "id": id, "got": got, "total": total }));
-            }
-        }
-        file.flush().await.map_err(|e| e.to_string())?;
-
-        if got == 0 {
-            drop_file(dest);
-            return Err("empty".into());
-        }
-        if head.len() < 3 {
-            /* файл короче 3 байт — точно не mp3 */
-            drop_file(dest);
-            return Err("too_small".into());
-        }
-        emit(app, json!({ "id": id, "got": got, "total": total }));
-        return Ok(total);
+    if got == 0 {
+        drop_file(dest);
+        return Err("empty".into());
     }
+    /* проверяем голову уже на диске: первые 3 байта отсекают json манифеста
+       и html страницы провайдера от настоящего звука */
+    let head = read_head(dest, 3);
+    if head.len() < 3 {
+        drop_file(dest);
+        return Err("too_small".into());
+    }
+    if !looks_like_audio(&head) {
+        drop_file(dest);
+        return Err(bad_payload(&head).to_string());
+    }
+    emit(
+        app,
+        json!({ "id": id, "got": got, "total": total.unwrap_or(got) }),
+    );
+    Ok(got)
 }
 
 /* ── HLS ─────────────────────────────────────────────────────────────────── */
@@ -364,16 +348,18 @@ fn content_range_total(headers: &reqwest::header::HeaderMap) -> Option<u64> {
 /// Скачать один url и дописать в файл. Возвращает число байт и полный размер,
 /// если сервер его сообщил.
 ///
-/// Почему кусками: см. DL_CHUNK. Обычный поток на этой сети встаёт на 15 КБ и
-/// висит до read-timeout'а (45 с), а потом падает — то есть hls-трек не
-/// качался вовсе. Range-запросы по 16 КБ идут по 0.13 с каждый.
+/// Почему кусками: см. DL_CHUNK и dl_http. Обычный поток на этой сети встаёт
+/// на 15 КБ и висит до read-timeout'а, а через пул падает уже второй кусок.
+/// Range-запросы по 16 КБ в новом соединении идут по 0.12 с каждый.
 ///
 /// Повторы обязательны: кусков на трек сотни, и один капризный ответ CDN не
 /// должен убивать всю загрузку.
 async fn append_url(
     client: &reqwest::Client,
     url: &str,
+    token: Option<&str>,
     file: &mut tokio::fs::File,
+    prog: &mut Progress<'_>,
 ) -> Result<(u64, Option<u64>), String> {
     use tokio::io::AsyncWriteExt;
 
@@ -386,12 +372,15 @@ async fn append_url(
 
     while total.map_or(true, |t| got < t) {
         let range = format!("bytes={got}-{}", got + DL_CHUNK - 1);
-        let res = client
+        let mut req = client
             .get(url)
             .header("User-Agent", DL_UA)
-            .header(reqwest::header::RANGE, &range)
-            .send()
-            .await;
+            .header("Accept", "audio/*,*/*;q=0.8")
+            .header(reqwest::header::RANGE, &range);
+        if let Some(t) = token {
+            req = req.header("Authorization", format!("OAuth {t}"));
+        }
+        let res = req.send().await;
 
         let res = match res {
             Ok(r) => r,
@@ -409,11 +398,13 @@ async fn append_url(
 
         /* сервер не понял Range и отдал файл целиком — забираем как раньше */
         if status == 200 && got == 0 {
+            let len = res.content_length().unwrap_or(0);
             let mut stream = res.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(|e| e.to_string())?;
                 file.write_all(&chunk).await.map_err(|e| e.to_string())?;
                 got += chunk.len() as u64;
+                prog.report(got, len);
             }
             return Ok((got, None));
         }
@@ -459,6 +450,7 @@ async fn append_url(
         tries = 0;
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         got += chunk.len() as u64;
+        prog.report(got, total.unwrap_or(0));
         if total.is_none() && (chunk.len() as u64) < DL_CHUNK {
             break;
         }
@@ -514,7 +506,6 @@ async fn segment_sizes(
 /// размеры узнаём заранее (segment_sizes), а если не вышло — показываем честные
 /// мегабайты без процентов, врать долями хуже.
 async fn download_hls(
-    client: &reqwest::Client,
     url: &str,
     dest: &Path,
     app: &AppHandle,
@@ -522,12 +513,13 @@ async fn download_hls(
 ) -> Result<u64, String> {
     use tokio::io::AsyncWriteExt;
 
+    let dl = dl_http();
     let base = Url::parse(url).map_err(|e| e.to_string())?;
-    let text = fetch_text(client, url).await?;
+    let text = fetch_text(&dl, url).await?;
     let mut pl = parse_playlist(&text, &base);
     if let Some(variant) = pl.variant.take() {
         let vbase = Url::parse(&variant).map_err(|e| e.to_string())?;
-        let vtext = fetch_text(client, &variant).await?;
+        let vtext = fetch_text(&dl, &variant).await?;
         pl = parse_playlist(&vtext, &vbase);
     }
     if pl.segments.is_empty() {
@@ -539,7 +531,7 @@ async fn download_hls(
        не держим из-за него начало загрузки */
     let total = tokio::time::timeout(
         std::time::Duration::from_secs(6),
-        segment_sizes(client, pl.init.as_ref(), &pl.segments),
+        segment_sizes(&dl, pl.init.as_ref(), &pl.segments),
     )
     .await
     .ok()
@@ -557,10 +549,12 @@ async fn download_hls(
     let mut got = 0u64;
 
     if let Some(init) = pl.init.as_deref() {
-        got += append_url(client, init, &mut file).await?.0;
+        let mut prog = Progress::new(app, id, got, total);
+        got += append_url(&dl, init, None, &mut file, &mut prog).await?.0;
     }
     for seg in &pl.segments {
-        got += match append_url(client, seg, &mut file).await {
+        let mut prog = Progress::new(app, id, got, total);
+        got += match append_url(&dl, seg, None, &mut file, &mut prog).await {
             Ok(v) => v.0,
             Err(e) => {
                 dlog(format!(
@@ -581,36 +575,52 @@ async fn download_hls(
     Ok(got)
 }
 
-/// обложка в APIC: bytes, не путь. молча переживаем ошибку — теги важнее картинки
-async fn fetch_cover_buffer(client: &reqwest::Client, url: Option<&str>) -> Option<Vec<u8>> {
-    let mut current = url?.to_string();
-    for _ in 0..5 {
+/// обложка целиком в память. Кусками и в новых соединениях по той же причине,
+/// что и звук (см. dl_http): обычным потоком картинка приходит наполовину и
+/// тег остаётся без обложки. Молча переживаем ошибку — теги важнее картинки.
+async fn fetch_cover_buffer(url: Option<&str>) -> Option<Vec<u8>> {
+    let url = url?.to_string();
+    let client = dl_http();
+    let mut out: Vec<u8> = Vec::new();
+    let mut got = 0u64;
+
+    loop {
+        let range = format!("bytes={got}-{}", got + DL_CHUNK - 1);
         let res = client
-            .get(&current)
+            .get(&url)
             .header("User-Agent", DL_UA)
+            .header(reqwest::header::RANGE, &range)
             .send()
             .await
             .ok()?;
         let status = res.status().as_u16();
-        if is_redirect(status) {
-            let location = res
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())?;
-            current = Url::parse(&current)
-                .ok()?
-                .join(location)
-                .ok()?
-                .to_string();
-            continue;
+
+        /* Range не поддержан: пробуем забрать целиком, вдруг сервер не режет */
+        if status == 200 && got == 0 {
+            let bytes = res.bytes().await.ok()?;
+            return if bytes.is_empty() { None } else { Some(bytes.to_vec()) };
         }
-        if status != 200 {
+        if status != 206 {
             return None;
         }
-        let bytes = res.bytes().await.ok()?;
-        return if bytes.is_empty() { None } else { Some(bytes.to_vec()) };
+
+        let total = content_range_total(res.headers());
+        let chunk = res.bytes().await.ok()?;
+        if chunk.is_empty() {
+            break;
+        }
+        out.extend_from_slice(&chunk);
+        got += chunk.len() as u64;
+        if total.map_or((chunk.len() as u64) < DL_CHUNK, |t| got >= t) {
+            break;
+        }
     }
-    None
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// Обложка, уже лежащая в кэше приложения (`sc_covers/{id}.jpg`). Это тот же
@@ -739,11 +749,7 @@ async fn transcode_mp3(ffmpeg: &Path, src: &Path, dest: &Path) -> Result<(), Str
 /// .data.url). Сам api-v2 /media/.../stream/progressive отдаёт JSON-манифест,
 /// а не звук. client_id тоже НЕ дописывается: у CDN-ссылки он уже сидит в
 /// policy-параметрах, и хвост после подписи ломает валидацию.
-pub async fn sc_download_track(
-    app: &AppHandle,
-    client: &reqwest::Client,
-    req: DownloadReq,
-) -> Value {
+pub async fn sc_download_track(app: &AppHandle, req: DownloadReq) -> Value {
     let Some(dir) = req.dir.clone().filter(|d| !d.is_empty()) else {
         return json!({ "error": "no_dir" });
     };
@@ -792,9 +798,9 @@ pub async fn sc_download_track(
     let tmp = final_path.with_extension("part");
 
     let dl = if hls {
-        download_hls(client, &stream_url, &tmp, app, &id).await
+        download_hls(&stream_url, &tmp, app, &id).await
     } else {
-        download_to_file(client, &stream_url, &tmp, req.token.as_deref(), app, &id).await
+        download_to_file(&stream_url, &tmp, req.token.as_deref(), app, &id).await
     };
     if let Err(e) = dl {
         dlog(format!("загрузка провалилась: {e}"));
@@ -854,7 +860,7 @@ pub async fn sc_download_track(
             };
             Some((mime, data))
         }
-        None => fetch_cover_buffer(client, cover_url)
+        None => fetch_cover_buffer(cover_url)
             .await
             .map(|data| (guess_mime(cover_url.unwrap_or("")), data)),
     };

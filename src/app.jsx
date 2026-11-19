@@ -4194,6 +4194,9 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
   const [busy, setBusy] = useState(false);
   const [prog, setProg] = useState(null);   /* { got, total } */
   const [err, setErr] = useState(null);
+  /* причина от main: без неё «не удалось скачать» одинаково для HTTP 403,
+     таймаута и битого файла, и разбираться приходится по логам */
+  const [errDetail, setErrDetail] = useState(null);
   const idRef = useRef(null);
 
   const meta = useMemo(
@@ -4222,7 +4225,7 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
     setArtist(meta.artist);
     setName(fileNameFor(meta.artist, meta.title) + ext);
     setNameTouched(false);
-    setProg(null); setErr(null); setBusy(false);
+    setProg(null); setErr(null); setErrDetail(null); setBusy(false);
   }, [track?.id]);
 
   /* ffmpeg мог не найтись уже после открытия диалога: имя, которое ещё не
@@ -4285,7 +4288,7 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
     if (!target) { target = await onPickDir?.(); if (!target) return }
     if (!scAuth?.token) { setErr(t('dl_no_auth')); return }
     if (!track?.streamUrl && !track?.hlsUrl) { setErr(t('dl_no_stream')); return }
-    setBusy(true); setErr(null); setProg(null);
+    setBusy(true); setErr(null); setErrDetail(null); setProg(null);
     idRef.current = track.id;
     try {
       const resolved = await resolveStream(scAuth);
@@ -4306,12 +4309,13 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
         token: scAuth.token,
       });
       setBusy(false);
-      if (res?.error) { setErr(t(DL_ERR[res.error] || 'dl_err')); return }
+      if (res?.error) { setErr(t(DL_ERR[res.error] || 'dl_err')); setErrDetail(res.error); return }
       setProg(null);
       onSaved?.(res);
     } catch (e) {
       setBusy(false);
       setErr(t('dl_err'));
+      setErrDetail(String(e?.message || e));
     }
   };
 
@@ -4435,7 +4439,14 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
             )}
 
             {err && (
-              <div style={{ marginTop: 12, fontSize: 'var(--fs-xs)', color: 'rgba(255,110,95,0.9)' }}>{err}</div>
+              <div style={{ marginTop: 12, fontSize: 'var(--fs-xs)', color: 'rgba(255,110,95,0.9)' }}>
+                {err}
+                {/* причина от main — мелким и тусклым: она для разбора, а не
+                    для чтения, но без неё любой сбой выглядит одинаково */}
+                {errDetail && (
+                  <span style={{ color: 'rgba(255,255,255,0.26)' }}> · {errDetail}</span>
+                )}
+              </div>
             )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>

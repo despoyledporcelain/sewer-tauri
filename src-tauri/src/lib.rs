@@ -544,12 +544,8 @@ fn sc_save_likes_cache(data: Value) {
 }
 
 #[tauri::command(rename = "sc-download-track")]
-async fn sc_download_track(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    t: download::DownloadReq,
-) -> Result<Value, String> {
-    Ok(download::sc_download_track(&app, &state.http, t).await)
+async fn sc_download_track(app: AppHandle, t: download::DownloadReq) -> Result<Value, String> {
+    Ok(download::sc_download_track(&app, t).await)
 }
 
 /// Есть ли ffmpeg: от этого зависит, будет ли hls-трек в mp3 или в m4a.
