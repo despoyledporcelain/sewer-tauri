@@ -181,6 +181,7 @@ function transport({ local = true, tracks = trackList(local), settings = {}, sta
     shuffleOnRef: ref(false), repeatRef: ref('off'), scAuthRef: ref({ token: 'token' }),
     audioRef: ref(current), deckBRef: ref(standby), deckBHlsRef: ref(null), hlsRef: ref(null),
     xfadeRef: ref(null), xfadePrimeRef: ref(null), outgoingRef: ref(null),
+    partyClientRef: ref(null), pausePartyPlayback: () => { current.pause(); context.setIsPlaying(false); },
     xfadeRafRef: ref(0), crossfadeRafRef: ref(0), xfadeTickRef: ref(null),
     trackSwitchingRef: ref(false), progressRef: ref(0.95), discordProgressRef: ref(0.95),
     searchViewRef: ref(null), state: { trackIndex: 0, nextCalls: 0, rpc: [] },
@@ -243,6 +244,20 @@ test('three consecutive local transitions rotate both decks and keep the next tr
     assert.equal(t.state.nextCalls, 0);
   }
   assert.notEqual(t.audioRef.current, firstDeck);
+});
+
+test('active rooms disable crossfade and automatic next for both roles, without changing saved preferences', async () => {
+  for (const role of ['host', 'guest']) {
+    const t = transport();
+    t.partyClientRef.current = { active: true, role, sync: () => {} };
+    await t.tick();
+    assert.equal(t.xfadePrimeRef.current, null);
+    t.audioRef.current.onEnded = t.engine.handleDeckEnded(t.audioRef.current);
+    t.audioRef.current.onEnded();
+    assert.equal(t.state.nextCalls, 0);
+    assert.equal(t.audioRef.current.paused, true);
+    assert.equal(t.settingsRef.current.crossfade, 5);
+  }
 });
 
 test('ordinary playback restores volume synchronously without waiting for a UI frame or interaction', () => {

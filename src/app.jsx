@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue, useId } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue, useId, useReducer } from 'react'
 /* createPortal шёл через глобальный ReactDOM из cdn-скрипта; в es-модуле
    глобала нет, поэтому импортируем точечно. Правка в PATCHES — замена
    ReactDOM.createPortal на createPortal. */
@@ -34,6 +34,12 @@ import { addListeningHistory, cleanListeningHistory, historyTrackKey } from './l
 import { useListeningHistory } from './use-listening-history.js'
 import { useHistoryCovers } from './use-history-covers.js'
 import { HistoryIcon, ListeningHistory } from './listening-history.jsx'
+import { ListeningParty, partyLabels } from './listening-party.jsx'
+import { PartyPlayerLayout } from './party-player-layout.jsx'
+import { initialPartyState, partyReducer, sharedPartyTrack } from './listening-party.js'
+import { PartyClient } from './party-client.js'
+import { withScArtwork, resolvePartyArtwork } from './party-artwork.js'
+import { waitForPartyAudio } from './party-audio.js'
 
 
 /* десктоп-поведение вместо сайт-поведения:
@@ -1877,7 +1883,7 @@ const STRINGS = {
   ru: {
     minimize:'Свернуть', close:'Закрыть',
     nav_tracks:'Треки', nav_search:'Поиск', nav_player:'Плеер', nav_playlists:'Плейлисты',
-    nav_local:'Локальная библиотека', nav_settings:'Настройки',
+    nav_local:'Локальная библиотека', nav_settings:'Настройки', nav_party:'слушать вместе',
     player_pick:'Выбери трек',
     mini_player:'Миниплеер', playback_previous:'Предыдущий трек', playback_next:'Следующий трек',
     mini_player_open:'Открыть плеер',
@@ -2087,7 +2093,7 @@ const STRINGS = {
   en: {
     minimize:'Minimize', close:'Close',
     nav_tracks:'Tracks', nav_search:'Search', nav_player:'Player', nav_playlists:'Playlists',
-    nav_local:'Local library', nav_settings:'Settings',
+    nav_local:'Local library', nav_settings:'Settings', nav_party:'listen together',
     player_pick:'Pick a track',
     mini_player:'Mini player', playback_previous:'Previous track', playback_next:'Next track',
     mini_player_open:'Open player',
@@ -2770,7 +2776,7 @@ function afxTransport(patch) {
 }
 
 /* ── Progress Bar ────────────────────────────────────────────────────────── */
-function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible }) {
+function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible, disabled = false, positionVersion }) {
   const trackRef         = useRef(null);
   const fillRef          = useRef(null);
   const thumbRef         = useRef(null);
@@ -2820,6 +2826,8 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible 
   }, [visible]);
 
   useEffect(() => { kick(); }, [isPlaying]);
+  useEffect(() => { kick(); }, [positionVersion]);
+  useEffect(() => { if (disabled) { dragging.current = false; setActive(false); } }, [disabled]);
 
   useEffect(() => {
     let lastRaw = -1;
@@ -2889,12 +2897,12 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible 
     return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
   };
   useEffect(() => {
-    const onMove = (e) => { if (dragging.current) onSeek(getVal(e)); };
+    const onMove = (e) => { if (dragging.current && !disabled) onSeek(getVal(e)); };
     const onUp   = () => { if (dragging.current) { dragging.current = false; setActive(false); } };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-  }, [onSeek]);
+  }, [onSeek, disabled]);
 
   const timeStyle = {
     fontSize: 'var(--fs-xs)', fontVariantNumeric: 'tabular-nums',
@@ -2920,10 +2928,11 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible 
           const p = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
           setTip({ x: e.clientX - wrapRect.left, t: Math.floor(p * (total || 0)), show: true });
         }}
-        onMouseDown={e => { dragging.current = true; setActive(true); onSeek(getVal(e)); kick(); }}
+        aria-disabled={disabled || undefined}
+        onMouseDown={e => { if (disabled) return; dragging.current = true; setActive(true); onSeek(getVal(e)); kick(); }}
         style={{
           flex:1, minWidth:0, position:'relative',
-          padding: '10px 0', cursor:'pointer',
+          padding: '10px 0', cursor:disabled ? 'default' : 'pointer',
           display:'flex', alignItems:'center',
         }}
       >
@@ -3583,14 +3592,14 @@ function AmbientGlow({ visible, off }) {
    трогает layout и не дёргается, даже когда основной поток занят. */
 const MAG_PULL = 3.2;          /* предел уезда иконки от центра, px */
 
-function MagBtn({ onClick, active, children, size=52 }) {
+function MagBtn({ onClick, active, children, size=52, disabled = false, title }) {
   const reduce = useReducedMotion();
   const [hov, setHov] = useState(false);
   const mx = useSpring(0, { stiffness: 340, damping: 24, mass: 0.35 });
   const my = useSpring(0, { stiffness: 340, damping: 24, mass: 0.35 });
 
   const move = e => {
-    if (reduce) return;
+    if (reduce || disabled) return;
     const r = e.currentTarget.getBoundingClientRect();
     /* нормализуем по половине габарита: край кнопки = 1, центр = 0, поэтому
        предел уезда одинаков и у 40px, и у 66px */
@@ -3602,16 +3611,16 @@ function MagBtn({ onClick, active, children, size=52 }) {
   const leave = () => { setHov(false); mx.set(0); my.set(0); };
 
   return (
-    <motion.button onClick={onClick}
-      onPointerEnter={() => setHov(true)} onPointerMove={move} onPointerLeave={leave}
-      whileTap={{ scale: 0.94 }}
+    <motion.button onClick={onClick} disabled={disabled} title={title}
+      onPointerEnter={() => { if (!disabled) setHov(true); }} onPointerMove={move} onPointerLeave={leave}
+      whileTap={disabled ? undefined : { scale: 0.94 }}
       transition={{ type:'spring', stiffness: 520, damping: 28, mass: 0.5 }}
       style={{
         position:'relative',
         width:size, height:size, borderRadius:'50%', border:'none', background:'none',
         color: active ? 'var(--accent)' : 'rgba(255,255,255,0.38)',
         display:'flex', alignItems:'center', justifyContent:'center',
-        cursor:'pointer', flexShrink:0,
+        cursor:disabled ? 'default' : 'pointer', opacity:disabled ? 0.4 : 1, flexShrink:0,
         transition:'color 220ms ease',
       }}>
       {/* ореол лежит ПОД иконкой и не выходит за габарит кнопки: кнопки стоят
@@ -3641,7 +3650,7 @@ function MagBtn({ onClick, active, children, size=52 }) {
 }
 
 /* ── PlayBtn ─────────────────────────────────────────────────────────────── */
-function PlayBtn({ isPlaying, onToggle, trackKey = null }) {
+function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title }) {
   const BTN = 'clamp(58px, 7.2vw, 86px)';
   const ICO = 'clamp(32px, 4.2vw, 50px)';
   /* Два разных импульса, потому что это разные события.
@@ -3685,9 +3694,9 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null }) {
     pointerEvents:'none',
   });
   return (
-    <motion.button onClick={onToggle}
-      onPointerEnter={() => setHov(true)} onPointerLeave={() => setHov(false)}
-      whileTap={{ scale: 0.95 }}
+    <motion.button onClick={onToggle} disabled={disabled} title={title} aria-label={title}
+      onPointerEnter={() => { if (!disabled) setHov(true); }} onPointerLeave={() => setHov(false)}
+      whileTap={disabled ? undefined : { scale: 0.95 }}
       animate={trackPulse > 0 ? { scale: [1, 0.9, 1] } : {}}
       transition={{ type:'spring', stiffness: 380, damping: 26, mass: 0.6 }}
       style={{
@@ -3695,7 +3704,7 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null }) {
         background: isPlaying ? 'rgba(178,178,178,0.1)' : 'rgba(255,255,255,0.06)',
         color:'var(--text)',
         display:'flex', alignItems:'center', justifyContent:'center',
-        cursor:'pointer', flexShrink:0, position:'relative',
+        cursor:disabled ? 'default' : 'pointer', opacity:disabled ? 0.6 : 1, flexShrink:0, position:'relative',
         transition:'background 0.3s ease',
       }}>
       {/* ховер — не масштаб, а свет: вокруг кнопки проступает акцентное кольцо.
@@ -5539,7 +5548,7 @@ function boltBitsPath(pts) {
   return d;
 }
 
-function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
+function FxPanel({ open, inPlayer, settings, onSettings, onClose, partyActive = false }) {
   const t = useLang();
   /* значения нормализуются на КАЖДОМ чтении, как и в настройках: файл мог
      остаться от версии без этих полей, а ползунок с NaN — это пустая
@@ -5793,7 +5802,7 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
         </div>
 
         {/* ── скорость и тон ── */}
-        <div style={{...CARD, flexShrink:0, padding:'10px 9px 11px'}}>
+        {!partyActive && <div style={{...CARD, flexShrink:0, padding:'10px 9px 11px'}}>
           <div style={{display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:8}}>
             <span style={{fontSize:'var(--fs-sm)', color:'rgba(255,255,255,0.66)'}}>{t('speed')}</span>
             <span style={{...VALUE, color: speed === 1 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.62)'}}>
@@ -5809,7 +5818,7 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose }) {
               «держать/не держать» переехало целиком в «Настройки» — это
               решение на один раз, а не ручка, которую крутят по десять раз
               за песню */}
-        </div>
+        </div>}
       </div>
     </div>
   );
@@ -6081,10 +6090,10 @@ function HeroClone({ hero, exiting, reverse = false }) {
 /* ── TopBar ──────────────────────────────────────────────────────────────── */
 /* навигация в тайтлбаре: слева настройки→source-тумблер→миниплеер, по центру
    (абсолютно на окно) сегмент Плейлисты|Треки|Плеер|Поиск с горизонтальным
-   пиллом, справа collapse библиотеки (только в плеере). рендерится порталами в
+   пиллом, справа комнаты и collapse библиотеки (только в плеере). рендерится порталами в
    #topbar-slot и #titlebar (тайтлбар — статический html вне react-root) */
 function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth, sourceMode, onToggleSource, hideSource, hideMiniPlayer,
-  track, hasTrack, isPlaying, onPrev, onTogglePlayback, onNext }) {
+  track, hasTrack, isPlaying, onPrev, onTogglePlayback, onNext, partyOpen, partyActive, onToggleParty, partyTriggerRef, partyLocked }) {
   const t = useLang();
   const navImg = (src, s=17) => <img src={src} style={{width:s, height:s, filter:'brightness(0) invert(1)', display:'block'}}/>;
   const NAV = [
@@ -6171,26 +6180,33 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
                 <NavIcon label={t('nav_local')} active={sourceMode==='local'} onClick={onToggleSource} size={32} icon={folderIcon}/>
               </div>
             )}
-            <MiniPlayer visible={hasTrack && !inPlayer && !hideMiniPlayer} track={track} isPlaying={isPlaying}
+            <MiniPlayer visible={hasTrack && !inPlayer && !hideMiniPlayer} track={track} isPlaying={isPlaying} transportLocked={partyLocked}
               onPrev={onPrev} onToggle={onTogglePlayback} onNext={onNext} onOpen={()=>onNav('library')}
               labels={{ player:t('mini_player'), previous:t('playback_previous'), next:t('playback_next'),
                 play:t('playback_play'), pause:t('playback_pause'), untitled:t('track_untitled'),
                 openPlayer:t('mini_player_open') }}/>
           </div>
 
-          {/* правая зона: collapse библиотеки (только в плеере) */}
-          <div style={{flex:1, display:'flex', alignItems:'center', justifyContent:'flex-end', paddingRight:6,
-            opacity: inPlayer ? 1 : 0, pointerEvents: inPlayer ? 'auto' : 'none', visibility: inPlayer ? 'visible' : 'hidden', transition:'opacity 0.2s ease'}}>
-            <div style={{WebkitAppRegion:'no-drag', width:30, height:30, borderRadius:9, cursor:'pointer',
-              display:'flex', alignItems:'center', justifyContent:'center',
-              color:'rgba(255,255,255,0.35)', transition:'color 0.18s ease'}}
-              onClick={onToggleLib}
-              onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.7)'}
-              onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.35)'}>
-              <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
-                style={{transition:'transform 0.26s cubic-bezier(0.4,0,0.2,1)', transform: libCollapsed ? 'rotate(180deg)' : 'rotate(0deg)'}}>
-                <polyline points="15 18 9 12 15 6"/>
-              </svg>
+          {/* комнаты перед collapse списка и системными кнопками, во всех разделах */}
+          <div style={{flex:1, display:'flex', alignItems:'center', justifyContent:'flex-end', gap:3, paddingRight:6}}>
+            <button type="button" className="party-trigger" ref={partyTriggerRef} onClick={onToggleParty}
+              title={t('nav_party')} aria-label={t('nav_party')} aria-expanded={!!partyOpen}
+              aria-controls="listening-party-stage" data-room={partyActive ? 'true' : 'false'}>
+              <span className="party-icon" aria-hidden="true"/>
+            </button>
+            <div style={{display:'flex', alignItems:'center',
+              opacity: inPlayer ? 1 : 0, pointerEvents: inPlayer ? 'auto' : 'none', visibility: inPlayer ? 'visible' : 'hidden', transition:'opacity 0.2s ease'}}>
+              <div style={{WebkitAppRegion:'no-drag', width:30, height:30, borderRadius:9, cursor:'pointer',
+                display:'flex', alignItems:'center', justifyContent:'center',
+                color:'rgba(255,255,255,0.35)', transition:'color 0.18s ease'}}
+                onClick={onToggleLib}
+                onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.7)'}
+                onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.35)'}>
+                <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
+                  style={{transition:'transform 0.26s cubic-bezier(0.4,0,0.2,1)', transform: libCollapsed ? 'rotate(180deg)' : 'rotate(0deg)'}}>
+                  <polyline points="15 18 9 12 15 6"/>
+                </svg>
+              </div>
             </div>
           </div>
         </div>, slot)}
@@ -10590,6 +10606,18 @@ function App() {
   const [reverseHeroExiting, setReverseHeroExiting] = useState(false);
   const [artistView,         setArtistView]         = useState(null);
   const [libCollapsed,  setLibCollapsed]  = useState(false);
+  const [partyOpen, setPartyOpen] = useState(false);
+  const [partyInstant, setPartyInstant] = useState(false);
+  const [partyState, partyDispatch] = useReducer(partyReducer, initialPartyState);
+  const partyClientRef = useRef(null);
+  const partyCallbacksRef = useRef(null);
+  const partyActive = !!partyState.room;
+  const partyLocked = partyState.busy || partyActive && (partyState.room.role === 'guest' || partyState.connection !== 'connected');
+  const partyTriggerRef = useRef(null);
+  const closeParty = useCallback(event => {
+    setPartyInstant(event?.detail === 0 || event?.key === 'Escape');
+    setPartyOpen(false);
+  }, []);
   /* текст песни: перекрывает библиотеку в колонке слева */
   const [lyricsOpen,   setLyricsOpen]   = useState(false);
   /* эффекты (эквалайзер, скорость, тон) — тоже в колонке слева. одновременно
@@ -11408,8 +11436,8 @@ function App() {
     const gains = Array.isArray(settings.eqGains) && settings.eqGains.length === EQ_BANDS.length
       ? settings.eqGains.map(v => Math.max(-EQ_GAIN_MAX, Math.min(EQ_GAIN_MAX, Number(v) || 0)))
       : EQ_FLAT;
-    const speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, Number(settings.speed) || 1));
-    const pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, Math.round(Number(settings.pitch) || 0)));
+    const speed = partyActive ? 1 : Math.min(SPEED_MAX, Math.max(SPEED_MIN, Number(settings.speed) || 1));
+    const pitch = partyActive ? 0 : Math.max(-PITCH_MAX, Math.min(PITCH_MAX, Math.round(Number(settings.pitch) || 0)));
     const eqOn  = !!settings.eqOn;
     const width = Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, Number(settings.width) || 1));
     const keep  = settings.shiftPitch === false;   /* false = высота едет со скоростью */
@@ -11434,7 +11462,7 @@ function App() {
     afxTransport({ speed, pitch, preserve: keep });
     afxApplyWidth(width);
     afxResume();     /* контекст мог родиться посреди уже играющего трека */
-  }, [settings.eqOn, settings.eqGains, settings.speed, settings.pitch, settings.shiftPitch, settings.width]);
+  }, [settings.eqOn, settings.eqGains, settings.speed, settings.pitch, settings.shiftPitch, settings.width, partyActive]);
 
   /* Автоплей-политика: контекст, созданный не в жесте, стартует suspended, а
      звук из media-элемента идёт ТОЛЬКО через граф — то есть играет трек и
@@ -11451,6 +11479,7 @@ function App() {
 
   /* смена трека — обновляем src */
   useEffect(() => {
+    if (partyClientRef.current?.role === 'guest') return;
     const audio = audioRef.current;
     if (!audio || !track) return;
     if (scPlayingTrack) return; // SC-трек управляется через handleScTrackClick
@@ -11490,6 +11519,7 @@ function App() {
 
   /* play / pause */
   useEffect(() => {
+    if (partyClientRef.current?.role === 'guest') return; // The room follower owns guest playback.
     const audio = audioRef.current;
     if (!audio) return;
     if (isPlaying) {
@@ -11547,7 +11577,7 @@ function App() {
   useEffect(() => {
     const api = window.electronAPI;
     if (!api?.onMediaPlayPause) return;
-    api.onMediaPlayPause(() => setIsPlaying(p => !p));
+    api.onMediaPlayPause(() => togglePlayback());
     api.onMediaNext(() => handleNextRef.current?.());
     api.onMediaPrev(() => handlePrevRef.current?.());
   }, []);
@@ -11578,9 +11608,8 @@ function App() {
     return () => cancelAnimationFrame(raf);
   }, [hero, heroExiting]);
 
-  /* gsap грузится лениво (см. шапку модуля), и первый его потребитель —
-     анимация info-блока при входе в плеер, то есть ровно те 430мс, пока
-     летит обложка. Прогреваем чанк в простое, чтобы разбор модуля не
+  /* gsap грузится лениво (см. шапку модуля) для анимаций входа в плеер.
+     Прогреваем чанк в простое, чтобы разбор модуля не
      приходился на анимацию. Полёт обложки от gsap больше не зависит
      (он на Web Animations), это страховка для остальных твинов. */
   useEffect(() => {
@@ -11616,25 +11645,6 @@ function App() {
       return () => { alive = false; };
     }
   }, [view]);
-
-  /* gsap — анимация info блока при входе/выходе из плеера */
-  useEffect(() => {
-    const el = playerInfoRef.current;
-    if (!el) return;
-    let tweens = null, alive = true;
-    loadGsap().then(gsap => {
-      if (!alive || !playerInfoRef.current) return;
-      if (playerVisible) {
-        tweens = gsap.fromTo(el,
-          { opacity: 0, y: 14 },
-          { opacity: 1, y: 0, duration: 0.42, ease: 'sine.out', delay: 0.08, clearProps: 'y' }
-        );
-      } else {
-        tweens = gsap.to(el, { opacity: 0, duration: 0.1 });
-      }
-    });
-    return () => { alive = false; tweens?.kill(); };
-  }, [playerVisible]);
 
   /* плавный ресайз — отключаем transitions пока тянут окно */
   useEffect(() => {
@@ -11740,11 +11750,11 @@ function App() {
       const base = a.currentTime || 0;
       return Math.max(0, Math.min(1, (base + (dir === 'backward' ? -jump : jump)) / dur));
     };
-    set('play',          () => { setIsPlaying(true); });
-    set('pause',         () => { setIsPlaying(false); });
+    set('play',          () => { if (partyCanControl()) setIsPlaying(true); });
+    set('pause',         () => { if (partyCanControl()) setIsPlaying(false); });
     set('previoustrack', () => { handlePrevRef.current?.(); });
     set('nexttrack',     () => { handleNextRef.current?.(); });
-    set('stop',          () => { setIsPlaying(false); });
+    set('stop',          () => { if (partyCanControl()) setIsPlaying(false); });
     set('seekbackward',  d => handleSeekRef.current?.(seekTarget('backward', d)));
     set('seekforward',   d => handleSeekRef.current?.(seekTarget('forward',  d)));
     /* seekto принимает абсолютное время — прокручивать надо от currentTime */
@@ -11880,6 +11890,7 @@ function App() {
      плеер. список приходит с места нажатия, потому что он у всех трёх кнопок
      разный (лайки / активная очередь / треки плейлиста) */
   function handleShuffleToggle(list) {
+    if (!partyCanControl()) return;
     if (shuffle) { setShuffle(false); return; }
     handleShuffleStart(list);
   }
@@ -11889,6 +11900,7 @@ function App() {
      имеется в виду: с главного экрана это лайки, в плеере — активная очередь,
      в чипе плейлиста — треки плейлиста */
   function handleShuffleStart(list) {
+    if (!partyCanSelect(settingsRef.current.sourceMode !== 'sc')) return;
     const pool = (list || []).filter(Boolean);
     if (!pool.length) { showToast(t('shuffle_empty')); return; }
     setShuffle(true);
@@ -11920,6 +11932,8 @@ function App() {
   }
 
   function handleNext() {
+    if (!partyCanControl()) return;
+    if (partyClientRef.current?.active && !scPlayingTrackRef.current) return;
     /* Входящий трек уже текущий. Завершаем микс, не откатывая очередь. */
     if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
     if (repeat === 'one') {
@@ -12000,6 +12014,8 @@ function App() {
   handleNextRef.current = handleNext;
 
   function handlePrev() {
+    if (!partyCanControl()) return;
+    if (partyClientRef.current?.active && !scPlayingTrackRef.current) return;
     /* «Назад» считается относительно уже выбранного входящего трека. */
     if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
     if (progressRef.current > 0.05) {
@@ -12048,6 +12064,7 @@ function App() {
   handlePrevRef.current = handlePrev;
 
   const handleSeek = useCallback((v) => {
+    if (!partyCanControl()) return;
     progressRef.current = v;
     discordProgressRef.current = v;
     /* Перемотка посреди перекрытия: обе деки надо остановить, иначе ушедшая
@@ -12065,6 +12082,7 @@ function App() {
        clearTimeout того же ref — из-за него seek отменял дебаунс эффекта,
        и задержка обновления присутствия становилась случайной */
     pushDiscord(400);
+    partyClientRef.current?.sync();
   }, [track, scPlayingTrack, pushDiscord]);
   /* ref-обёртка для медиа-панели ОС: обработчики setActionHandler
      регистрируются один раз и не видят свежих deps */
@@ -12236,7 +12254,7 @@ function App() {
       scCacheMapRef.current = new Map(all.map(t => [t.id, t]));
       window.electronAPI.scSaveLikesCache(all);
       const cached = await window.electronAPI.scCheckCovers(all.map(t => t.id));
-      const withCache = all.map(t => cached[t.id] ? { ...t, coverUrl: cached[t.id] } : t);
+      const withCache = all.map(t => cached[t.id] ? withScArtwork(t, cached[t.id]) : t);
       setScTracks(withCache);
       if (silent) setScUpdating(false); else setScLoading(false);
       loadScCovers(withCache.filter(t => !cached[t.id]));
@@ -12256,7 +12274,7 @@ function App() {
       if (!newSinceFlush) return;
       newSinceFlush = 0;
       const snap = { ...acc };
-      setScTracks(prev => prev.map(t => snap[t.id] ? { ...t, coverUrl: snap[t.id] } : t));
+      setScTracks(prev => prev.map(t => snap[t.id] ? withScArtwork(t, snap[t.id]) : t));
     };
     async function worker() {
       while (next < pending.length) {
@@ -12312,7 +12330,7 @@ function App() {
     if (foundKnown) {
       if (newest.length > 0) {
         const cachedCovers = await window.electronAPI.scCheckCovers(newest.map(t => t.id));
-        const newestWithCovers = newest.map(t => cachedCovers[t.id] ? { ...t, coverUrl: cachedCovers[t.id] } : t);
+        const newestWithCovers = newest.map(t => cachedCovers[t.id] ? withScArtwork(t, cachedCovers[t.id]) : t);
         setScTracks(prev => [...newestWithCovers, ...prev]);
         scCacheRef.current = [...newest, ...scCacheRef.current];
         newest.forEach(t => scCacheMapRef.current.set(t.id, t));
@@ -12339,7 +12357,7 @@ function App() {
          поэтому переименования в нём не было и после перезапуска название
          откатывалось к оригиналу */
       const withCovers = applyScTitles(
-        cache.map(t => cachedCovers[t.id] ? { ...t, coverUrl: cachedCovers[t.id] } : t));
+        cache.map(t => cachedCovers[t.id] ? withScArtwork(t, cachedCovers[t.id]) : t));
       setScTracks(withCovers);
       setScLoading(false);
       loadScCovers(withCovers.filter(t => t.coverUrl && !t.coverUrl.startsWith('file:')));
@@ -12867,6 +12885,10 @@ function App() {
     return event => {
       if (audioRef.current !== audio) return;
       if (event.type === 'playing') restorePlaybackVolume(audio);
+      if (partyClientRef.current?.role === 'guest') {
+        if (event.type === 'playing') setIsPlaying(true);
+        else if (event.type === 'pause' || event.type === 'ended') setIsPlaying(false);
+      } else partyClientRef.current?.sync();
       discordPushRef.current?.(0);
     };
   }
@@ -12974,6 +12996,7 @@ function App() {
       if (outgoingRef.current?.audio === audio) { finishCrossfade(); return; }
       /* Standby тоже может прислать ended после очистки src. */
       if (audioRef.current !== audio) return;
+      if (partyClientRef.current?.active) { pausePartyPlayback(); partyClientRef.current.sync(); return; }
       const prime = xfadePrimeRef.current;
       if (prime?.ready && startCrossfade(prime.next, prime)) return;
       handleNextRef.current?.();
@@ -13074,6 +13097,7 @@ function App() {
 
   /* Стадия 2: включаем вторую деку и пускаем перекрытие. */
   function startCrossfade(peek, prime) {
+    if (partyClientRef.current?.active) return false;
     const cur = audioRef.current;
     const b = prime?.audio;
     const curTrack = trackRef.current;
@@ -13220,6 +13244,7 @@ function App() {
   /* Расписание обеих дек использует актуальные refs и аудиопозицию.
      timeupdate дополняет интервал, в том числе в свёрнутом окне. */
   function xfadeTick() {
+    if (partyClientRef.current?.active) return;
     const config = crossfadeSettings(settingsRef.current);
     if (config.seconds <= 0 || !isPlayingRef.current) return;
     const cur = audioRef.current;
@@ -13302,6 +13327,7 @@ function App() {
   const historyRequestRef = useRef(0);
 
   const handleHistoryPlay = async entry => {
+    if (!partyCanSelect(entry.source === 'local')) return;
     const request = ++historyRequestRef.current;
     setHistoryErrorId(null);
     if (historyTrackKey(track, scPlayingTrack ? 'sc' : 'local') === entry.key) {
@@ -13366,6 +13392,8 @@ function App() {
   };
 
   async function handleScTrackClick(scTrack, idx, autoSkip = false, skipCount = 0, direction = 1) {
+    if (!partyCanSelect(false)) return;
+    if (partyClientRef.current?.active) { await partyClientRef.current.selectTrack(scTrack); return; }
     /* Токен запроса. handleScTrackClick делает await'ы (streamUrl, потом HLS),
        и без guard'а два быстрых клика давали гонку: первый запрос резолвился
        вторым и перебивал setScPlayingTrack — включался не тот трек, на который
@@ -13518,6 +13546,7 @@ function App() {
       hls.loadSource(resolvedUrl);
       hls.attachMedia(audio);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (stale() || audioRef.current !== audio) return;
         audio.play().then(() => setLoadingTrackId(null)).catch(() => { setLoadingTrackId(null); setIsPlaying(false); });
         setIsPlaying(true);
       });
@@ -13539,7 +13568,192 @@ function App() {
     }
   }
 
+  function partyCanControl() {
+    const client = partyClientRef.current;
+    if (client?.request) return false;
+    return !client?.active || (client.role === 'host' && client.status === 'connected');
+  }
+  function partyCanSelect(local) {
+    const client = partyClientRef.current;
+    if (client?.request) return false;
+    if (!client?.active) return true;
+    const labels = partyLabels(langRef.current);
+    if (!partyCanControl()) { showToast(labels.error_host_only); return false; }
+    if (local) { showToast(labels.error_soundcloud_only); return false; }
+    return true;
+  }
+  function togglePlayback() {
+    if (partyCanControl() && (scPlayingTrackRef.current || trackRef.current?.path)) setIsPlaying(p => !p);
+  }
+  function pausePartyPlayback() {
+    isPlayingRef.current = false;
+    audioRef.current?.pause();
+    setIsPlaying(false);
+  }
+  function seekPartyPlayback(position) {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const duration = mediaDuration(audio, trackRef.current);
+    audio.currentTime = Math.min(duration, Math.max(0, position));
+    progressRef.current = duration ? audio.currentTime / duration : 0;
+    discordProgressRef.current = progressRef.current;
+    setMiniProgress(progressRef.current);
+    discordPushRef.current?.(0);
+  }
+  async function playPartyPlayback({ signal } = {}) {
+    const audio = audioRef.current;
+    if (!audio) throw new Error('track_unavailable');
+    const request = scReqRef.current, source = audio.src;
+    if (signal?.aborted) throw new Error('cancelled');
+    restorePlaybackVolume(audio);
+    await audio.play();
+    if (audioRef.current !== audio || source !== audio.src) return;
+    if (signal?.aborted || request !== scReqRef.current || !partyClientRef.current?.active
+      || partyClientRef.current.status !== 'connected') { pausePartyPlayback(); return; }
+    if (audioRef.current === audio && partyClientRef.current?.active) {
+      isPlayingRef.current = !audio.paused;
+      setIsPlaying(!audio.paused);
+    }
+  }
+  async function loadPartySoundCloudTrack(shared, { signal, position }) {
+    const auth = scAuthRef.current;
+    if (!auth) throw new Error('login_required');
+    const req = ++scReqRef.current;
+    const stale = () => signal.aborted || req !== scReqRef.current || !partyClientRef.current?.active
+      || auth.token !== scAuthRef.current?.token || auth.userId !== scAuthRef.current?.userId;
+    if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
+    pausePartyPlayback();
+    destroyHls();
+    trackSwitchingRef.current = true;
+    setLoadingTrackId(Number(shared.id));
+    const localTrack = [scPlayingTrackRef.current, ...scTracksRef.current].find(track => String(track?.id) === shared.id);
+    const localCover = localTrack?.coverUrl;
+    const pendingTrack = withScArtwork({ ...shared, id: Number(shared.id) }, localCover || shared.coverUrl);
+    scPlayingTrackRef.current = trackRef.current = pendingTrack;
+    setScPlayingTrack(pendingTrack);
+    const deck = audioRef.current;
+    if (deck) { deck.src = ''; deck.load(); }
+    HOT_STORE.trackSrc = null;
+    progressRef.current = discordProgressRef.current = 0;
+    setMiniProgress(0);
+    const aborted = () => {
+      if (req !== scReqRef.current) return;
+      ++scReqRef.current;
+      pausePartyPlayback(); destroyHls();
+      trackSwitchingRef.current = false;
+      setLoadingTrackId(null);
+    };
+    signal.addEventListener('abort', aborted, { once: true });
+    try {
+      // A saved transcoding may have expired or belong to an earlier login.
+      // Resolve fresh metadata with this listener's access, never the host's URL.
+      const result = await window.electronAPI.scFetch(`https://api-v2.soundcloud.com/tracks/${shared.id}`, auth.token, auth.clientId);
+      if (stale()) throw new Error('cancelled');
+      if (result?.error || String(result?.data?.id) !== shared.id) throw new Error('track_unavailable');
+      const fresh = mapScTrack(result.data, t('track_untitled'));
+      const stream = await resolveScUrl(fresh);
+      if (stale()) throw new Error('cancelled');
+      if (!stream) throw new Error('track_unavailable');
+      const audio = audioRef.current;
+      if (!audio) throw new Error('track_unavailable');
+      const artwork = withScArtwork({ ...fresh, coverUrl: shared.coverUrl || fresh.coverUrl }, localCover || fresh.coverUrl || shared.coverUrl);
+      const resolved = { ...fresh, ...shared, id: Number(shared.id), resolvedUrl: stream.url,
+        coverUrl: artwork.coverUrl, remoteCoverUrl: artwork.remoteCoverUrl };
+      scPlayingTrackRef.current = trackRef.current = resolved;
+      setScPlayingTrack(resolved);
+      // Artwork runs separately: slow CDN/cache IO must never delay room audio.
+      resolvePartyArtwork(resolved, { api: window.electronAPI, cancelled: stale }).then(coverUrl => {
+        const current = scPlayingTrackRef.current;
+        if (!coverUrl || stale() || String(current?.id) !== shared.id || current.coverUrl === coverUrl) return;
+        const updated = { ...current, coverUrl };
+        scPlayingTrackRef.current = trackRef.current = updated;
+        setScPlayingTrack(updated);
+      }).catch(() => {});
+      setScPlayingIdx(scTracksRef.current.findIndex(item => String(item.id) === shared.id));
+      HOT_STORE.trackSrc = null;
+      audio.__sewTrackPath = null;
+      audio.src = '';
+      audio.load();
+      if (stream.isHls) {
+        const Hls = await loadHls();
+        if (stale()) throw new Error('cancelled');
+        if (Hls.isSupported()) {
+          const hls = new Hls({ startPosition: position() });
+          hlsRef.current = hls;
+          hls.on(Hls.Events.ERROR, (_, data) => {
+            if (data.fatal && !stale() && hlsRef.current === hls) partyClientRef.current?.failPlayback('track_unavailable');
+          });
+          hls.loadSource(stream.url);
+          hls.attachMedia(audio);
+        } else { audio.src = stream.url; audio.load(); }
+      } else { audio.src = stream.url; audio.load(); }
+      await waitForPartyAudio(audio, { signal, position, duration: shared.duration });
+      if (stale()) throw new Error('cancelled');
+      trackSwitchingRef.current = false;
+      restorePlaybackVolume(audio);
+      setLoadingTrackId(null);
+    } catch (error) {
+      if (req === scReqRef.current) {
+        trackSwitchingRef.current = false;
+        setLoadingTrackId(null);
+        destroyHls();
+      }
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', aborted);
+    }
+  }
+  partyCallbacksRef.current = { load: loadPartySoundCloudTrack, pause: pausePartyPlayback, play: playPartyPlayback, seek: seekPartyPlayback,
+    empty: () => {
+      ++scReqRef.current;
+      pausePartyPlayback(); destroyHls();
+      scPlayingTrackRef.current = null; trackRef.current = BLANK_TRACK;
+      setScPlayingTrack(null); setTrackIdx(-1);
+      if (audioRef.current) { audioRef.current.src = ''; audioRef.current.load(); }
+      progressRef.current = discordProgressRef.current = 0;
+      trackSwitchingRef.current = false;
+      setMiniProgress(0); setLoadingTrackId(null);
+    },
+  };
+  useEffect(() => {
+    const client = new PartyClient({ onState: partyDispatch,
+      getPlayer: () => ({ track: scPlayingTrackRef.current, audio: audioRef.current, switching: trackSwitchingRef.current }),
+      loadTrack: (...args) => partyCallbacksRef.current.load(...args),
+      pause: () => partyCallbacksRef.current.pause(), play: (...args) => partyCallbacksRef.current.play(...args),
+      seek: position => partyCallbacksRef.current.seek(position),
+      empty: () => partyCallbacksRef.current.empty(),
+      onActive: role => {
+        ++scReqRef.current;
+        ++historyRequestRef.current;
+        abortCrossfade();
+        afxTransport({ speed: 1, pitch: 0, preserve: settingsRef.current.shiftPitch === false });
+        if (role === 'guest') { pausePartyPlayback(); destroyHls(); trackSwitchingRef.current = true; }
+      },
+    });
+    partyClientRef.current = client;
+    const leave = () => client.leave();
+    window.addEventListener('beforeunload', leave);
+    return () => {
+      window.removeEventListener('beforeunload', leave);
+      client.dispose();
+      if (partyClientRef.current === client) partyClientRef.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    if (!settings.soundcloudAuth && partyClientRef.current?.active) partyClientRef.current.leave();
+  }, [settings.soundcloudAuth]);
+  const startParty = kind => {
+    if (!scAuthRef.current) { partyDispatch({ type: 'failed', error: 'login_required' }); return; }
+    if (kind === 'create' && trackRef.current?.path) { partyDispatch({ type: 'failed', error: 'soundcloud_only' }); return; }
+    if (kind === 'create' && trackSwitchingRef.current) { partyDispatch({ type: 'failed', error: 'track_loading' }); return; }
+    if (kind === 'create' && scPlayingTrackRef.current && !sharedPartyTrack(scPlayingTrackRef.current)) {
+      partyDispatch({ type: 'failed', error: 'track_unavailable' }); return;
+    }
+    partyClientRef.current?.start(kind, { code: partyState.draft, user: scAuthRef.current, track: scPlayingTrackRef.current });
+  };
+
   async function selectTrack(t) {
+    if (!partyCanSelect(!!t.path)) return;
     const startPlayLocal = (idx) => {
       setScPlayingTrack(null);
       setTrackIdx(idx);
@@ -13642,6 +13856,7 @@ function App() {
      из пустоты. Если обложки нет (трек ещё не отрисовался, список
      перерисовывается), переход всё равно происходит, просто без анимации. */
   const openSearchTrack = (t) => {
+    if (!partyCanSelect(false)) return;
     handleScTrackClick(t, -1);
     const artEl = searchViewRef.current?.findArt?.(t.id);
     const par   = playerArtRef.current?.getBoundingClientRect();
@@ -13675,6 +13890,7 @@ function App() {
      deps (тело читает stationActive/playlistActive/tracks/trackIdx) */
   const libClickRef = useRef(null);
   libClickRef.current = t => {
+    if (!partyCanSelect(!!t.path)) return;
     if (stationActive) { handleScTrackClick(t, -1); return; }
     if (playlistActive) {
       searchQueueRef.current = null;
@@ -14326,6 +14542,20 @@ function App() {
   };
   handleNavRef.current = handleNav;
 
+  const toggleParty = event => {
+    // Keep the playlist editor's unsaved-work guard. Room view itself never changes playback.
+    if (view === 'playlistEditor' && editingPlaylist) { plEditorRef.current?.requestClose(); return; }
+    const opening = !partyOpen || view !== 'player';
+    setPartyInstant(event.detail === 0);
+    setPartyOpen(opening);
+    if (opening && view !== 'player') {
+      setHomeVisible(false);
+      setPlayerVisible(true);
+      setView('player');
+      setNavActive('library');
+    }
+  };
+
   /* ── Кнопки «назад/вперёд» мыши → hero-клон ───────────────────────────────
      ⚠️ ЗАЧЕМ. До этого история браузера вообще не участвовала: приложение
      живёт на `file://` и меняет `view` реактом, не трогая History API.
@@ -14432,12 +14662,13 @@ function App() {
       {hero && hero.targetRect && <HeroClone hero={hero} exiting={heroExiting}/>}
       {reverseHero && reverseHero.targetRect && <HeroClone hero={reverseHero} exiting={reverseHeroExiting} reverse={true}/>}
       <TopBar navActive={navActive} onNav={handleNav}
-        libCollapsed={libCollapsed} onToggleLib={()=>setLibCollapsed(v=>!v)}
+        libCollapsed={libCollapsed} onToggleLib={event=>{ setPartyInstant(event.detail === 0); setLibCollapsed(v=>!v); }}
         inPlayer={view==='player'} scAuth={settings.soundcloudAuth||null}
         track={track} hasTrack={hasTrack} isPlaying={isPlaying} onPrev={handlePrev} onNext={handleNext}
-        onTogglePlayback={()=>{ if (hasTrack) setIsPlaying(p=>!p); }}
+        onTogglePlayback={togglePlayback}
         sourceMode={sourceMode} onToggleSource={handleToggleSource} hideSource={uiHidden.source}
-        hideMiniPlayer={uiHidden.miniPlayer}/>
+        hideMiniPlayer={uiHidden.miniPlayer} partyOpen={partyOpen && view === 'player'} partyActive={partyActive} partyLocked={partyLocked}
+        onToggleParty={toggleParty} partyTriggerRef={partyTriggerRef}/>
 
       <div style={{
         position:'relative', flex:1, height:'100%',
@@ -14896,7 +15127,7 @@ function App() {
             query={lyricsQuery} pinned={lyricsPinned}
             onPickSource={handleLyricsPickSource}
             onFindLyrics={handleLyricsFind} onUnpin={handleLyricsUnpin}/>
-          <FxPanel open={fxOpen} inPlayer={playerVisible} settings={settings}
+          <FxPanel open={fxOpen} inPlayer={playerVisible} settings={settings} partyActive={partyActive}
             onSettings={setSettings} onClose={() => setFxOpen(false)}/>
           </div>
         </div>
@@ -14907,14 +15138,22 @@ function App() {
           flex:1, minWidth:0, height:'100%',
           display:'flex', alignItems:'center', justifyContent:'center',
         }}>
-          <div style={{
+          <PartyPlayerLayout open={partyOpen} controlsAligned={partyOpen && libCollapsed} instant={partyInstant}
+            enabled={view === 'player' && playerVisible && !hero && !reverseHero} className="player-composition" style={{
             width:'calc(100% - 48px)',
-            maxWidth:'clamp(380px, 55vw, 900px)', minWidth:220,
+            maxWidth:partyOpen ? 'none' : 'clamp(380px, 55vw, 900px)', minWidth:220,
             display:'flex', flexDirection:'column',
             alignItems:'center', gap:0,
           }}>
-            <div style={{width:'100%', display:'flex', flexDirection:'column', alignItems:'center'}}>
-            <div ref={playerInfoRef} style={{width:'100%', display:'flex', flexDirection:'column', alignItems:'center', opacity:0}}>
+            <div className={`player-stage${partyOpen ? ' player-stage-party' : ''}`}>
+              <ListeningParty visible={partyOpen && playerVisible} instant={partyInstant} state={partyState} dispatch={partyDispatch}
+                onClose={closeParty} triggerRef={partyTriggerRef} user={settings.soundcloudAuth} locale={lang}
+                onCreate={()=>startParty('create')} onJoin={()=>startParty('join')}
+                onLeave={()=>partyClientRef.current?.leave()} onRetry={()=>partyClientRef.current?.retry()}
+                onLogin={()=>{ setSettingsSec('account'); handleNav('settings'); }}/>
+            <div className="player-stage-media">
+            <div data-party-motion="info" style={{width:'100%', minWidth:0}}>
+            <div ref={playerInfoRef} className="player-info" data-visible={playerVisible ? 'true' : 'false'}>
               {/* Пустой плеер. Ничего не выбрано — стоит только этот текст:
                   артиста и названия нет, а рисовать их пустыми строками
                   значило бы оставить двадцать пикселей мёртвого места и
@@ -15004,8 +15243,9 @@ function App() {
               </div>
               </>)}
             </div>{/* playerInfoRef end */}
+            </div>
               {/* album art with ambient glow */}
-              <div style={{
+              <div data-party-motion="art" style={{
                 width:'min(100%, clamp(320px, 54vw, 760px), clamp(240px, 58vh, 760px))',
                 marginBottom:24,
                 position:'relative',
@@ -15021,9 +15261,11 @@ function App() {
                   </div>
                 </div>
               </div>
-            </div>
-            <div style={{
-              width:'min(100%, clamp(260px, 34vw, 520px))', margin:'0 auto 0',
+            <div data-party-motion="progress" style={{width:'100%'}}>
+            <div className="player-stage-progress" style={{
+              width:partyOpen
+                ? 'min(100%, clamp(320px, 54vw, 760px), clamp(240px, 58vh, 760px))'
+                : 'min(100%, clamp(260px, 34vw, 520px))', margin:'0 auto 0',
               opacity: playerVisible ? 1 : 0,
               /* visibility, а не только opacity: скрытый слайдер всё равно
                  ловит клики (WebView2 не исключает невидимое из hit-test), а
@@ -15039,8 +15281,24 @@ function App() {
                 : 'opacity 0.1s ease, transform 0.1s ease, visibility 0s linear 0.1s',
             }}>
               <ProgressBar progressRef={progressRef} audioRef={audioRef} total={track.duration || 0}
-                onSeek={handleSeek} isPlaying={isPlaying} visible={playerVisible}
+                onSeek={handleSeek} isPlaying={isPlaying} visible={playerVisible} disabled={partyLocked} positionVersion={partyState.room?.revision}
                 />
+            </div>
+            </div>
+            </div>{/* player-stage-media end: progress stays directly under the artwork */}
+            </div>{/* shared artwork stage; the controls below never switch to a mock transport */}
+            <div className="player-controls-layout">
+            <div data-party-motion="controls" style={{width:'100%'}}>
+            <div style={{
+              width:'min(100%, clamp(260px, 34vw, 520px))', margin:'0 auto 0',
+              opacity: playerVisible ? 1 : 0,
+              visibility: playerVisible ? 'visible' : 'hidden',
+              pointerEvents: playerVisible ? 'auto' : 'none',
+              transform: playerVisible ? 'translateY(0)' : 'translateY(10px)',
+              transition: playerVisible
+                ? 'opacity 0.36s ease 0.28s, transform 0.48s cubic-bezier(0.22,1,0.36,1) 0.28s, visibility 0s linear 0.28s'
+                : 'opacity 0.1s ease, transform 0.1s ease, visibility 0s linear 0.1s',
+            }}>
             {/* ❌ был `const P = { spring:0.055, damping:0.84, clamp:10 }`,
                 который шестиминутно передавался в `physics={P}` во все
                 MagBtn/PlayBtn. НИ MagBtn, НИ PlayBtn этот проп не
@@ -15078,19 +15336,20 @@ function App() {
                   </svg>
                 </div>
               </MagBtn>
-              <MagBtn onClick={()=>setShuffle(s=>!s)} active={shuffle} size={SIDE}>
+              <MagBtn onClick={()=>{ if (partyCanControl()) setShuffle(s=>!s); }} disabled={partyLocked} active={shuffle} size={SIDE}>
                 <img src="../assets/shuffle.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:shuffle?1:0.38,transition:'opacity 0.2s ease'}}/>
               </MagBtn>
-              <MagBtn onClick={handlePrev} size={'clamp(46px, 6vw, 66px)'}>
+              <MagBtn onClick={handlePrev} disabled={partyLocked} size={'clamp(46px, 6vw, 66px)'}>
                 <img src="../assets/rewind.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:0.38}}/>
               </MagBtn>
-              <PlayBtn isPlaying={isPlaying} onToggle={() => { if (hasTrack) setIsPlaying(p=>!p); }}
+              <PlayBtn isPlaying={isPlaying} onToggle={togglePlayback} disabled={partyLocked}
+                title={partyLocked ? partyLabels(lang).followsHost : t(isPlaying ? 'playback_pause' : 'playback_play')}
                 trackKey={scPlayingTrack ? 'sc:'+scPlayingTrack.id
                         : (track ? 'loc:'+track.id : null)}/>
-              <MagBtn onClick={handleNext} size={'clamp(46px, 6vw, 66px)'}>
+              <MagBtn onClick={handleNext} disabled={partyLocked} size={'clamp(46px, 6vw, 66px)'}>
                 <img src="../assets/forward.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:0.38}}/>
               </MagBtn>
-              <MagBtn onClick={()=>setRepeat(r=>r==='off'?'all':r==='all'?'one':'off')} active={repeat!=='off'} size={SIDE}>
+              <MagBtn onClick={()=>{ if (partyCanControl()) setRepeat(r=>r==='off'?'all':r==='all'?'one':'off'); }} disabled={partyLocked} active={repeat!=='off'} size={SIDE}>
                 <div style={{position:'relative',width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)'}}>
                   <img src="../assets/repeat.png"  style={{position:'absolute',top:0,left:0,width:'100%',height:'100%',filter:'brightness(0) invert(1)',opacity:repeat==='off'?0.38:repeat==='all'?1:0,transition:'opacity 0.2s ease'}}/>
                   <img src="../assets/repeat1.png" style={{position:'absolute',top:0,left:0,width:'100%',height:'100%',filter:'brightness(0) invert(1)',opacity:repeat==='one'?1:0,transition:'opacity 0.2s ease'}}/>
@@ -15105,8 +15364,10 @@ function App() {
               <div style={{width:SIDE, flexShrink:0}} aria-hidden="true"/>
             </div>
             ); })()}
-            </div>{/* controls+progress wrapper end */}
-          </div>
+            </div>{/* controls wrapper end */}
+            </div>
+            </div>{/* control alignment follows the artwork column only with the library collapsed */}
+          </PartyPlayerLayout>
         </div>
 
         {/* volume panel. Скрывается из «Оформление → Элементы интерфейса»:

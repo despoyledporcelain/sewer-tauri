@@ -1,13 +1,13 @@
 import React from 'react';
 
 /* One transport, two surfaces. App owns both playback and navigation. */
-export function MiniPlayer({ visible, track, isPlaying, onPrev, onToggle, onNext, onOpen, labels }) {
+export function MiniPlayer({ visible, track, isPlaying, onPrev, onToggle, onNext, onOpen, labels, transportLocked = false }) {
   const title = track?.title || labels.untitled;
   const artist = track?.artist || '';
   const button = (action, label, className, children) => (
     <button type="button" className={`mini-player-button ${className}`}
-      title={label} aria-label={label} disabled={!visible} tabIndex={visible ? 0 : -1}
-      onClick={visible ? action : undefined}>{children}</button>
+      title={label} aria-label={label} disabled={!visible || transportLocked} tabIndex={visible && !transportLocked ? 0 : -1}
+      onClick={visible && !transportLocked ? action : undefined}>{children}</button>
   );
 
   return (

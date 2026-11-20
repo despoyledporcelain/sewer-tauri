@@ -416,6 +416,7 @@ function replayHarness(overrides = {}) {
   const state = { settings: { sourceMode: 'sc', untouched: true }, played: [], toasts: [] };
   const ref = current => ({ current });
   const context = { historyTrackKey, track: cloud, scPlayingTrack: cloud, tracks: [local], trackRef: ref(cloud),
+    partyCanSelect: () => true,
     historyRequestRef: ref(0), scReqRef: ref(0), scAuthRef: ref({ token: 'auth', clientId: 'client', userId: 1 }),
     scCacheMapRef: ref(new Map()), scTracksRef: ref([]), xfadeRef: ref(null), xfadePrimeRef: ref(null),
     trackSwitchingRef: ref(false), stationQueueRef: ref(['old station']), playlistQueueRef: ref(['old playlist']),

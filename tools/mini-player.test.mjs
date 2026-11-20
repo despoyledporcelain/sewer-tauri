@@ -211,11 +211,25 @@ test('the left lane tracks actual titlebar size without moving centered navigati
 test('app owns transport and navigation, with Russian and English accessible labels', () => {
   const integration = app.slice(app.indexOf('<TopBar navActive='), app.indexOf('/>', app.indexOf('<TopBar navActive=')));
   assert.match(integration, /onPrev=\{handlePrev\} onNext=\{handleNext\}/);
-  assert.match(integration, /onTogglePlayback=\{\(\)=>\{ if \(hasTrack\) setIsPlaying\(p=>!p\); \}\}/);
+  assert.match(integration, /onTogglePlayback=\{togglePlayback\}/);
   assert.doesNotMatch(source, /new Audio|setView|onNav|\.play\(|requestAnimationFrame/);
   for (const key of ['mini_player', 'mini_player_open', 'playback_previous', 'playback_next', 'playback_play', 'playback_pause', 'track_untitled']) {
     assert.equal((app.match(new RegExp(`\\b${key}:`, 'g')) || []).length, 2);
   }
+});
+
+test('room guests retain open-player navigation but cannot focus or invoke mini transport controls', () => {
+  const calls = [];
+  const tree = MiniPlayer({ ...props, visible: true, transportLocked: true,
+    onPrev: () => calls.push('prev'), onToggle: () => calls.push('play'), onNext: () => calls.push('next') });
+  const buttons = find(tree, node => node.type === 'button' && String(node.props.className).includes('mini-player-button'));
+  for (const button of buttons) {
+    assert.equal(button.props.disabled, true);
+    assert.equal(button.props.tabIndex, -1);
+    assert.equal(button.props.onClick, undefined);
+  }
+  assert.deepEqual(calls, []);
+  assert.equal(find(tree, node => node.props.className === 'mini-player-track')[0].props.disabled, false);
 });
 
 test('layout keeps centered navigation, collapses metadata first and honors reduced motion', () => {
