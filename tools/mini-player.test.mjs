@@ -237,7 +237,8 @@ test('layout keeps centered navigation, collapses metadata first and honors redu
   assert.match(css, /container-type:inline-size/);
   assert.match(css, /@container \(max-width:220px\)[\s\S]*?\.mini-player-meta \{ display:none; \}/);
   assert.match(css, /@container \(max-width:140px\)[\s\S]*?\.mini-player-cover \{ display:none; \}/);
-  assert.match(css, /prefers-reduced-motion:reduce[\s\S]*?\.mini-player[\s\S]*?transition:none; transform:none/);
+  assert.match(css, /prefers-reduced-motion:reduce[\s\S]*?\.mini-player, \.mini-player\[data-visible="true"\] \{ transform:none; transition:opacity 120ms ease-out, visibility 120ms;/);
+  assert.match(css, /\.mini-player-button, \.mini-player-button:not\(:disabled\):active \{ transform:none; transition:color 140ms ease, background-color 140ms ease;/);
 });
 
 test('open-player area stays visually quiet on hover without changing transport hover feedback', () => {

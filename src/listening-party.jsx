@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { validPartyCode } from './listening-party.js';
 import './listening-party.css';
+import { useSuccessFeedback } from './use-motion-feedback.js';
 
 const STRINGS = {
   ru: {
@@ -92,6 +93,8 @@ export function PartySurface({ state, labels: l, user, dispatch, onCreate, onJoi
   const host = room?.role === 'host';
   const username = user?.username || l.you;
   const copyStatus = state.copied ? l.copied : state.copyError ? l.copyError : '';
+  // Clipboard result is authoritative; errors never enter the success state.
+  const copiedFeedbackRef = useSuccessFeedback(state.copied ? 'saved' : 'saving', 160);
   const error = state.playbackError || state.notice;
   const members = room ? room.members : [{ id: 'self', name: username, avatarUrl: user?.avatarUrl }];
 
@@ -146,7 +149,7 @@ export function PartySurface({ state, labels: l, user, dispatch, onCreate, onJoi
         <div className="party-invite-code">
           <span className="party-room-code" aria-label={l.codeLabel}>{room.code.slice(0, 3)} {room.code.slice(3)}</span>
           <button type="button" className="party-copy-button" onClick={onCopy} aria-label={state.copied ? l.copied : l.copy} title={state.copied ? l.copied : l.copy}>
-            <Icon name={state.copied ? 'check' : 'copy'} size={14}/>
+            <span ref={copiedFeedbackRef} className="party-copy-icon"><Icon name={state.copied ? 'check' : 'copy'} size={14}/></span>
           </button>
         </div>
         {copyStatus && <span className="party-copy-status" role="status">{copyStatus}</span>}

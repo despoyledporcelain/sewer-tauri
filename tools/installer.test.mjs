@@ -48,7 +48,7 @@ test('all pages are skinned but real update, runtime and uninstall operations re
     else assert.ok(template.includes(operation), operation);
   }
   assert.ok(template.includes('!insertmacro SEWER_INSTALLER_FUNCTIONS'));
-  assert.ok(branding.includes('${If} ${RebootFlag}\n      Return'));
+  assert.match(branding, /\$\{If\} \$\{RebootFlag\}\r?\n      Return/);
 });
 
 test('installer artwork is local, high-DPI, valid 24-bit BMP with a matching dark background', () => {

@@ -25,8 +25,10 @@ test('discrete values are rounded relative to minimum without float tails', () =
 
 const app = readFileSync(new URL('../src/app.jsx', import.meta.url), 'utf8');
 const begin = app.indexOf('function useRail(');
-const end = app.indexOf('/* вертикальный фейдер', begin);
+const end = app.indexOf('function EqFader(', begin);
 assert.ok(begin >= 0 && end > begin);
+const railSource = app.slice(begin, end).replace(/\/\*[\s\S]*?\*\//g, '').trim();
+assert.match(railSource, /\}\s*$/);
 
 function rail({ value = 0, min = -12, max = 12, step = 0.5, vertical = true } = {}) {
   const frames = new Map(), values = [], positions = [];
@@ -38,7 +40,7 @@ function rail({ value = 0, min = -12, max = 12, step = 0.5, vertical = true } = 
     requestAnimationFrame: callback => { frames.set(++id, callback); return id; },
     cancelAnimationFrame: id => frames.delete(id),
   };
-  vm.runInNewContext(`${app.slice(begin, end)}\nglobalThis.use = useRail;`, context);
+  vm.runInNewContext(`${railSource}\nglobalThis.use = useRail;`, context);
   const events = context.use({ value, min, max, step, vertical, onChange: value => values.push(value) });
   let capture = false;
   const target = {

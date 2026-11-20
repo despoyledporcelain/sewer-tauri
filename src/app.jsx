@@ -3,7 +3,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMe
    глобала нет, поэтому импортируем точечно. Правка в PATCHES — замена
    ReactDOM.createPortal на createPortal. */
 import { createPortal } from 'react-dom'
-import { motion, AnimatePresence, LayoutGroup, Reorder, useSpring, useReducedMotion, useMotionValue, useTransform } from 'framer-motion'
+import { motion, AnimatePresence, LayoutGroup, Reorder, useSpring, useMotionValue, useTransform } from 'framer-motion'
 import { EqContour, createEqContourModel } from './eq-contour.jsx'
 import { crossfadeBoltEnvelope, crossfadeBoltPath, crossfadeBoltBranches } from './crossfade-preview-motion.js'
 import './equalizer.css'
@@ -43,6 +43,10 @@ import { initialPartyState, partyReducer, sharedPartyTrack } from './listening-p
 import { PartyClient } from './party-client.js'
 import { withScArtwork, resolvePartyArtwork } from './party-artwork.js'
 import { waitForPartyAudio } from './party-audio.js'
+import { createNavigationOwner, createToastOwner, createFeedbackMotion, isFineHover } from './motion-lifecycle.js'
+import { useSuccessFeedback } from './use-motion-feedback.js'
+import { useReducedMotion } from './use-motion-preference.js'
+import { reducedMotionNow, subscribeReducedMotion, animateHeroFlight, heroMayReveal } from './motion-preference.js'
 
 
 /* десктоп-поведение вместо сайт-поведения:
@@ -1300,22 +1304,31 @@ function extractAccentColor(url) {
 const _smoothScrolls = new WeakMap();
 function smoothScroll(el, targetTop, duration) {
   stopSmoothScroll(el);
+  if (reducedMotionNow()) { el.scrollTop = targetTop; return; }
   const startTop = el.scrollTop;
   const delta    = targetTop - startTop;
   if (Math.abs(delta) < 1) return;   /* субпиксель — анимировать нечего */
   const t0 = performance.now();
+  const unsubscribe = subscribeReducedMotion(event => {
+    if (!event.matches) return;
+    stopSmoothScroll(el);
+    el.scrollTop = targetTop;
+  });
+  const owner = { frame: 0, unsubscribe, cancelled: false };
   const ease = x => x < 0.5 ? 2*x*x : 1 - Math.pow(-2*x + 2, 2)/2;
   const tick = now => {
+    if (owner.cancelled) return;
     const p = Math.min((now - t0) / duration, 1);
     el.scrollTop = startTop + delta * ease(p);
-    if (p < 1) _smoothScrolls.set(el, requestAnimationFrame(tick));
-    else _smoothScrolls.delete(el);
+    if (p < 1) owner.frame = requestAnimationFrame(tick);
+    else { unsubscribe(); _smoothScrolls.delete(el); }
   };
-  _smoothScrolls.set(el, requestAnimationFrame(tick));
+  owner.frame = requestAnimationFrame(tick);
+  _smoothScrolls.set(el, owner);
 }
 function stopSmoothScroll(el) {
   const h = _smoothScrolls.get(el);
-  if (h) { cancelAnimationFrame(h); _smoothScrolls.delete(el); }
+  if (h) { h.cancelled = true; cancelAnimationFrame(h.frame); h.unsubscribe(); _smoothScrolls.delete(el); }
 }
 /* пользователь перехватывает автоскролл. вешается на сам скроллер */
 function bindScrollInterrupt(el) {
@@ -2368,14 +2381,15 @@ function LikeHeart({ liked, size, className, style }) {
 }
 
 function PlayerLikeBtn({ liked, onLike, style: extraStyle }) {
+  const reduced = useReducedMotion();
   const [hov, setHov] = useState(false);
   const [popKey, setPopKey] = useState(0);
   const click = () => { if (!liked) setPopKey(k => k + 1); onLike(); };
   return (
     <div
       onClick={click}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
+      onPointerEnter={e => { if (isFineHover(e)) setHov(true); }}
+      onPointerLeave={() => setHov(false)}
       style={{
         flexShrink:0, cursor:'pointer', padding:4, lineHeight:0,
         opacity: liked ? (hov ? 1 : 0.85) : (hov ? 0.6 : 0.25),
@@ -2383,9 +2397,9 @@ function PlayerLikeBtn({ liked, onLike, style: extraStyle }) {
         ...extraStyle,
       }}
     >
-      <div style={{position:'relative', display:'flex', transform: hov ? 'scale(1.1)' : 'scale(1)', transition:'transform 260ms cubic-bezier(0.23,1,0.32,1)'}}>
+      <div data-motion-spatial="" style={{position:'relative', display:'flex', transform: hov ? 'scale(1.1)' : 'scale(1)', transition:'transform 260ms cubic-bezier(0.23,1,0.32,1)'}}>
         {/* кольцо-вспышка: расходится и гаснет при каждом лайке */}
-        {popKey > 0 && (
+        {!reduced && popKey > 0 && (
           <motion.div key={'ring' + popKey}
             initial={{ scale: 0.55, opacity: 0.55 }}
             animate={{ scale: 1.8, opacity: 0 }}
@@ -2394,9 +2408,9 @@ function PlayerLikeBtn({ liked, onLike, style: extraStyle }) {
               border:'1.5px solid var(--accent)', pointerEvents:'none'}}/>
         )}
         {/* сердце: пружинный поп с лёгким поворотом, replay по key */}
-        <motion.div key={'pop' + popKey}
+        <motion.div key={'pop' + popKey} data-motion-spatial=""
           initial={{ scale: 1, rotate: 0 }}
-          animate={popKey > 0
+          animate={!reduced && popKey > 0
             ? { scale: [1, 1.45, 0.82, 1.12, 1], rotate: [0, -8, 5, 0, 0] }
             : { scale: 1, rotate: 0 }}
           transition={{ duration: 0.55, ease: 'easeOut' }}
@@ -2788,6 +2802,7 @@ function afxTransport(patch) {
 
 /* ── Progress Bar ────────────────────────────────────────────────────────── */
 function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible, disabled = false, positionVersion }) {
+  const reduced = useReducedMotion();
   const trackRef         = useRef(null);
   const fillRef          = useRef(null);
   const thumbRef         = useRef(null);
@@ -2922,17 +2937,18 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
     userSelect: 'none', flexShrink: 0,
     transition: 'color 0.2s ease',
   };
-  const thick = hover || active;
+  const thick = !reduced && (hover || active);
   const TRACK_H = thick ? 14 : 10;
-  const THUMB_SZ = active ? 16 : (hover ? 14 : 0);
+  const THUMB_SZ = reduced ? 14 : active ? 16 : (hover ? 14 : 0);
   return (
     <div style={{width:'100%', display:'flex', alignItems:'center', gap:11}}>
       <span ref={elapsedSpanRef} style={timeStyle}>{fmt(Math.floor(progressRef.current * (total||0)))}</span>
       {/* clickable hit-zone with vertical padding */}
       <div
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => { setHover(false); setTip(s => ({...s, show:false})); }}
-        onMouseMove={e => {
+        onPointerEnter={e => { if (isFineHover(e)) setHover(true); }}
+        onPointerLeave={() => { setHover(false); setTip(s => ({...s, show:false})); }}
+        onPointerMove={e => {
+          if (!isFineHover(e)) return;
           const rect = trackRef.current?.getBoundingClientRect();
           if (!rect) return;
           const wrapRect = e.currentTarget.getBoundingClientRect();
@@ -2966,7 +2982,7 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
         )}
         <div style={{ width:'100%', position:'relative' }}>
           {/* track with overflow-hidden so fill scaleX clips cleanly */}
-          <div ref={trackRef}
+          <div ref={trackRef} data-motion-position=""
             style={{
               width:'100%', position:'relative',
               height: TRACK_H,
@@ -2988,7 +3004,7 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
             }}/>
           </div>
           {/* glow: полной ширины, едет opacity. почему — в index.md */}
-          <div ref={glowRef} style={{
+          <div ref={glowRef} data-motion-position="" style={{
             position:'absolute', left:0, right:0, top:'50%', translate:'0 -50%',
             height: TRACK_H,
             borderRadius: 999,
@@ -3004,7 +3020,7 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
             transition: 'box-shadow 0.18s linear, height 0.22s cubic-bezier(0.34,1.56,0.64,1)',
           }}/>
           {/* thumb: left 0, позиция приходит translate'ом в px (см. draw) */}
-          <div ref={thumbRef} style={{
+          <div ref={thumbRef} data-motion-position="" style={{
             position:'absolute', top:'50%', left:0,
             transform: 'translate(0, -50%)',
             width: THUMB_SZ, height: THUMB_SZ,
@@ -3062,7 +3078,7 @@ const itemHover = {
    и вычислили причину */
 function Item({ label, icon, disabled, onClick, onClose }) {
   return (
-    <motion.div variants={itemVars} onClick={disabled ? null : () => { onClick?.(); onClose(); }}
+    <motion.div variants={itemVars} data-motion-spatial="" onClick={disabled ? null : () => { onClick?.(); onClose(); }}
       style={{ ...itemStyle, color: disabled ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.86)', cursor: disabled ? 'default' : 'pointer' }}
       {...(disabled ? {} : itemHover)}>
       <span style={{display:'flex', alignItems:'center', justifyContent:'center', width:14, opacity:0.7}}>{icon}</span>
@@ -3092,7 +3108,7 @@ function PlCheck({ state, busy }) {
         width:14, height:14, flexShrink:0, borderRadius:4, border:'1.5px solid',
         display:'flex', alignItems:'center', justifyContent:'center',
       }}>
-      <motion.svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0a0a0c"
+      <motion.svg data-motion-spatial="" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#0a0a0c"
         strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"
         initial={false}
         animate={{ scale: on ? 1 : 0.4, opacity: on ? 1 : 0 }}
@@ -3171,7 +3187,7 @@ function ThinVolumeSlider({ volume, onChange, onLiveChange }) {
       const frames = dt / 16.7;
       const k = 1 - Math.pow(1 - speed, frames);
       const diff = volActual.current - volDisp.current;
-      if (!dragging.current && Math.abs(diff) < 0.001) {
+      if (reducedMotionNow() || !dragging.current && Math.abs(diff) < 0.001) {
         volDisp.current = volActual.current;
       } else {
         volDisp.current += diff * k;
@@ -3254,6 +3270,7 @@ function ThinVolumeSlider({ volume, onChange, onLiveChange }) {
    после load+decode плавно проявляется (0.45s), старая остаётся под ней до
    конца кроссфейда — тёмной вспышки и «пустого бокса» при смене трека нет */
 function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = false, topReady = true }) {
+  const reduced = useReducedMotion();
   /* кавер рисуется в canvas ПЛОСКИМ прямоугольником, без клипа по скруглению.
      скругление делает контейнер (border-radius + overflow:hidden). вторая
      растеризация той же кривой внутри битмапа давала на стыке светлый шов
@@ -3369,12 +3386,12 @@ function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = fa
     if (!cv) return;
     if (isTop) {
       cv.style.opacity = ready ? '1' : '0';
-      cv.style.transform = ready ? 'none' : 'scale(1.035)';
+      cv.style.transform = reduced || ready ? 'none' : 'scale(1.035)';
       return;
     }
     if (!topReady) return;
     cv.style.opacity = '0';
-    cv.style.transform = 'scale(0.985)';
+    cv.style.transform = reduced ? 'none' : 'scale(0.985)';
     /* ⚠️ `instant` в deps — обязателен, и это и есть баг «обложка из
        библиотеки приезжает заглушкой».
 
@@ -3393,7 +3410,7 @@ function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = fa
        Именно поэтому баг воспроизводится ТОЛЬКО из библиотеки:
        переключение треков в списке плеера идёт без hero, там
        instant всегда false и конфликта значений не возникает. */
-  }, [isTop, ready, topReady, instant]);
+  }, [isTop, ready, topReady, instant, reduced]);
 
   return (
     <canvas ref={canvasRef}
@@ -3403,7 +3420,7 @@ function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = fa
            клон поверх уже показывает новую обложку; если дать нижним слоям дорисовки,
            в момент снятия клона сверху будет полупрозрачная новая,
            а снизу — старая. */
-        transition: instant ? 'none' : 'opacity 0.38s ease-out, transform 0.5s cubic-bezier(0.2,0.8,0.2,1)',
+        transition: instant ? 'none' : reduced ? 'opacity 0.12s ease-out' : 'opacity 0.38s ease-out, transform 0.5s cubic-bezier(0.2,0.8,0.2,1)',
         willChange:'transform, opacity',
         pointerEvents:'none'}}/>
   );
@@ -3444,13 +3461,27 @@ function CoverTint() {
 
 function AlbumArt({ track, instant, onReady }) {
   const url = track?.coverUrl || null;
-  const [layers, setLayers] = useState(() => (url ? [{ url }] : []));
+  const [layers, setLayers] = useState(() => (url ? [{ url, id: 0 }] : []));
+  const nextLayerId = useRef(1);
+  const requestedUrl = useRef(url);
+  const alive = useRef(true);
+  useLayoutEffect(() => { requestedUrl.current = url; }, [url]);
+  useLayoutEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
   const pruneTimer = useRef(null);
-  const topUrl = layers.length ? layers[layers.length - 1].url : null;
+  const top = layers[layers.length - 1];
+  const topUrl = top?.url || null;
   /* верхний слой отрисован — сообщаем, чтобы hero-клон снимался только когда
      под ним уже лежит НОВАЯ обложка, а не предыдущая */
-  const topReady = layers.length ? !!layers[layers.length - 1].ready : true;
-  useEffect(() => { if (topReady) onReady?.(); }, [topReady, onReady]);
+  const topReady = top ? !!top.ready : true;
+  // An empty stack during a new request is not a decoded cover. A failed
+  // current layer is retained as a settled placeholder, not mounted for retry.
+  const currentReady = url ? topUrl === url && !!(top.ready || top.failed) : layers.length === 0;
+  useEffect(() => {
+    if (currentReady) onReady?.();
+  }, [track?.id, url, currentReady, onReady]);
   /* трасса слоёв: сколько их, готов ли верхний и какой url пришёл. без неё
      «обложки нету» и «осталась чужая обложка» выглядят одинаково */
   useEffect(() => {
@@ -3472,6 +3503,7 @@ function AlbumArt({ track, instant, onReady }) {
   useEffect(() => {
     if (url === topUrl) return;
     if (pruneTimer.current) { clearTimeout(pruneTimer.current); pruneTimer.current = null; }
+    const layer = url ? { url, id: nextLayerId.current++ } : null;
     /* 🚨 раньше здесь было `setLayers(url ? [...layers, { url }] : [])`.
        `layers` здесь — ЗАМЫКАНИЕ эффекта, а его deps = [url]. если смена
        обложки приходит в том же батче, что и другая (быстрое переключение
@@ -3482,9 +3514,9 @@ function AlbumArt({ track, instant, onReady }) {
        применения неважен. */
     setLayers(prev => {
       if (!url) return [];
-      const found = prev.find(l => l.url === url);
+      const found = prev.find(l => l.url === url && !l.failed);
       if (found) return [...prev.filter(l => l.url !== url), found];
-      return [...prev, { url }];
+      return [...prev.filter(l => l.url !== url), layer];
     });
   }, [url, topUrl]);
 
@@ -3495,6 +3527,7 @@ function AlbumArt({ track, instant, onReady }) {
     if (!top.ready) return;
     if (pruneTimer.current) clearTimeout(pruneTimer.current);
     pruneTimer.current = setTimeout(() => {
+      if (!alive.current) return;
       pruneTimer.current = null;
       setLayers(prev => {
         if (prev.length < 2) return prev;
@@ -3506,14 +3539,26 @@ function AlbumArt({ track, instant, onReady }) {
 
   useEffect(() => () => { if (pruneTimer.current) clearTimeout(pruneTimer.current); }, []);
 
-  const markLoaded = u => setLayers(prev => {
-    const i = prev.findIndex(l => l.url === u);
-    if (i < 0 || prev[i].ready) return prev;
-    const next = prev.slice();
-    next[i] = { url: u, ready: true };
-    return next;
-  });
-  const dropLayer = u => setLayers(prev => prev.filter(l => l.url !== u));
+  const markLoaded = (u, id) => {
+    if (!alive.current) return;
+    setLayers(prev => {
+      const i = prev.findIndex(l => l.url === u && l.id === id);
+      if (i < 0 || prev[i].ready || prev[i].failed) return prev;
+      const next = prev.slice();
+      next[i] = { ...prev[i], ready: true };
+      return next;
+    });
+  };
+  const dropLayer = (u, id) => {
+    if (!alive.current) return;
+    setLayers(prev => {
+      const i = prev.findIndex(l => l.url === u && l.id === id);
+      if (i < 0 || prev[i].failed) return prev;
+      // Never expose the preceding track or recreate this failed request.
+      if (u === requestedUrl.current && i === prev.length - 1) return [{ ...prev[i], ready: false, failed: true }];
+      return prev.filter(l => l.id !== id);
+    });
+  };
 
   return (
     <div style={{
@@ -3523,8 +3568,8 @@ function AlbumArt({ track, instant, onReady }) {
     }}>
       {/* placeholder underneath — always rendered */}
       <img src="../assets/note.png" style={{width:32,height:32,filter:'brightness(0) invert(1)',opacity:0.13}}/>
-      {layers.map((l, i) => (
-        <CoverLayer key={l.url} url={l.url} onLoaded={markLoaded} onFailed={dropLayer} instant={instant}
+      {layers.map((l, i) => !l.failed && (
+        <CoverLayer key={l.id} url={l.url} onLoaded={u => markLoaded(u, l.id)} onFailed={u => dropLayer(u, l.id)} instant={instant}
           isTop={i === layers.length - 1} ready={!!l.ready} topReady={topReady}/>
       ))}
       <CoverTint/>
@@ -3608,9 +3653,12 @@ function MagBtn({ onClick, active, children, size=52, disabled = false, title })
   const [hov, setHov] = useState(false);
   const mx = useSpring(0, { stiffness: 340, damping: 24, mass: 0.35 });
   const my = useSpring(0, { stiffness: 340, damping: 24, mass: 0.35 });
+  useLayoutEffect(() => {
+    if (reduce || disabled) { mx.jump(0); my.jump(0); }
+  }, [reduce, disabled, mx, my]);
 
   const move = e => {
-    if (reduce || disabled) return;
+    if (reduce || disabled || !isFineHover(e)) return;
     const r = e.currentTarget.getBoundingClientRect();
     /* нормализуем по половине габарита: край кнопки = 1, центр = 0, поэтому
        предел уезда одинаков и у 40px, и у 66px */
@@ -3622,9 +3670,10 @@ function MagBtn({ onClick, active, children, size=52, disabled = false, title })
   const leave = () => { setHov(false); mx.set(0); my.set(0); };
 
   return (
-    <motion.button onClick={onClick} disabled={disabled} title={title}
-      onPointerEnter={() => { if (!disabled) setHov(true); }} onPointerMove={move} onPointerLeave={leave}
-      whileTap={disabled ? undefined : { scale: 0.94 }}
+    <motion.button data-motion-spatial="" onClick={onClick} disabled={disabled} title={title}
+      onPointerEnter={e => { if (!disabled && isFineHover(e)) setHov(true); }} onPointerMove={move} onPointerLeave={leave}
+      whileTap={disabled || reduce ? undefined : { scale: 0.94 }}
+      animate={reduce ? { scale: 1 } : undefined}
       transition={{ type:'spring', stiffness: 520, damping: 28, mass: 0.5 }}
       style={{
         position:'relative',
@@ -3644,10 +3693,10 @@ function MagBtn({ onClick, active, children, size=52, disabled = false, title })
           + ' rgba(var(--accent-rgb),0.04) 67%,'
           + ' rgba(var(--accent-rgb),0) 78%)',
         opacity: hov ? 1 : 0,
-        transform: hov ? 'scale(1)' : 'scale(0.58)',
+        transform: reduce || hov ? 'scale(1)' : 'scale(0.58)',
         /* появление медленнее угасания: курсор влетает быстро, а отпускает
            кнопку глаз ещё несколько кадров */
-        transition: hov
+        transition: reduce ? 'opacity 150ms ease' : hov
           ? 'opacity 190ms ease, transform 340ms cubic-bezier(0.23,1,0.32,1)'
           : 'opacity 150ms ease, transform 150ms cubic-bezier(0.23,1,0.32,1)',
         pointerEvents:'none',
@@ -3662,6 +3711,9 @@ function MagBtn({ onClick, active, children, size=52, disabled = false, title })
 
 /* ── PlayBtn ─────────────────────────────────────────────────────────────── */
 function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title }) {
+  const reduced = useReducedMotion();
+  const pulseRef = useRef(null);
+  const pulseMotionRef = useRef(null);
   const BTN = 'clamp(58px, 7.2vw, 86px)';
   const ICO = 'clamp(32px, 4.2vw, 50px)';
   /* Два разных импульса, потому что это разные события.
@@ -3673,7 +3725,6 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
      переключение не сигналит ничем: обложка меняется в соседней
      панели, а на кнопке ничего. */
   const [playPulse, setPlayPulse] = useState(0);
-  const [trackPulse, setTrackPulse] = useState(0);
   const [hov, setHov] = useState(false);
   const wasPlaying = useRef(false);
   useEffect(() => {
@@ -3681,11 +3732,16 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
     wasPlaying.current = isPlaying;
   }, [isPlaying]);
   const lastTrack = useRef(trackKey);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    pulseMotionRef.current = createFeedbackMotion(pulseRef.current);
+    return () => pulseMotionRef.current.cancel();
+  }, []);
+  useLayoutEffect(() => {
+    if (reduced || disabled) pulseMotionRef.current.cancel();
     if (lastTrack.current === trackKey) return;
     lastTrack.current = trackKey;
-    if (trackKey != null) setTrackPulse(k => k + 1);
-  }, [trackKey]);
+    if (trackKey != null && !disabled) pulseMotionRef.current.pulse(reduced);
+  }, [trackKey, reduced, disabled]);
 
   /* Раньше обе иконки анимировались одновременно и навстречу: уходящая
      крутилась на −90° и сжималась до 0.45, приходящая крутилась на +90°
@@ -3698,26 +3754,30 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
     position:'absolute', top:0, left:0, width:ICO, height:ICO,
     filter:'brightness(0) invert(1)',
     opacity: visible ? 1 : 0,
-    transform: visible ? 'scale(1)' : 'scale(0.78)',
-    transition: visible
+    transform: reduced || visible ? 'scale(1)' : 'scale(0.78)',
+    transition: reduced ? 'opacity 0.12s ease-out' : visible
       ? 'opacity 0.22s ease-out, transform 0.34s cubic-bezier(0.2,0.9,0.2,1)'
       : 'opacity 0.12s ease-in, transform 0.12s ease-in',
     pointerEvents:'none',
   });
   return (
-    <motion.button onClick={onToggle} disabled={disabled} title={title} aria-label={title}
-      onPointerEnter={() => { if (!disabled) setHov(true); }} onPointerLeave={() => setHov(false)}
-      whileTap={disabled ? undefined : { scale: 0.95 }}
-      animate={trackPulse > 0 ? { scale: [1, 0.9, 1] } : {}}
+    <motion.button data-motion-spatial="" onClick={onToggle} disabled={disabled} title={title} aria-label={title}
+      onPointerEnter={e => { if (!disabled && isFineHover(e)) setHov(true); }} onPointerLeave={() => setHov(false)}
+      whileTap={disabled || reduced ? undefined : { scale: 0.95 }}
+      animate={reduced ? { scale: 1 } : undefined}
       transition={{ type:'spring', stiffness: 380, damping: 26, mass: 0.6 }}
       style={{
         width:BTN, height:BTN, borderRadius:'50%', border:'none',
-        background: isPlaying ? 'rgba(178,178,178,0.1)' : 'rgba(255,255,255,0.06)',
+        background:'none',
         color:'var(--text)',
         display:'flex', alignItems:'center', justifyContent:'center',
         cursor:disabled ? 'default' : 'pointer', opacity:disabled ? 0.6 : 1, flexShrink:0, position:'relative',
         transition:'background 0.3s ease',
       }}>
+      <span ref={pulseRef} style={{position:'absolute', inset:0, borderRadius:'inherit',
+        display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none',
+        background: isPlaying ? 'rgba(178,178,178,0.1)' : 'rgba(255,255,255,0.06)',
+        transition:'background 0.3s ease'}}>
       {/* ховер — не масштаб, а свет: вокруг кнопки проступает акцентное кольцо.
           оно живёт за габаритом кнопки, поэтому ряд не сдвигается и ничего не
           пересчитывается в layout; появление с лёгким расширением, угасание
@@ -3726,13 +3786,13 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
         position:'absolute', inset:-8, borderRadius:'50%',
         border:'1.5px solid rgba(var(--accent-rgb),0.42)',
         opacity: hov ? 1 : 0,
-        transform: hov ? 'scale(1)' : 'scale(0.88)',
-        transition: hov
+        transform: reduced || hov ? 'scale(1)' : 'scale(0.88)',
+        transition: reduced ? 'opacity 140ms ease' : hov
           ? 'opacity 200ms ease, transform 320ms cubic-bezier(0.23,1,0.32,1)'
           : 'opacity 140ms ease, transform 140ms cubic-bezier(0.23,1,0.32,1)',
         pointerEvents:'none',
       }}/>
-      {isPlaying && playPulse > 0 && (
+      {!reduced && isPlaying && playPulse > 0 && (
         <motion.span key={playPulse}
           initial={{ scale:0.82, opacity:0.5 }}
           animate={{ scale:1.45, opacity:0 }}
@@ -3746,6 +3806,7 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
         <img src="../assets/play.png"  style={ico(!isPlaying)}/>
         <img src="../assets/pause.png" style={ico( isPlaying)}/>
       </div>
+      </span>
     </motion.button>
   );
 }
@@ -4045,7 +4106,7 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
 
   return createPortal(
     <>
-    <motion.div ref={ref}
+    <motion.div ref={ref} data-motion-spatial=""
       /* вход и каскад пунктов — на ОДНОМ элементе, на корне, и варианты
          вынесены в MENU_VARIANTS (модуль): инлайновый объект пересоздавался
          каждый рендер и пункты переанимировались на любое обновление state.
@@ -4057,7 +4118,7 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
       initial="hidden" animate="show"
       /* exit только на корне: у вложенного он заставлял AnimatePresence ждать
          его пружину и держать панель на экране после закрытия ~0.4с */
-      exit={{ opacity: 0, scale: 0.96, y: -2, transition: { duration: 0.14, ease: [0.4, 0, 1, 1] } }}
+      exit={{ opacity: 0, scale: 0.96, y: -2, transition: { duration: 0.14, ease: [0.22, 1, 0.36, 1] } }}
       style={{
         position:'fixed', left: pos.x, top: pos.y,
         transformOrigin: 'top left',
@@ -4106,7 +4167,7 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
           </svg>
         }/>
       {canAddPl && (
-        <motion.div variants={itemVars}
+        <motion.div variants={itemVars} data-motion-spatial=""
           onClick={() => setPlOpen(v => !v)}
           style={itemStyle} {...itemHover}>
           <span style={{display:'flex', alignItems:'center', justifyContent:'center', width:14, opacity:0.7}}>
@@ -4116,7 +4177,7 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
             </svg>
           </span>
           <span>{t('add_to_pl')}</span>
-          <motion.span animate={{ rotate: plOpen ? 90 : 0 }} transition={{ duration: 0.18, ease:'easeOut' }}
+          <motion.span data-motion-rotation={plOpen ? 'open' : 'closed'} animate={{ rotate: plOpen ? 90 : 0 }} transition={{ duration: reducedMotionNow() ? 0 : 0.18, ease:'easeOut' }}
             style={{marginLeft:'auto', display:'flex', color:'rgba(255,255,255,0.3)'}}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </motion.span>
@@ -4139,7 +4200,8 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
           <motion.div key="plPicker" ref={subRef}
             initial={{ opacity: 0, x: subPos ? (subPos.dir > 0 ? -6 : 6) : -6 }}
             animate={{ opacity: subPos ? 1 : 0, x: 0 }}
-            exit={{ opacity: 0, x: subPos ? (subPos.dir > 0 ? -4 : 4) : -4, transition: { duration: 0.12, ease: 'easeIn' } }}
+            data-motion-spatial=""
+            exit={{ opacity: 0, x: subPos ? (subPos.dir > 0 ? -4 : 4) : -4, transition: { duration: 0.12, ease: [0.22, 1, 0.36, 1] } }}
             transition={{ type:'spring', stiffness: 560, damping: 36, mass: 0.5 }}
             style={{
               position:'fixed', left: subPos?.x ?? -9999, top: subPos?.y ?? -9999,
@@ -4401,10 +4463,10 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
           style={{ position: 'absolute', inset: 0, zIndex: 10000, background: 'rgba(4,4,8,0.55)',
             backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <motion.div
+          <motion.div data-motion-spatial=""
             initial={{ scale: 0.97, y: 10, opacity: 0 }}
             animate={{ scale: 1, y: 0, opacity: 1 }}
-            exit={{ scale: 0.98, y: 6, opacity: 0, transition: { duration: 0.13, ease: 'easeIn' } }}
+            exit={{ scale: 0.98, y: 6, opacity: 0, transition: { duration: 0.13, ease: [0.22, 1, 0.36, 1] } }}
             transition={{ type: 'spring', stiffness: 420, damping: 32, mass: 0.7 }}
             style={{ width: 384, background: 'var(--pop-bg)',
               backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
@@ -4666,7 +4728,7 @@ function VirtualTrackList({ items, pinned, revealKey, activeId, loadingId, error
       scrollbarGutter:'stable both-edges',
     }}>
       {activeIdx >= 0 && (
-        <div style={{
+        <div data-motion-position="" style={{
           position:'absolute', pointerEvents:'none',
           top:2, left:6, right:6, height: ROW_H - 2,
           transform:`translateY(${activeIdx * ROW_H}px)`,
@@ -4717,12 +4779,12 @@ function SourceMark({ busy, dead }) {
   /* 7px под кружок, 4px под точку, 0 когда индикатора нет */
   const w = busy ? 7 : dead ? 4 : 0;
   return (
-    <span style={{
+    <span data-motion-position="" style={{
       position:'relative', flexShrink:0,
       width:w, height:7, marginRight: w ? 5 : 0,
       transition:'width 0.26s cubic-bezier(0.22,1,0.36,1), margin-right 0.26s cubic-bezier(0.22,1,0.36,1)',
     }}>
-      <span style={{
+      <span data-motion-spatial="" style={{
         position:'absolute', left:0, top:'50%', width:4, height:4, marginTop:-2,
         borderRadius:'50%', background:'rgba(255,80,60,0.7)',
         opacity: dead ? 1 : 0,
@@ -4732,7 +4794,7 @@ function SourceMark({ busy, dead }) {
       {/* кружок: scale живёт на обёртке, потому что transform самого кружка
           занимает анимация spin — инлайновый scale просто не применился бы
           (тот же класс бага, что с :hover у .home-card в styles.css) */}
-      <span style={{
+      <span data-motion-spatial="" style={{
         position:'absolute', left:0, top:'50%', width:7, height:7, marginTop:-3.5,
         opacity: busy ? 1 : 0,
         transform: busy ? 'scale(1)' : 'scale(0.3)',
@@ -4958,7 +5020,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   };
 
   return (
-    <div style={{
+    <div data-motion-spatial="" style={{
       position:'absolute', inset:0, display:'flex', flexDirection:'column',
       opacity: open ? 1 : 0,
       /* inPlayer — тот же трюк, что у слоя списка: `pointer-events:none` на
@@ -5198,7 +5260,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
           const on = i === activeLine;
           const d  = activeLine >= 0 ? Math.abs(i - activeLine) : 99;
           return (
-            <div key={waveKey + ':' + i} ref={el => { if (el) lineRefs.current[i] = el; }}
+            <div key={waveKey + ':' + i} className="lyric-highlight" ref={el => { if (el) lineRefs.current[i] = el; }}
               onClick={() => l.t != null && onSeek(l.t)}
               title={l.t != null ? t('lyrics_tap_line') : undefined}
               style={{
@@ -5233,7 +5295,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
                   transition на уже проявленном узле не играл бы вовсе.
                   `backwards` держит строку прозрачной всю её задержку — иначе
                   нижние успевали бы мелькнуть до старта. */}
-              <span style={{
+              <span className="lyric-wave" style={{
                 display:'block',
                 animation:'lyricLineIn 0.42s cubic-bezier(0.22,1,0.36,1) backwards',
                 /* задержка растёт с номером строки, но не бесконечно: на
@@ -5318,6 +5380,7 @@ function useSmoothPosition(value, min, max, dragging) {
   useLayoutEffect(() => {
     if (!dragging.current) target.set(sliderFraction(value, min, max));
   }, [value, min, max, target, dragging]);
+  useLayoutEffect(() => { if (reduced) spring.jump(target.get()); }, [reduced, spring, target]);
   return { target, position: reduced ? target : spring };
 }
 
@@ -5524,7 +5587,7 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose, onOpenCrossfad
   }));
 
   return (
-    <div className="fx-panel" style={{
+    <div className="fx-panel" data-motion-spatial="" style={{
       position:'absolute', inset:0, display:'flex', flexDirection:'column',
       opacity: open ? 1 : 0,
       /* обе защиты те же, что у панели текста: `pointer-events:none` на слое
@@ -5754,7 +5817,6 @@ function HeroClone({ hero, exiting, reverse = false }) {
   const BR4     = '16px 16px 16px 16px';
   const BR_END  = corners.map(c => (c / sc) + 'px').join(' ');
   const DUR = HERO_DUR_MS / 1000;
-  const BR_MORPH = 0.55;
 
   /* ⚠️ Полёт — через Web Animations, а НЕ через gsap, и это главное про
      плавность. gsap тикает из rAF на главном потоке: каждый кадр полёта —
@@ -5789,16 +5851,9 @@ function HeroClone({ hero, exiting, reverse = false }) {
     const to = reverse
       ? { x: dx, y: dy, scale: sc, br: BR_END }
       : { x: 0, y: 0, scale: 1, br: BR4 };
-    const move = el.animate([
-      { transform: `translate3d(${from.x}px, ${from.y}px, 0) scale(${from.scale})` },
-      { transform: `translate3d(${to.x}px, ${to.y}px, 0) scale(${to.scale})` },
-    ], { duration: DUR * 1000, easing: HERO_EASE, fill: 'forwards' });
-    const morph = clip.animate([
-      { borderRadius: from.br },
-      { borderRadius: to.br },
-    ], { duration: DUR * 1000 * BR_MORPH, easing: HERO_EASE, fill: 'forwards' });
-    return () => { move.cancel(); morph.cancel(); };
-  }, []);
+    return animateHeroFlight(el, clip, from, to,
+      { duration: DUR * 1000, easing: HERO_EASE, fill: 'forwards' });
+  }, [hero, reverse]);
 
   /* ❌ Раньше гашение клона было gsap-твином в useEffect: `exiting` ставился
      таймером, эффект ждал ленивый gsap и только потом начинал фейд — клон
@@ -5934,7 +5989,7 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
     <div ref={navWrapRef} style={{position:'absolute', left:'50%', top:'50%', translate:'-50% -50%',
       transform:`translateX(${navShift}px)`,
       display:'flex', alignItems:'center', gap:4, WebkitAppRegion:'no-drag'}}>
-      <div style={{
+      <div data-motion-position="" style={{
         position:'absolute', top:2, bottom:2, left:0,
         width: pillRect.width || 34, borderRadius:10,
         background:'rgba(178,178,178,0.11)',
@@ -5989,7 +6044,7 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
                 onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.7)'}
                 onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.35)'}>
                 <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
-                  style={{transition:'transform 0.26s cubic-bezier(0.4,0,0.2,1)', transform: libCollapsed ? 'rotate(180deg)' : 'rotate(0deg)'}}>
+                  data-motion-position="" style={{transition:'transform 0.26s cubic-bezier(0.4,0,0.2,1)', transform: libCollapsed ? 'rotate(180deg)' : 'rotate(0deg)'}}>
                   <polyline points="15 18 9 12 15 6"/>
                 </svg>
               </div>
@@ -6425,7 +6480,7 @@ function ThemeTile({ label, theme, active, onClick, onDelete, deleteTitle, mica,
   const ac = accent || theme.accent;
   const a2 = theme.accentGrad ? theme.accent2 : ac;
   return (
-    <div title={label} role="button"
+    <div title={label} role="button" data-motion-spatial=""
       onClick={onClick}
       style={{
         position: 'relative', padding: 0, cursor: 'pointer', borderRadius: 11, overflow: 'hidden',
@@ -6736,7 +6791,7 @@ function CrossfadeCurvePicker({ value, onChange }) {
       const active = curve === value;
       const sample = crossfadeCurvePoints(curve).in;
       const path = sample.map((p, i) => `${i ? 'L' : 'M'}${(p.x - 12) / 296 * 38 + 3},${(p.y - 14) / 104 * 18 + 3}`).join(' ');
-      return <motion.button key={curve} type="button" className="crossfade-curve" aria-pressed={active}
+      return <motion.button key={curve} data-motion-spatial="" type="button" className="crossfade-curve" aria-pressed={active}
         whileTap={reduced ? undefined : { scale: 0.96 }} onClick={() => { if (!active) onChange(curve); }}>
         <SelectionFill active={active} className="crossfade-curve-active"/>
         <svg viewBox="0 0 44 24" aria-hidden="true"><path d={path} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
@@ -6958,20 +7013,22 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
   const handledCrossfadeFocus = useRef(0);
   useEffect(() => {
     if (!visible || sec !== 'playback' || !crossfadeFocus || handledCrossfadeFocus.current === crossfadeFocus) return;
-    let highlight;
+    let highlight, stopScroll;
     const frame = requestAnimationFrame(() => {
       const target = crossfadeTargetRef.current, scroller = settingsScrollRef.current;
       if (!target || !scroller) return;
       handledCrossfadeFocus.current = crossfadeFocus;
       target.focus({ preventScroll: true });
       const top = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 18;
-      scroller.scrollTo({ top: Math.max(0, top), behavior: reduced ? 'instant' : 'smooth' });
-      highlight = target.querySelector('.settings-crossfade-highlight')?.animate([
+      const targetTop = Math.max(0, top);
+      scroller.scrollTo({ top: targetTop, behavior: reduced ? 'instant' : 'smooth' });
+      stopScroll = () => scroller.scrollTo({ top: reducedMotionNow() ? targetTop : scroller.scrollTop, behavior: 'instant' });
+      highlight = target.querySelector('.settings-crossfade-highlight')?.animate?.([
         { opacity: 0 }, { opacity: 0.2, offset: 0.12 },
         { opacity: 0.12, offset: 0.65 }, { opacity: 0 },
       ], { duration: 1600, delay: reduced ? 0 : 180, easing: 'ease-out' });
     });
-    return () => { cancelAnimationFrame(frame); highlight?.cancel(); };
+    return () => { cancelAnimationFrame(frame); stopScroll?.(); highlight?.cancel(); };
   }, [visible, sec, crossfadeFocus, reduced]);
   /* Материал окна выключает подсветку акцента — см. карточку акцента */
   const micaOn = settings.windowEffect === 'mica';
@@ -7401,7 +7458,7 @@ appearance: (<>
                            бы с кнопки при любой ручной правке цвета */
                         const active = th.accent.toLowerCase() === hex;
                         return (
-                          <div key={key} role="button" title={label}
+                          <div key={key} role="button" title={label} data-motion-spatial=""
                             onClick={() => setTh({ accent: hex })}
                             style={{
                               width: 26, height: 26, borderRadius: '50%', cursor: 'pointer', flexShrink: 0,
@@ -7411,8 +7468,8 @@ appearance: (<>
                                 : `0 2px 6px ${hex}38`,
                               transition: 'box-shadow 0.22s ease, transform 0.18s ease',
                             }}
-                            onMouseEnter={e => { if (!active) e.currentTarget.style.transform = 'scale(1.12)'; }}
-                            onMouseLeave={e => { if (!active) e.currentTarget.style.transform = 'none'; }}
+                            onPointerEnter={e => { if (!active && !reduced && isFineHover(e)) e.currentTarget.style.transform = 'scale(1.12)'; }}
+                            onPointerLeave={e => { e.currentTarget.style.transform = 'none'; }}
                           />
                         );
                       })}
@@ -7661,6 +7718,7 @@ appearance: (<>
                 <div style={{
                   width:6, height:6, borderRadius:'50%', background:map.c, flexShrink:0,
                   boxShadow: live ? '0 0 0 3px rgba(74,222,128,0.14)' : 'none',
+                  transition:'background-color 160ms ease, box-shadow 160ms ease',
                 }}/>
                 <div style={{ fontSize:'var(--fs-xs)', color: live ? SN.mid : SN.dim }}>{map.t}</div>
               </div>
@@ -7777,7 +7835,7 @@ appearance: (<>
           {/* Пилл выбранного раздела. Заливка акцентом вместо общего серого:
               выбранный пункт теперь виден и по цвету, а не только по насыщенности
               подписи, и совпадает с подсветкой сегментов справа. */}
-          <div style={{
+          <div data-motion-position="" style={{
             position:'absolute', left:0, right:0, borderRadius:9, pointerEvents:'none',
             background:'rgba(var(--accent-rgb),0.12)',
             boxShadow:'inset 0 0 0 1px rgba(var(--accent-rgb),0.16)',
@@ -7968,7 +8026,7 @@ function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoadi
         year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })
     : null;
   return (
-    <div onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
+    <div onPointerEnter={e => { if (isFineHover(e)) setHov(true); }} onPointerLeave={()=>setHov(false)}
       /* Строка ничего не анимирует при появлении: список меняется целиком,
          и плавность делает один общий фейд контейнера (см. ArtistView /
          SearchView). Здесь только дешёвое приглушение недоступного трека —
@@ -8080,7 +8138,7 @@ function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoadi
             width:58, justifyContent:'flex-end',
             padding:'6px 0', cursor:'pointer',
           }}>
-          <div style={{
+          <div data-motion-spatial="" style={{
             display:'flex', alignItems:'center', justifyContent:'flex-end',
             width: lc ? 38 : 12, flexShrink:0,
             color: isLiked ? 'var(--accent)' : 'rgba(255,255,255,0.3)',
@@ -8107,6 +8165,8 @@ function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoadi
    название) + квадратная обложка + hover-оверлей с play. ✎ — только на своих
    плейлистах (SC не даёт редактировать чужие), трек-каунт — бейдж на обложке */
 function PlaylistCard({ playlist, onOpen, onEdit }) {
+  const reduced = useReducedMotion();
+  const [hovered, setHovered] = useState(false);
   const t = useLang();
   const pl_edit_title = t('pl_edit');
   const cover = (
@@ -8156,10 +8216,11 @@ function PlaylistCard({ playlist, onOpen, onEdit }) {
     </>
   );
   return (
-    <motion.div className="home-card"
+    <motion.div className="home-card" data-motion-spatial=""
       onClick={() => onOpen(playlist)}
-      initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }}
-      whileHover={{ scale: 1.03 }}
+      initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: !reduced && hovered ? 1.03 : 1 }}
+      onPointerEnter={event => { if (isFineHover(event)) setHovered(true); }}
+      onPointerLeave={() => setHovered(false)}
       exit={{ opacity: 0, scale: 0.88 }}
       transition={{ type:'spring', stiffness: 380, damping: 32, mass: 0.6 }}
       style={{borderRadius:16, cursor:'pointer'}}>
@@ -8350,6 +8411,7 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
   const [tracks, setTracks] = useState([]);
   const [loaded, setLoaded]   = useState(false);
   const [status, setStatus]   = useState('idle');   /* idle | saving | saved | error */
+  const savedFeedbackRef = useSuccessFeedback(status, 180);
   const [tab, setTab]         = useState('recs');   /* recs | search */
   const addSearchRef          = useRef(null);       /* для focusSearch() сверху */
   const [query, setQuery]     = useState('');
@@ -8736,7 +8798,7 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
                 заливка акцентом, а не рамка: рамка + серая заливка на ховере
                 давали грязь, и при accentMode='cover' рамка вообще кричала */}
             {status === 'dirty' && (
-              <motion.div onClick={saveNow}
+              <motion.div data-motion-spatial="" onClick={saveNow}
                 initial={{ opacity: 0, scale: 0.94 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
@@ -8762,7 +8824,7 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
                 userSelect:'none',
               }}>
                 {status === 'saving' && <div style={{width:9, height:9, border:'1.5px solid rgba(255,255,255,0.15)', borderTopColor:'rgba(255,255,255,0.6)', borderRadius:'50%', animation:'spin 0.75s linear infinite'}}/>}
-                {STATUS.text}
+                <span ref={savedFeedbackRef} role="status">{STATUS.text}</span>
               </div>
             )}
           </div>
@@ -9027,7 +9089,8 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
             <motion.div
               initial={{scale:0.97, y:10, opacity:0}}
               animate={{scale:1, y:0, opacity:1}}
-              exit={{scale:0.98, y:6, opacity:0, transition:{duration:0.13, ease:'easeIn'}}}
+              data-motion-spatial=""
+              exit={{scale:0.98, y:6, opacity:0, transition:{duration:0.13, ease:[0.22,1,0.36,1]}}}
               transition={{type:'spring', stiffness:420, damping:32, mass:0.7}}
               style={{width:272,
                 background:'var(--pop-bg)',
@@ -9596,7 +9659,7 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
           растянутая на весь экран тонкая полоска. Переезжает не сам элемент,
           а контейнер — через transform, а не top: top в процентах и top в
           пикселях анимируются через layout, и поле дёргалось. */}
-      <div style={{
+      <div data-motion-position="" style={{
         position:'absolute', left:0, right:0, top:22,
         transform: idle ? `translateY(${idleShift}px)` : 'translateY(0)',
         /* пока высота не измерена, переезда нет: иначе первый рендер даёт
@@ -9604,7 +9667,7 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
         transition: rootH ? 'transform 0.42s cubic-bezier(0.22,1,0.36,1)' : 'none',
         padding:'0 52px', zIndex:2, pointerEvents:'none',
       }}>
-        <div style={{
+        <div data-motion-position="" style={{
           position:'relative', margin:'0 auto', width:'100%',
           maxWidth: idle ? 420 : 560,
           background: focused
@@ -9630,7 +9693,7 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
             }}>
             <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35" strokeLinecap="round"/>
           </svg>
-          <input
+          <input data-motion-position=""
             ref={inputRef}
             value={query}
             onChange={handleInput}
@@ -9680,7 +9743,7 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
           делать», и она же убирает необходимость запоминать, что поиск
           существует. */}
       {idle && (
-        <div style={{
+        <div data-motion-position="" style={{
           position:'absolute', left:0, right:0, top:'26%',
           marginTop: idle ? 96 : 0,
           padding:'0 52px', pointerEvents:'none',
@@ -10111,7 +10174,7 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
             onMouseLeave={e => e.currentTarget.style.opacity = '0.5'}/>
         </div>
 
-        <motion.div {...rise(0.02)} style={{
+        <motion.div data-motion-spatial="" {...rise(0.02)} style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center',
           padding: '30px 24px 14px',
         }}>
@@ -10193,7 +10256,13 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
               главное действие страницы; подписка остаётся контуром, чтобы
               два залитых пилюля не спорили друг с другом */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, flexWrap: 'wrap', justifyContent: 'center' }}>
-            <button
+            <button type="button" className="artist-play-all" disabled={!canPlay}
+              onPointerDown={event => { if (canPlay && event.button === 0) event.currentTarget.dataset.pointerPressed = 'true'; }}
+              onPointerUp={event => { delete event.currentTarget.dataset.pointerPressed; }}
+              onPointerCancel={event => { delete event.currentTarget.dataset.pointerPressed; }}
+              onPointerLeave={event => { delete event.currentTarget.dataset.pointerPressed; if (canPlay) event.currentTarget.style.background = 'rgba(var(--accent-rgb),0.92)'; }}
+              onBlur={event => { delete event.currentTarget.dataset.pointerPressed; }}
+              onKeyDown={event => { delete event.currentTarget.dataset.pointerPressed; }}
               onClick={() => canPlay && onPlayTrack(artistTracks[0], artistTracks)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 8,
@@ -10202,10 +10271,9 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
                 color: canPlay ? '#0a0a0c' : 'rgba(255,255,255,0.28)',
                 fontSize: 'var(--fs-sm)', fontWeight: 600, fontFamily: 'inherit',
                 letterSpacing: '0.01em', cursor: canPlay ? 'pointer' : 'default',
-                transition: 'background 0.18s, color 0.18s',
+                transition: 'background 0.18s, color 0.18s, transform 120ms var(--ease-out)',
               }}
-              onMouseEnter={e => { if (canPlay) e.currentTarget.style.background = 'var(--accent)'; }}
-              onMouseLeave={e => { if (canPlay) e.currentTarget.style.background = 'rgba(var(--accent-rgb),0.92)'; }}
+              onPointerEnter={e => { if (canPlay && isFineHover(e)) e.currentTarget.style.background = 'var(--accent)'; }}
             >
               <svg width="9" height="10" viewBox="0 0 10 12" fill="currentColor" aria-hidden="true">
                 <polygon points="0,0 10,6 0,12"/>
@@ -10408,7 +10476,12 @@ const BLANK_TRACK = { id: 0, title: '', artist: '', duration: 0, color: '#333' }
 const HIDE_DIVIDERS = true;
 
 function App() {
-  const [view,          setView]          = useState('home');
+  const reduced = useReducedMotion();
+  const [view, commitView] = useState('home');
+  const navigationRef = useRef(null);
+  if (!navigationRef.current) navigationRef.current = createNavigationOwner(commitView);
+  const setView = useCallback(destination => navigationRef.current.commit(destination), []);
+  useEffect(() => () => navigationRef.current.cancel(), []);
   const [tracks,        setTracks]        = useState([]);
   const [trackIdx,      setTrackIdx]      = useState(-1);   /* -1 = трек не выбран */
   const [isPlaying,     setIsPlaying]     = useState(false);
@@ -11414,9 +11487,10 @@ function App() {
   const ART_READY_WAIT_MS = 900;
   useEffect(() => {
     if (!hero || !heroExiting) return;
-    let raf = 0;
+    let alive = true, raf = 0;
     const t0 = performance.now();
     const wait = () => {
+      if (!alive) return;
       const elapsed = performance.now() - t0;
       const faded = elapsed >= HERO_FADE_MS + 20;
       if (!faded || (!artReadyRef.current && elapsed < ART_READY_WAIT_MS)) {
@@ -11425,7 +11499,7 @@ function App() {
       setHero(null); setHeroExiting(false);
     };
     raf = requestAnimationFrame(wait);
-    return () => cancelAnimationFrame(raf);
+    return () => { alive = false; cancelAnimationFrame(raf); };
   }, [hero, heroExiting]);
 
   /* gsap грузится лениво (см. шапку модуля) для анимаций входа в плеер.
@@ -11447,12 +11521,73 @@ function App() {
      Теперь клон ждёт готовности, но не дольше ART_READY_WAIT_MS, иначе
      при неудачной загрузке обложки клон зависнет навсегда. */
   const artReadyRef = useRef(true);
-  useEffect(() => { artReadyRef.current = false; }, [track?.id, track?.coverUrl]);
+  useLayoutEffect(() => { artReadyRef.current = false; }, [track?.id, track?.coverUrl]);
   const handleArtReady = useCallback(() => { artReadyRef.current = true; }, []);
 
+  useLayoutEffect(() => {
+    if (!reverseHero) return;
+    setReverseHeroExiting(false);
+    let alive = true, closing = false, remove;
+    const beginExit = () => {
+      if (!alive || closing) return;
+      closing = true;
+      clearTimeout(exit);
+      setReverseHeroExiting(true);
+      remove = setTimeout(() => {
+        if (!alive) return;
+        setReverseHero(null); setReverseHeroExiting(false);
+      }, HERO_FADE_MS + 20);
+    };
+    const exit = setTimeout(beginExit, reducedMotionNow() ? 0 : HERO_DUR_MS);
+    const unsubscribe = subscribeReducedMotion(event => { if (event.matches) beginExit(); });
+    return () => { alive = false; unsubscribe(); clearTimeout(exit); clearTimeout(remove); };
+  }, [reverseHero]);
+
+  // Normal handoff keeps 430ms travel / 140ms fade. Reduced motion skips only
+  // travel: retain the new clone until decode/draw reports readiness (bounded).
+  useLayoutEffect(() => {
+    if (!hero) return;
+    setHeroExiting(false);
+    let alive = true, revealed = false, frame = 0, timer;
+    const started = performance.now();
+    const reveal = () => {
+      if (!alive || revealed) return;
+      revealed = true;
+      setHeroExiting(true);
+    };
+    const wait = () => {
+      frame = 0;
+      if (!alive || revealed) return;
+      if (!heroMayReveal(artReadyRef.current, performance.now() - started, ART_READY_WAIT_MS)) {
+        frame = requestAnimationFrame(wait); return;
+      }
+      reveal();
+    };
+    const skipTravel = () => {
+      if (!alive || revealed) return;
+      clearTimeout(timer);
+      if (!frame) frame = requestAnimationFrame(wait);
+    };
+    const unsubscribe = subscribeReducedMotion(event => { if (event.matches) skipTravel(); });
+    if (reducedMotionNow()) skipTravel();
+    else timer = setTimeout(reveal, HERO_DUR_MS);
+    return () => { alive = false; unsubscribe(); clearTimeout(timer); cancelAnimationFrame(frame); };
+  }, [hero]);
+
   const artEntranceTweenRef = useRef(null);
+  const artEntranceViewRef = useRef(null);
   useEffect(() => {
-    if (view === 'player' && !hero && artEntranceRef.current) {
+    const entered = artEntranceViewRef.current !== view;
+    artEntranceViewRef.current = view;
+    if (reduced) {
+      artEntranceTweenRef.current?.kill();
+      if (artEntranceRef.current) {
+        artEntranceRef.current.style.opacity = '1';
+        artEntranceRef.current.style.transform = 'none';
+      }
+      return;
+    }
+    if (entered && view === 'player' && !hero && artEntranceRef.current) {
       artEntranceTweenRef.current?.kill();
       let alive = true;
       loadGsap().then(gsap => {
@@ -11462,9 +11597,9 @@ function App() {
           { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' }
         );
       });
-      return () => { alive = false; };
+      return () => { alive = false; artEntranceTweenRef.current?.kill(); };
     }
-  }, [view]);
+  }, [view, reduced]);
 
   /* плавный ресайз — отключаем transitions пока тянут окно */
   useEffect(() => {
@@ -12656,7 +12791,9 @@ function App() {
     }
   }, [view, settings.soundcloudAuth, playlists, playlistsError, playlistsLoading, loadPlaylists]);
 
-  const toastTimerRef = useRef(null);
+  const toastOwnerRef = useRef(null);
+  if (!toastOwnerRef.current) toastOwnerRef.current = createToastOwner(setToast, setToastExiting);
+  useEffect(() => () => toastOwnerRef.current.cancel(), []);
   function handleSearchResultsLoaded(newTracks) {
     if (!searchQueueRef.current) return;
     searchQueueRef.current = [...searchQueueRef.current, ...newTracks];
@@ -12667,13 +12804,7 @@ function App() {
   }
 
   function showToast(msg) {
-    setToast(msg);
-    setToastExiting(false);
-    clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => {
-      setToastExiting(true);
-      setTimeout(() => { setToast(null); setToastExiting(false); }, 240);
-    }, 2200);
+    toastOwnerRef.current.show(msg);
   }
 
   function destroyHls() {
@@ -13646,7 +13777,6 @@ function App() {
       setNavActive('library');
       setLibScrollTargetId(t.id);
       setLibScrollTrigger(v => v + 1);
-      setTimeout(() => setHeroExiting(true), HERO_DUR_MS);
     } else {
       // refs not ready — skip hero, just switch view
       setHomeVisible(false);
@@ -13692,7 +13822,6 @@ function App() {
         targetRect: { left: par.left, top: par.top, size: par.width },
         corners: cssCorners(artEl),
       });
-      setTimeout(() => setHeroExiting(true), HERO_DUR_MS);
     }
     setHomeVisible(false);
     setPlayerVisible(true);
@@ -14258,6 +14387,7 @@ function App() {
   const [crossfadeFocus, setCrossfadeFocus] = useState(0);
   const plEditorRef = useRef(null);
   const handleNav = async (id) => {
+    navigationRef.current.cancel();
     /* из редактора плейлиста выходим только через его гарды — если есть
        несохранённые изменения, редактор сам покажет предупреждение */
     if (view === 'playlistEditor' && editingPlaylist) {
@@ -14289,8 +14419,6 @@ function App() {
             startRect:  { left: cardRect.left, top: cardRect.top, width: cardRect.width, height: cardRect.height },
             corners: cssCorners(artEl),
           });
-          setTimeout(() => setReverseHeroExiting(true), HERO_DUR_MS);
-          setTimeout(() => { setReverseHero(null); setReverseHeroExiting(false); }, HERO_DUR_MS + HERO_FADE_MS + 20);
         }
         setPlayerVisible(false);
         setHomeVisible(true);
@@ -14299,6 +14427,7 @@ function App() {
         setHomeVisible(true);
         setView('home');
       } else if (view === 'home') {
+        setHomeVisible(true);
         const el = homeScrollRef.current;
         if (el) smoothScroll(el, 0, 420);
       }
@@ -14317,7 +14446,7 @@ function App() {
     } else if (id === 'settings') {
       if (view === 'player') setPlayerVisible(false);
       if (view === 'home') setHomeVisible(false);
-      setTimeout(() => setView('settings'), view === 'home' ? 240 : 300);
+      navigationRef.current.settings(reduced ? 0 : view === 'home' ? 240 : 300);
     } else if (view === 'home') {
       const artEl = findArtEl(track.id);
       const par = playerArtRef.current?.getBoundingClientRect();
@@ -14335,7 +14464,6 @@ function App() {
         const startRect = artEl.getBoundingClientRect();
         const targetRect = { left: par.left, top: par.top, size: par.width };
         setHero({ track: track, startRect, targetRect, corners: cssCorners(artEl) });
-        setTimeout(() => setHeroExiting(true), HERO_DUR_MS);
       }
       setHomeVisible(false);
       setPlayerVisible(true);
@@ -14357,6 +14485,7 @@ function App() {
       setView('player');
       setNavActive('library');
     } else if (view === 'player') {
+      setPlayerVisible(true);
       setLibScrollTargetId(track.id);
       setLibScrollTrigger(v => v + 1);
     }
@@ -14704,7 +14833,7 @@ function App() {
             display:'flex',
           }}>
         {/* library panel */}
-        <div style={{
+        <div data-motion-spatial="" style={{
           width: libCollapsed ? 0 : 260,
           flexShrink:0, height:'100%',
           background:'transparent',
@@ -14719,7 +14848,7 @@ function App() {
               текст приезжает справа. ширина родителя схлопывается до 0 и
               клипует всё лишнее, поэтому за колонку ничего не вылезает */}
           <div style={{width:260, flexShrink:0, height:'100%', position:'relative'}}>
-          <div style={{
+          <div data-motion-spatial="" style={{
             position:'absolute', inset:0, display:'flex', flexDirection:'column',
             /* уступает место любой из двух панелей колонки — тексту и эффектам:
                обе приезжают справа на месте списка */
@@ -14744,10 +14873,10 @@ function App() {
           }}>
           <AnimatePresence initial={false} mode="wait">
           {stationActive ? (
-            <motion.div key="station-chip"
+            <motion.div key="station-chip" data-motion-spatial=""
               initial={{ opacity: 0, y: -10, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -8, scale: 0.98, transition: { duration: 0.14, ease: 'easeIn' } }}
+              exit={{ opacity: 0, y: -8, scale: 0.98, transition: { duration: 0.14, ease: [0.22, 1, 0.36, 1] } }}
               transition={{ type: 'spring', stiffness: 440, damping: 30, mass: 0.7 }}
               style={{padding:'10px 10px 8px', flexShrink:0}}>
               {/* контекст-чип станции: обложка + мини-эквалайзер + выход */}
@@ -14810,7 +14939,8 @@ function App() {
             <motion.div key="playlist-chip"
               initial={{ opacity: 0, y: -10, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -8, scale: 0.98, transition: { duration: 0.14, ease: 'easeIn' } }}
+              data-motion-spatial=""
+              exit={{ opacity: 0, y: -8, scale: 0.98, transition: { duration: 0.14, ease: [0.22, 1, 0.36, 1] } }}
               transition={{ type: 'spring', stiffness: 440, damping: 30, mass: 0.7 }}
               style={{padding:'10px 10px 8px', flexShrink:0}}>
               {/* контекст-чип плейлиста: обложка + счётчик + выход/редактор */}
@@ -15088,7 +15218,7 @@ function App() {
                 </div>
               </div>
             <div data-party-motion="progress" style={{width:'100%'}}>
-            <div className="player-stage-progress" style={{
+            <div className="player-stage-progress" data-motion-spatial="" style={{
               width:partyOpen
                 ? 'min(100%, clamp(320px, 54vw, 760px), clamp(240px, 58vh, 760px))'
                 : 'min(100%, clamp(260px, 34vw, 520px))', margin:'0 auto 0',
@@ -15115,7 +15245,7 @@ function App() {
             </div>{/* shared artwork stage; the controls below never switch to a mock transport */}
             <div className="player-controls-layout">
             <div data-party-motion="controls" style={{width:'100%'}}>
-            <div style={{
+            <div data-motion-spatial="" style={{
               width:'min(100%, clamp(260px, 34vw, 520px))', margin:'0 auto 0',
               opacity: playerVisible ? 1 : 0,
               visibility: playerVisible ? 'visible' : 'hidden',
@@ -15200,7 +15330,7 @@ function App() {
             громкость остаётся в микшере Windows, а полоса справа визуально
             самая «лишняя» из всего плеера */}
         {!uiHidden.volume && (
-        <div style={{
+        <div data-motion-spatial="" style={{
           width:28, flexShrink:0, height:'100%',
           display:'flex', flexDirection:'column', alignItems:'center',
           paddingTop:110, paddingBottom:110, paddingRight:5,
@@ -15263,7 +15393,7 @@ function App() {
 
         <AnimatePresence>
           {toast && !toastExiting && (
-            <motion.div
+            <motion.div data-motion-spatial=""
               key="toast"
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}

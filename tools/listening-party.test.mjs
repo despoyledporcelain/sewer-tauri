@@ -18,6 +18,8 @@ function componentContext(react = React, extras = {}) {
   const context = { module: { exports: {} }, require: name => {
     if (name === 'react') return react;
     if (name === './listening-party.js') return model;
+    // Pure JSX/SSR checks inspect the ref only; the real hook has its own lifecycle tests.
+    if (name === './use-motion-feedback.js') return { useSuccessFeedback: () => ({ current: null }) };
     if (name.endsWith('.css')) return {};
     throw new Error(`unexpected import: ${name}`);
   }, ...extras };
@@ -503,7 +505,7 @@ test('the room view keeps real progress under the artwork and the lower controls
   const transportIndex = player.indexOf('<PlayBtn isPlaying=');
   assert.ok(sidebarIndex < mediaIndex && mediaIndex < artIndex && artIndex < stageEnd);
   assert.ok(artIndex < progressIndex && progressIndex < mediaEnd && mediaEnd < stageEnd && stageEnd < transportIndex);
-  assert.match(player, /className="player-stage-progress" style=\{\{\s*width:partyOpen\s*\? 'min\(100%, clamp\(320px, 54vw, 760px\), clamp\(240px, 58vh, 760px\)\)'/);
+  assert.match(player, /className="player-stage-progress" data-motion-spatial="" style=\{\{\s*width:partyOpen\s*\? 'min\(100%, clamp\(320px, 54vw, 760px\), clamp\(240px, 58vh, 760px\)\)'/);
   assert.equal((player.match(/<AlbumArt /g) || []).length, 1);
   assert.equal((player.match(/<ProgressBar /g) || []).length, 1);
   assert.equal((player.match(/<PlayBtn /g) || []).length, 1);

@@ -168,3 +168,4 @@
   .party-sidebar, .party-trigger, .party-sidebar button { transition:none; }
   .party-sidebar, .party-trigger:active, .party-sidebar button:active:not(:disabled) { transform:none; }
 }
+.party-copy-icon { display:flex; align-items:center; justify-content:center; width:14px; height:14px; flex-shrink:0; }

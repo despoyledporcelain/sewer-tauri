@@ -1,5 +1,5 @@
 import React from 'react';
-import { useReducedMotion } from 'framer-motion';
+import { useReducedMotion } from './use-motion-preference.js';
 import { snapshotPartyPlayer, animatePartyPlayer, cancelPartyPlayerMotion } from './party-player-motion.js';
 
 // Like DisclosureLayout, a pre-commit snapshot avoids reading the old layout

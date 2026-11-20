@@ -18,6 +18,7 @@
     --cover-tint:     0;
     --cover-tint-rgb: 0, 0, 0;
     --titlebar-h:  46px;
+    --ease-out: cubic-bezier(0.23,1,0.32,1);
 
     /* Оформление. Всё это перезаписывается из settings.theme эффектом в
        App: пользователь двигает ползунки в «Оформлении» и переменные едут
@@ -331,7 +332,9 @@
     .mini-player-button { width:20px; }
   }
   @media (prefers-reduced-motion:reduce) {
-    .mini-player, .mini-player-track, .mini-player-button, .mini-player-toggle-icons svg { transition:none; transform:none; }
+    .mini-player, .mini-player[data-visible="true"] { transform:none; transition:opacity 120ms ease-out, visibility 120ms; }
+    .mini-player-button, .mini-player-button:not(:disabled):active { transform:none; transition:color 140ms ease, background-color 140ms ease; }
+    .mini-player-toggle-icons svg { transition:opacity 120ms ease-out; }
   }
   .history-icon {
     display:inline-block; flex-shrink:0; background-color:currentColor;
@@ -513,7 +516,13 @@
     transform:scale(0.6); opacity:0;
     transition:transform 0.3s cubic-bezier(0.34,1.56,0.64,1), opacity 0.16s ease;
   }
-  .home-card:hover .home-card-play { transform:scale(1); opacity:1; }
+  @media (hover:hover) and (pointer:fine) {
+    .home-card:hover .home-card-play { transform:scale(1); opacity:1; }
+  }
+  @media (hover:none), (pointer:coarse) {
+    .home-card-play { transform:scale(1); }
+    .home-card-overlay, .home-card-like, .home-card-play { opacity:1; }
+  }
   /* Появление карточки в сетке (поиск/первый рендер). Анимируются только
      opacity и transform — их считает композитор, раскладка не пересобирается.
      `backwards` держит карточку прозрачной, пока идёт задержка каскада, а
@@ -544,7 +553,9 @@
   .home-card-anim:nth-child(11) { animation-delay: 0.18s; }
   .home-card-anim:nth-child(12) { animation-delay: 0.198s; }
   .home-card-anim:nth-child(n+13) { animation-delay: 0.198s; }
-  .home-card-anim:hover { transform:scale(1.03); }
+  @media (hover:hover) and (pointer:fine) {
+    .home-card-anim:hover { transform:scale(1.03); }
+  }
   /* like: spring pop + accent glow (var(--accent-rgb) перетекает с глобальным акцентом) */
   @keyframes likePop {
     0%   { transform:scale(1); }
@@ -648,7 +659,9 @@
     background:#fff; box-shadow:0 1px 4px rgba(0,0,0,0.5);
     transition:transform 0.15s ease;
   }
-  .th-range:hover::-webkit-slider-thumb  { transform:scale(1.18); }
+  @media (hover:hover) and (pointer:fine) {
+    .th-range:hover::-webkit-slider-thumb { transform:scale(1.18); }
+  }
   .th-range:active::-webkit-slider-thumb { transform:scale(0.94); }
   .th-range::-moz-range-track { height:4px; border-radius:2px; background:rgba(255,255,255,0.1); }
   .th-range::-moz-range-progress { height:4px; border-radius:2px; background:var(--accent); }
@@ -785,7 +798,9 @@
     margin-left:-9px; margin-top:-2.5px; border-radius:3px;
     background:#fff; box-shadow:0 1px 4px rgba(0,0,0,0.5);
   }
-  .eq-fader:hover .eq-thumb  { transform:scaleX(1.14); }
+  @media (hover:hover) and (pointer:fine) {
+    .eq-fader:hover .eq-thumb { transform:scaleX(1.14); }
+  }
   .eq-fader:active .eq-thumb { transform:scaleX(1.24) scaleY(1.2); }
   .eq-fader:focus-visible .eq-thumb { box-shadow:0 0 0 3px rgba(255,255,255,0.2); }
   .eq-rail {
@@ -800,7 +815,9 @@
     position:absolute; top:50%; width:12px; height:12px; margin-left:-6px; margin-top:-6px;
     border-radius:50%; background:#fff; box-shadow:0 1px 4px rgba(0,0,0,0.45);
   }
-  .eq-rail:hover .eq-dot   { transform:scale(1.16); }
+  @media (hover:hover) and (pointer:fine) {
+    .eq-rail:hover .eq-dot { transform:scale(1.16); }
+  }
   .eq-rail:active .eq-dot  { transform:scale(1.26); }
   .eq-rail:focus-visible .eq-dot { box-shadow:0 0 0 3px rgba(255,255,255,0.2); }
   /* системный выбор цвета: хром рисует рамку и серую подложку, обе убираем,
@@ -822,4 +839,34 @@
   input.th-hex:hover  { background:rgba(255,255,255,0.08); }
   input.th-hex:focus   { background:rgba(var(--accent-rgb),0.1); }
   input.th-hex::selection { background:rgba(var(--accent-rgb),0.28); }
+
+  .artist-play-all[data-pointer-pressed="true"]:not(:disabled) { transform:scale(0.97); }
+  @media (prefers-reduced-motion:reduce) {
+    /* These tags name purely spatial feedback, not actual layout/progress. */
+    [data-motion-spatial] { transform:none !important; transition:opacity 120ms ease-out, color 160ms ease, background-color 160ms ease !important; }
+    /* Positioning layers retain the real final offset, switch state and fraction. */
+    [data-motion-position] { transition:opacity 120ms ease-out, background-color 160ms ease !important; }
+    [data-motion-rotation="open"] { transform:rotate(90deg) !important; }
+    [data-motion-rotation="closed"] { transform:rotate(0deg) !important; }
+    [role="switch"] > div { transition:none !important; }
+    .lyric-highlight { transform:none !important; animation:none !important; transition:color 120ms ease !important; filter:none !important; text-shadow:none !important; }
+    .lyric-wave { animation:none !important; }
+    .home-card-anim { animation:setIn 120ms ease-out !important; }
+    .home-card-anim:hover, .home-card-play { transform:none !important; transition:opacity 120ms ease-out !important; }
+    .like-pop, .like-glow, .like-pop.like-glow, body.glow-off .like-glow { animation:none !important; }
+    .skel::before { animation:none; transform:none; opacity:0.45; }
+    .st-eq i { animation:none; }
+    /* CSSOM may reorder shorthand fields; match these known animation names. */
+    [style*="spin"] { animation:none !important; }
+    [style*="fadeInUp"] { animation:setIn 120ms ease-out !important; }
+    .eq-fader:hover .eq-thumb, .eq-fader:active .eq-thumb,
+    .eq-rail:hover .eq-dot, .eq-rail:active .eq-dot,
+    .th-range:hover::-webkit-slider-thumb, .th-range:active::-webkit-slider-thumb { transform:none !important; transition:none !important; }
+    .crossfade-preset:active, .artist-play-all[data-pointer-pressed="true"]:not(:disabled) { transform:none !important; }
+    .artist-play-all { transition:background-color 120ms ease, color 120ms ease !important; }
+  }
+  @media (hover:none), (pointer:coarse) {
+    /* Motion's hover gesture filters touch, but mouse-emulating pens also need gating. */
+    .home-card[data-motion-spatial]:hover { transform:none !important; }
+  }
 

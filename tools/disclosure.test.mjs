@@ -153,7 +153,7 @@ function disclosureHarness() {
     useLayoutEffect(effect) { effects.push(effect); },
   };
   const context = { module: { exports: {} }, require: id => id === 'react' ? react
-    : id === 'framer-motion' ? { useReducedMotion: () => false }
+    : id === './use-motion-preference.js' ? { useReducedMotion: () => false }
       : { snapshotDisclosures, animateDisclosureLayout } };
   vm.runInNewContext(source, context);
   return {

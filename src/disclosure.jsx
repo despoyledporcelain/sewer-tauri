@@ -1,5 +1,5 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
-import { useReducedMotion } from 'framer-motion';
+import { useReducedMotion } from './use-motion-preference.js';
 import { snapshotDisclosures, animateDisclosureLayout } from './disclosure-motion.js';
 
 export function Disclosure({ open, children, inline = false, style }) {

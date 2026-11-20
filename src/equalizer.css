@@ -63,7 +63,9 @@
   transition:transform 160ms cubic-bezier(.22,1,.36,1), background-color 160ms ease, box-shadow 160ms ease;
 }
 .eq-instrument .eq-thumb::after { content:''; position:absolute; inset:4px 5px; border-radius:1px; background:oklch(.24 .008 285 / .55); }
-.eq-instrument .eq-fader:hover .eq-thumb { transform:scale(1.14); background:color-mix(in oklch, var(--text) 85%, var(--accent)); }
+@media (hover:hover) and (pointer:fine) {
+  .eq-instrument .eq-fader:hover .eq-thumb { transform:scale(1.14); background:color-mix(in oklch, var(--text) 85%, var(--accent)); }
+}
 .eq-instrument .eq-fader:active .eq-thumb { transform:scale(1.08); }
 .eq-instrument .eq-fader:focus-visible .eq-thumb { box-shadow:0 0 0 3px color-mix(in oklch, var(--accent) 30%, transparent); }
 .eq-instrument[data-enabled="false"] .eq-contour { opacity:.32; filter:grayscale(1); }
@@ -83,7 +85,9 @@
 .fx-crossfade-link { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; border:0; border-radius:6px; padding:7px 0; background:none; color:var(--eq-muted); font-size:var(--fs-xs); cursor:pointer; text-align:left; transition:color 160ms ease; }
 .fx-crossfade-link:hover { color:var(--text); }
 .fx-crossfade-link svg { transition:transform 160ms cubic-bezier(.22,1,.36,1); }
-.fx-crossfade-link:hover svg { transform:translateX(2px); }
+@media (hover:hover) and (pointer:fine) {
+  .fx-crossfade-link:hover svg { transform:translateX(2px); }
+}
 .fx-crossfade-link:active svg { transform:translateX(3px); }
 .fx-panel button:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .settings-crossfade-target { outline:none; }
@@ -95,5 +99,9 @@
   .fx-secondary { gap:10px; }
 }
 @media (prefers-reduced-motion:reduce) {
-  .fx-panel, .fx-panel *, .fx-panel *::before, .fx-panel *::after { transition:none !important; }
+  .fx-panel, .fx-panel *, .fx-panel *::before, .fx-panel *::after { transition:color 160ms ease, background-color 160ms ease, opacity 120ms ease-out !important; }
+  /* Inner grips only: outer fader/rail transforms still position the true value. */
+  .fx-close:active, .eq-power:active, .eq-reset:active, .eq-preset:active,
+  .eq-instrument .eq-fader:hover .eq-thumb, .eq-instrument .eq-fader:active .eq-thumb,
+  .fx-crossfade-link:hover svg, .fx-crossfade-link:active svg { transform:none !important; }
 }
