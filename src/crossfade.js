@@ -1,5 +1,13 @@
 export const CROSSFADE_MAX = 12;
 export const CROSSFADE_CURVES = ['power', 'smooth', 'linear'];
+export const CROSSFADE_PRESETS = [
+  { id: 'cut', seconds: 0.5, curve: 'linear', smart: true, intro: 0 },
+  { id: 'short', seconds: 2, curve: 'smooth', smart: true, intro: 0 },
+  { id: 'radio', seconds: 3, curve: 'linear', smart: true, intro: 1 },
+  { id: 'flow', seconds: 5, curve: 'power', smart: true, intro: 0 },
+  { id: 'mix', seconds: 8, curve: 'smooth', smart: true, intro: 0 },
+  { id: 'dj', seconds: 12, curve: 'power', smart: true, intro: 2 },
+];
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const number = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 

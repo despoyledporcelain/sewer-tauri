@@ -704,6 +704,21 @@
     font-size:var(--fs-xs); color:rgba(237,237,244,0.46);
   }
   .crossfade-preview-labels > :last-child { color:var(--accent); }
+  .crossfade-presets { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; padding:0 16px 12px; }
+  .crossfade-preset {
+    display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0;
+    padding:9px 10px; border:0; border-radius:8px; font:inherit; font-size:var(--fs-xs);
+    background:color-mix(in oklch, var(--text) 4%, transparent);
+    color:color-mix(in oklch, var(--text) 60%, transparent); cursor:pointer; text-align:left;
+    transition:color 160ms ease, background-color 160ms ease, transform 160ms cubic-bezier(.22,1,.36,1);
+  }
+  .crossfade-preset:hover { color:var(--text); background:color-mix(in oklch, var(--text) 8%, transparent); }
+  .crossfade-preset[aria-pressed="true"] { color:var(--accent); background:color-mix(in oklch, var(--accent) 13%, transparent); }
+  .crossfade-preset:active { transform:scale(.97); }
+  .crossfade-preset:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .crossfade-preset-duration { font-size:var(--fs-eyebrow); font-variant-numeric:tabular-nums; white-space:nowrap; opacity:.6; }
+  @media (max-width:800px) { .crossfade-presets { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  @media (prefers-reduced-motion:reduce) { .crossfade-preset { transition:none; } }
 
   /* Layout changes once; DisclosureLayout moves neighbouring branches with
      FLIP transforms. Content remains mounted for a real, reversible exit. */

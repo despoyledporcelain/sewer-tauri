@@ -4,6 +4,9 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMe
    ReactDOM.createPortal на createPortal. */
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence, LayoutGroup, Reorder, useSpring, useReducedMotion, useMotionValue, useTransform } from 'framer-motion'
+import { EqContour, createEqContourModel } from './eq-contour.jsx'
+import { crossfadeBoltEnvelope, crossfadeBoltPath, crossfadeBoltBranches } from './crossfade-preview-motion.js'
+import './equalizer.css'
 /* ⚠️ hls.js и gsap грузятся ЛЕНИВО, а не в шапке модуля. Оба нужны не на
    старте: hls — только когда включаем SC-трек (и только для hls-стримов),
    gsap — на первом hero-перелёте и на входе в плеер. Статический импорт
@@ -24,7 +27,7 @@ import { fileSrc } from './bridge.js'
 /* порядок перемешивания: перестановка + курсор в одном месте (src/shuffle.js) */
 import { Shuffle } from './shuffle.js'
 import { discordSnapshot, updateDiscordPlayback } from './discord-presence.js'
-import { CROSSFADE_MAX, crossfadeSettings, cleanCrossfadeSettings,
+import { CROSSFADE_MAX, CROSSFADE_PRESETS, crossfadeSettings, cleanCrossfadeSettings,
   crossfadeDuration, crossfadeIntroPosition, crossfadeCurvePoints, mixCurvePoints,
   mediaDuration, rotateDecks, CrossfadeEnvelope, waitForDeck } from './crossfade.js'
 import { sliderFraction, sliderValue, pointerFraction } from './slider.js'
@@ -1925,10 +1928,12 @@ const STRINGS = {
     crossfade_smart:'Умная длина для коротких треков', crossfade_intro:'Пропуск вступления',
     crossfade_current:'Текущий трек', crossfade_next:'Следующий трек', crossfade_preview:'Кривая перехода',
     crossfade_short:'Коротко', crossfade_flow:'Плавно', crossfade_mix:'Длинный микс',
+    crossfade_cut:'Склейка', crossfade_radio:'Радио', crossfade_dj:'DJ-микс',
     /* эквалайзер и транспорт */
     fx:'Эффекты',
     eq:'Эквалайзер', eq_on:'Включить', eq_on_sub:'Тембр в реальном времени — и для локальных, и для soundcloud',
     eqp_flat:'Ровно', eqp_bass:'Бас', eqp_vocal:'Вокал', eqp_treble:'Верх', eq_reset:'сбросить',
+    eqp_punch:'Панч', eqp_air:'Воздух', eqp_rock:'Рок', eqp_electro:'Электро',
     width:'Ширина стерео', width_sub:'1× — как есть, 2× — шире', mono:'моно',
     stereo_boost:'Стерео буст',
     db:'дБ', hz:'Гц', khz:'кГц',
@@ -2129,9 +2134,11 @@ const STRINGS = {
     crossfade_smart:'Adapt to short tracks', crossfade_intro:'Skip intro',
     crossfade_current:'Current track', crossfade_next:'Next track', crossfade_preview:'Transition curve',
     crossfade_short:'Short', crossfade_flow:'Smooth', crossfade_mix:'Long mix',
+    crossfade_cut:'Quick cut', crossfade_radio:'Radio', crossfade_dj:'DJ mix',
     fx:'Effects',
     eq:'Equalizer', eq_on:'Enable', eq_on_sub:'Real-time tone shaping — for local files and soundcloud alike',
     eqp_flat:'Flat', eqp_bass:'Bass', eqp_vocal:'Vocal', eqp_treble:'Treble', eq_reset:'reset',
+    eqp_punch:'Punch', eqp_air:'Air', eqp_rock:'Rock', eqp_electro:'Electro',
     width:'Stereo width', width_sub:'1× — as is, 2× — wider', mono:'mono',
     stereo_boost:'Stereo boost',
     db:'dB', hz:'Hz', khz:'kHz',
@@ -2470,6 +2477,10 @@ const EQ_PRESETS = {
   bass:  [7, 5, 1, -1, -1, 0, 1],
   vocal: [-3, -1, 2, 5, 3, 1, 0],
   treble:[-2, -1, 0, 0, 2, 4, 5],
+  punch: [-1, 4, 3, -1, 0, 1, -1],
+  air:   [-1, -2, -1, 0, 0, 1, 6],
+  rock:  [3, 2, -1, -2, 2, 3, 2],
+  electro:[4, 3, 0, -2, 0, 2, 3],
 };
 
 /* 0.75–1.25: шире было 0.5–2, но на краях стретчер уже «пластилит» — форма
@@ -5392,49 +5403,31 @@ function useRail({ value, min, max, step, vertical, onChange }) {
   };
 }
 
-/* вертикальный фейдер полосы эквалайзера: центр — 0 дБ, заливка растёт от
-   нулевой линии вверх или вниз.
-
-   Двигается ТОЛЬКО transform. Раньше здесь анимировались `top` и `height` в
-   процентах: смена пресета дёргала layout у четырнадцати элементов разом, и
-   семь полос ехали рывками — тем заметнее, чем больше на основном потоке
-   работы (а перерисовка App на смену настроек как раз на нём). translate и
-   scale считает композитор, и ему эта работа не мешает. */
-function EqFader({ value, onChange, label, thumbRef }) {
+/* Семь вертикальных зон ввода остаются фейдерами, но визуально это ручки
+   единой кривой. Передаём ей spring-position, чтобы линия не обгоняла ручки.
+   Сама ручка двигается только transform; звук и шаг 0.5 дБ прежние. */
+function EqFader({ value, onChange, label, band, onPosition }) {
   const { ref, position, reset, ...events } = useRail({
     value, min: -EQ_GAIN_MAX, max: EQ_GAIN_MAX, step: 0.5, vertical: true, onChange,
   });
-  const up = useTransform(position, pct => Math.max(0, pct * 2 - 1));
-  const down = useTransform(position, pct => Math.max(0, 1 - pct * 2));
-  const upOpacity = useTransform(up, amount => amount > 0.001 ? 0.9 : 0);
-  const downOpacity = useTransform(down, amount => amount > 0.001 ? 0.9 : 0);
+  useLayoutEffect(() => {
+    onPosition(band, position.get());
+    return position.on('change', value => onPosition(band, value));
+  }, [band, position, onPosition]);
   const thumbPosition = useTransform(position, pct => `translateY(${(1 - pct) * 100}%)`);
-  const half = {
-    position:'absolute', left:'50%', width:4, marginLeft:-2, borderRadius:2,
-    background:'var(--accent)',
-  };
   return (
     <div ref={ref} className="eq-fader" role="slider" tabIndex={0}
       aria-orientation="vertical" aria-label={label}
       aria-valuemin={-EQ_GAIN_MAX} aria-valuemax={EQ_GAIN_MAX} aria-valuenow={value}
+      aria-valuetext={`${fmtDb(value)} dB`}
       onDoubleClick={() => reset(0)} {...events}>
       <div className="eq-slot"/>
-      <div style={{position:'absolute', left:0, right:0, top:'50%', height:1, background:'rgba(255,255,255,0.08)'}}/>
-      <motion.div style={{
-        ...half, bottom:'50%', height:'50%', transformOrigin:'bottom',
-        scaleY: up, opacity: upOpacity,
-      }}/>
-      <motion.div style={{
-        ...half, top:'50%', height:'50%', transformOrigin:'top',
-        scaleY: down, opacity: downOpacity,
-      }}/>
       <motion.div style={{
         position:'absolute', left:0, right:0, top:0, height:'100%',
         transform: thumbPosition,
         pointerEvents:'none',
       }}>
-        <div className="eq-thumb" ref={thumbRef}
-          style={{transition:'transform 0.16s ease, box-shadow 0.18s ease'}}/>
+        <div className="eq-thumb"/>
       </motion.div>
     </div>
   );
@@ -5484,72 +5477,9 @@ function FxSlider({ value, min, max, step, origin, onChange, resetTo, label }) {
   );
 }
 
-/* ── молния между полосами ───────────────────────────────────────────────────
-   Смена пресета переставляет все семь фейдеров разом, и без общего жеста это
-   читается как «подставили другие цифры». Разряд связывает полосы: он идёт по
-   ТЕКУЩИМ позициям ручек (читаем их из DOM в каждом кадре), поэтому едет
-   вместе с ними, а не живёт отдельной картинкой, и уходит тихим угасанием.
-
-   Рисуется мимо React: 60 кадров setState перерисовывали бы всю панель — то
-   есть добавляли бы ровно тот лаг, который здесь и лечим. Меняется один
-   атрибут `d` у трёх путей. */
-
-/* яркость удара во времени, мс → 0..1: два «щелчка» в начале (молния бьётся
-   не один раз), потом угасание. Массив, а не формула, — так кривая видна
-   глазами и правится одной цифрой */
-const BOLT_ENV = [[0,1],[90,0.34],[150,0.95],[240,0.3],[330,0.72],[450,0.3],[600,0.12],[880,0]];
-
-function boltEnv(t) {
-  for (let i = 1; i < BOLT_ENV.length; i++) {
-    const [t1, a1] = BOLT_ENV[i];
-    if (t > t1) continue;
-    const [t0, a0] = BOLT_ENV[i - 1];
-    return a0 + (a1 - a0) * ((t - t0) / (t1 - t0 || 1));
-  }
-  return 0;
-}
-
-/* путь по ручкам: между соседними точками три излома со случайным смещением
-   по нормали. Амплитуда гаснет к концу отрезка, поэтому линия всё-таки
-   попадает в ручку, а не улетает мимо неё */
-function boltPath(pts) {
-  let d = '';
-  for (let i = 1; i < pts.length; i++) {
-    const a = pts[i - 1], b = pts[i];
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const nx = -dy / len, ny = dx / len;
-    if (!d) d = `M${a.x.toFixed(1)} ${a.y.toFixed(1)}`;
-    for (let s = 1; s <= 3; s++) {
-      const k = s / 3;
-      const amp = s === 3 ? 0 : Math.min(9, len * 0.17);
-      const o = (Math.random() * 2 - 1) * amp;
-      d += `L${(a.x + dx * k + nx * o).toFixed(1)} ${(a.y + dy * k + ny * o).toFixed(1)}`;
-    }
-  }
-  return d;
-}
-
-/* короткие отростки от полос: у настоящего разряда они есть, и именно они
-   делают вспышку молнией, а не ломаной линией */
-function boltBitsPath(pts) {
-  let d = '';
-  for (let i = 1; i < pts.length; i++) {
-    if (Math.random() < 0.45) continue;      /* не с каждой полосы */
-    const p = pts[i];
-    const ang = Math.random() * Math.PI * 2;
-    const l1 = 6 + Math.random() * 11;
-    const l2 = 4 + Math.random() * 8;
-    const bend = Math.random() * 1.1 - 0.55;
-    const x1 = p.x + Math.cos(ang) * l1, y1 = p.y + Math.sin(ang) * l1;
-    const x2 = x1 + Math.cos(ang + bend) * l2, y2 = y1 + Math.sin(ang + bend) * l2;
-    d += `M${p.x.toFixed(1)} ${p.y.toFixed(1)}L${x1.toFixed(1)} ${y1.toFixed(1)}L${x2.toFixed(1)} ${y2.toFixed(1)}`;
-  }
-  return d;
-}
-
-function FxPanel({ open, inPlayer, settings, onSettings, onClose, partyActive = false }) {
+function FxPanel({ open, inPlayer, settings, onSettings, onClose, onOpenCrossfade, partyActive = false }) {
   const t = useLang();
+  const reduced = useReducedMotion();
   /* значения нормализуются на КАЖДОМ чтении, как и в настройках: файл мог
      остаться от версии без этих полей, а ползунок с NaN — это пустая
      дорожка и `-Infinity` в dB */
@@ -5564,67 +5494,13 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose, partyActive = 
   const matched = Object.keys(EQ_PRESETS).find(k =>
     EQ_PRESETS[k].every((v, i) => Math.abs(v - gains[i]) < 0.01));
 
-  /* вспышка при смене пресета. состояние живёт в рефах: разряд перерисовывается
-     каждым кадром, и держать его в useState значило бы гонять весь FxPanel (а
-     с ним семь фейдеров) шестьдесят раз в секунду */
-  const fadersRef = useRef(null);      /* ряд полос: от него считаем координаты */
-  const thumbsRef = useRef([]);        /* ручки: по ним и идёт разряд */
-  const boltRefs  = useRef({});        /* { main, glow, bits } — три пути */
-  const boltRaf   = useRef(0);
-  const boltGen   = useRef(0);         /* поколение удара: прошлый цикл должен умереть */
-
-  const stopBolt = () => {
-    boltGen.current++;
-    cancelAnimationFrame(boltRaf.current);
-    const { main, glow, bits } = boltRefs.current;
-    for (const p of [main, glow, bits]) {
-      if (!p) continue;
-      p.setAttribute('d', '');
-      p.style.opacity = 0;
-    }
-  };
-
-  const strike = () => {
-    const row = fadersRef.current;
-    const { main, glow, bits } = boltRefs.current;
-    if (!row || !main || !glow || !bits) return;
-    const gen = ++boltGen.current;
-    cancelAnimationFrame(boltRaf.current);
-    /* рамку ряда снимаем один раз: за время вспышки панель не переезжает, а
-       читать её в каждом кадре — это лишний принудительный layout */
-    const box = row.getBoundingClientRect();
-    const t0  = performance.now();
-    const tick = now => {
-      if (gen !== boltGen.current) return;   /* панель закрыли или ударил новый */
-      const a = boltEnv(now - t0);
-      const pts = [];
-      for (const el of thumbsRef.current) {
-        if (!el) continue;
-        const r = el.getBoundingClientRect();   /* ручка едет — берём где она сейчас */
-        pts.push({ x: r.left + r.width / 2 - box.left, y: r.top + r.height / 2 - box.top });
-      }
-      const d = a && pts.length > 1 ? boltPath(pts) : '';
-      main.setAttribute('d', d);
-      glow.setAttribute('d', d);
-      bits.setAttribute('d', a ? boltBitsPath(pts) : '');
-      /* мерцание: у настоящего разряда яркость гуляет из кадра в кадр */
-      main.style.opacity = (a * (0.7 + Math.random() * 0.3)).toFixed(3);
-      glow.style.opacity = (a * 0.5).toFixed(3);
-      bits.style.opacity = (a * (0.35 + Math.random() * 0.4)).toFixed(3);
-      if (!a) return;                        /* догорело — больше кадров не просим */
-      boltRaf.current = requestAnimationFrame(tick);
-    };
-    boltRaf.current = requestAnimationFrame(tick);
-  };
-
-  /* закрытая панель вспышку не дорисовывает: иначе она догорала бы в скрытом
-     слое и «вспыхивала» при следующем открытии */
-  useEffect(() => { if (!open) stopBolt(); }, [open]);
-  useEffect(() => () => stopBolt(), []);
+  const [contourModel] = useState(() => createEqContourModel(EQ_BANDS.length));
+  const contourRef = useRef(null);
+  const reportPosition = useCallback((index, position) => contourModel.set(index, position), [contourModel]);
 
   /* любая правка полосы включает эквалайзер. панель открывают, чтобы СЛЫШАТЬ
      результат: «двигаю ползунок, а звук тот же» читается как поломка.
-     выключить обратно можно чипом — сами полосы при этом сохраняются */
+     выключить обратно можно кнопкой питания: сами полосы сохраняются */
   const patchGains = (fn, wake) => onSettings(s => {
     const g = Array.isArray(s.eqGains) && s.eqGains.length === EQ_BANDS.length
       ? s.eqGains.slice() : EQ_FLAT.slice();
@@ -5633,37 +5509,22 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose, partyActive = 
   });
   const setGain   = (i, v) => patchGains(g => { g[i] = v; }, true);
   const setPreset = k => {
-    /* по уже выбранному пресету щёлкать нечего: ни звука, ни движения, ни
-       вспышки — если только эквалайзер выключен, тогда смысл есть */
+    /* Повторный клик не перезапускает движение. Выключенный EQ включается. */
     if (matched === k && eqOn) return;
     onSettings(s => ({ ...s, eqGains: EQ_PRESETS[k].slice(), eqOn: true }));
-    strike();
+    contourRef.current?.pulse();
   };
   const setSpeed  = v => onSettings(s => ({ ...s, speed: Math.round(v * 100) / 100 }));
   const toggleEq  = () => onSettings(s => ({ ...s, eqOn: !s.eqOn }));
   const width = clampNum(Number(settings.width) || 1, WIDTH_MIN, WIDTH_MAX);
-  const setWidth = v => onSettings(s => ({ ...s, width: Math.round(v * 100) / 100 }));
   const stereoOn = width > 1.01;
   const toggleStereo = () => onSettings(s => ({
     ...s,
     width: (Number(s.width) || 1) > 1.01 ? 1 : 2,
   }));
 
-  /* группы как в остальном приложении: подложка и ничего больше. рамки и
-     разделители здесь были единственными на весь интерфейс — HIDE_DIVIDERS
-     гасит линии в настройках, а эта панель рисовала свои; радиус — из
-     --radius, чтобы он ехал тем же ползунком, что и углы окна */
-  const CARD = {
-    background: 'rgba(255,255,255,0.032)',
-    borderRadius: 'var(--radius, 14px)',
-  };
-  const VALUE = {
-    fontSize: 'var(--fs-xs)', fontVariantNumeric: 'tabular-nums',
-    transition: 'color 0.18s ease',
-  };
-
   return (
-    <div style={{
+    <div className="fx-panel" style={{
       position:'absolute', inset:0, display:'flex', flexDirection:'column',
       opacity: open ? 1 : 0,
       /* обе защиты те же, что у панели текста: `pointer-events:none` на слое
@@ -5676,149 +5537,74 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose, partyActive = 
         ? 'opacity 0.3s ease 0.08s, transform 0.44s cubic-bezier(0.22,1,0.36,1) 0.08s'
         : 'opacity 0.16s ease, transform 0.16s ease',
     }}>
-      <div style={{display:'flex', alignItems:'center', gap:4, margin:'10px 12px 0', flexShrink:0, minHeight:24}}>
-        <span style={{
-          fontSize:'var(--fs-eyebrow)', letterSpacing:'0.13em', textTransform:'uppercase',
-          color:'rgba(255,255,255,0.34)', fontWeight:600,
-        }}>{t('fx')}</span>
-        <div style={{flex:1}}/>
-        <div onClick={onClose} title={t('close')} style={{
-          width:24, height:24, borderRadius:7, display:'flex', alignItems:'center',
-          justifyContent:'center', cursor:'pointer', color:'rgba(255,255,255,0.3)',
-          transition:'background 0.15s, color 0.15s',
-        }}
-          onMouseEnter={e => { e.currentTarget.style.background='rgba(255,255,255,0.08)'; e.currentTarget.style.color='rgba(255,255,255,0.75)'; }}
-          onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='rgba(255,255,255,0.3)'; }}>
+      <div className="fx-panel-header">
+        <span className="fx-panel-label">{t('fx')}</span>
+        <button type="button" className="fx-close" onClick={onClose} title={t('close')} aria-label={t('close')}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            strokeWidth="2.4" strokeLinecap="round">
+            strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
             <line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/>
           </svg>
-        </div>
+        </button>
       </div>
 
-      <div style={{flex:1, minHeight:0, display:'flex', flexDirection:'column', gap:10, padding:'10px 12px 12px'}}>
-        {/* ── эквалайзер ── */}
-        {/* карточка НЕ тянется на всю высоту: при 594px доступной высоты
-            фейдеры выходили по 330px и превращались в частокол. высота полосы
-            задана отдельно (clamp), обе карточки идут по контенту, а пустое
-            место остаётся внизу колонки — это нормальный вид сайдбара */}
-        <div style={{...CARD, flexShrink:0, display:'flex', flexDirection:'column', padding:'9px 8px 8px'}}>
-          <div style={{display:'flex', alignItems:'center', padding:'0 1px'}}>
-            {/* выключатель — чип, а не тумблер: он же и заголовок раздела,
-                и состояние («горит» или нет) видно по точке и по заливке */}
-            <div onClick={toggleEq} title={t('eq_on')} style={{
-              display:'flex', alignItems:'center', gap:6, padding:'5px 9px 5px 8px',
-              borderRadius:7, cursor:'pointer',
-              fontSize:'var(--fs-eyebrow)', fontWeight:600,
-              letterSpacing:'0.08em', textTransform:'uppercase',
-              background: eqOn ? 'rgba(var(--accent-rgb),0.13)' : 'rgba(255,255,255,0.045)',
-              color: eqOn ? 'var(--accent)' : 'rgba(255,255,255,0.42)',
-              transition:'background 0.18s ease, color 0.18s ease',
-            }}>
-              <span style={{
-                width:5, height:5, borderRadius:'50%', flexShrink:0,
-                background: eqOn ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-                boxShadow: eqOn ? '0 0 6px rgba(var(--accent-rgb),calc(0.7 * var(--glow-strength,1)))' : 'none',
-                transition:'background 0.18s ease, box-shadow 0.18s ease',
-              }}/>
-              {t('eq')}
-            </div>
+      <div className="fx-panel-body">
+        <section className="eq-instrument" data-enabled={eqOn ? 'true' : 'false'} aria-label={t('eq')}>
+          <div className="eq-heading">
+            <h2>{t('eq')}</h2>
+            <button type="button" className="eq-power" onClick={toggleEq} title={t('eq_on')}
+              aria-label={t('eq')} aria-pressed={eqOn}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                <path d="M12 3v8M7 5.5a8 8 0 1 0 10 0"/>
+              </svg>
+            </button>
           </div>
 
-          <div style={{display:'flex', gap:4, marginTop:8}}>
-            {Object.keys(EQ_PRESETS).map(k => {
-              const on = matched === k;
-              return (
-                <div key={k} onClick={() => setPreset(k)} style={{
-                  flex:1, padding:'5px 0', borderRadius:7, textAlign:'center', cursor:'pointer',
-                  fontSize:'var(--fs-eyebrow)', whiteSpace:'nowrap',
-                  background: on ? 'rgba(var(--accent-rgb),0.13)' : 'rgba(255,255,255,0.045)',
-                  color: on ? 'var(--accent)' : 'rgba(255,255,255,0.42)',
-                  transition:'background 0.16s ease, color 0.16s ease',
-                }}>{t('eqp_' + k)}</div>
-              );
-            })}
+          <div className="eq-presets" role="group" aria-label={t('eq')}>
+            {Object.keys(EQ_PRESETS).map(k => <button type="button" key={k} className="eq-preset"
+              onClick={() => setPreset(k)} aria-pressed={matched === k}>{t('eqp_' + k)}</button>)}
           </div>
 
-          <div ref={fadersRef} style={{
-            height:'clamp(160px, 38vh, 290px)', position:'relative',
-            display:'flex', gap:2, marginTop:10,
-          }}>
+          <div className="eq-band-grid">
+            <EqContour ref={contourRef} model={contourModel} active={open && inPlayer} reduced={reduced}/>
             {EQ_BANDS.map((b, i) => (
-              <div key={b.hz} style={{
-                flex:1, minWidth:0, display:'flex', flexDirection:'column', alignItems:'center',
-              }}>
-                <span style={{
-                  ...VALUE, marginBottom:6, whiteSpace:'nowrap',
-                  color: gains[i] ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.18)',
-                }}>{fmtDb(gains[i])}</span>
-                <div style={{flex:1, minHeight:0, width:'100%', padding:'0 2px'}}>
-                  <EqFader value={gains[i]} onChange={v => setGain(i, v)}
-                    thumbRef={el => { thumbsRef.current[i] = el; }}
-                    label={b.hz >= 1000 ? `${b.hz / 1000} ${t('khz')}` : `${b.hz} ${t('hz')}`}/>
-                </div>
-                <span style={{
-                  fontSize:'var(--fs-eyebrow)', whiteSpace:'nowrap', marginTop:6,
-                  color:'rgba(255,255,255,0.24)',
-                }}>{hzShort(b.hz)}</span>
+              <div key={b.hz} className="eq-band" data-adjusted={gains[i] ? 'true' : 'false'}>
+                <span className="eq-gain">{fmtDb(gains[i])}</span>
+                <EqFader value={gains[i]} onChange={v => setGain(i, v)} band={i} onPosition={reportPosition}
+                  label={b.hz >= 1000 ? `${b.hz / 1000} ${t('khz')}` : `${b.hz} ${t('hz')}`}/>
+                <span className="eq-frequency">{hzShort(b.hz)}</span>
               </div>
             ))}
-
-            {/* разряд при смене пресета. svg идёт последним, то есть поверх
-                полос и поверх ручек, и кликов не ловит вовсе. координаты —
-                в пикселях ряда: без viewBox единицы svg равны пикселям, и
-                считать их проще, чем в процентах вьюпорта */}
-            <svg aria-hidden="true" style={{
-              position:'absolute', inset:0, width:'100%', height:'100%',
-              pointerEvents:'none', overflow:'visible',
-            }}>
-              <path ref={el => { boltRefs.current.glow = el; }} fill="none"
-                strokeWidth="4.2" strokeLinejoin="round" strokeLinecap="round"
-                style={{ stroke:'var(--accent)', filter:'blur(3.5px)', opacity:0 }}/>
-              <path ref={el => { boltRefs.current.bits = el; }} fill="none"
-                strokeWidth="0.9" strokeLinejoin="round" strokeLinecap="round"
-                style={{ stroke:'var(--accent)', opacity:0 }}/>
-              <path ref={el => { boltRefs.current.main = el; }} fill="none"
-                strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round"
-                style={{ stroke:'rgba(255,255,255,0.92)', opacity:0 }}/>
-            </svg>
           </div>
-        </div>
-
-        {/* ── стерео-буст ── */}
-        <div onClick={toggleStereo} style={{
-          ...CARD, flexShrink:0, padding:'9px 10px', cursor:'pointer',
-          display:'flex', alignItems:'center', gap:8,
-        }}>
-          <span style={{
-            width:6, height:6, borderRadius:'50%', flexShrink:0,
-            background: stereoOn ? 'var(--accent)' : 'rgba(255,255,255,0.2)',
-            boxShadow: stereoOn ? '0 0 7px rgba(var(--accent-rgb),calc(0.7 * var(--glow-strength,1)))' : 'none',
-            transition:'background 0.18s ease, box-shadow 0.18s ease',
-          }}/>
-          <span style={{fontSize:'var(--fs-sm)', color: stereoOn ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.42)'}}>
-            {t('stereo_boost')}
-          </span>
-        </div>
-
-        {/* ── скорость и тон ── */}
-        {!partyActive && <div style={{...CARD, flexShrink:0, padding:'10px 9px 11px'}}>
-          <div style={{display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:8}}>
-            <span style={{fontSize:'var(--fs-sm)', color:'rgba(255,255,255,0.66)'}}>{t('speed')}</span>
-            <span style={{...VALUE, color: speed === 1 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.62)'}}>
-              {speed.toFixed(2)}×
-            </span>
+          <div className="eq-footer">
+            <span className="eq-range">±{EQ_GAIN_MAX} dB</span>
+            <button type="button" className="eq-reset" disabled={matched === 'flat'}
+              onClick={() => setPreset('flat')}>{t('eq_reset')}</button>
           </div>
-          <div style={{marginTop:7}}>
+        </section>
+
+        <div className="fx-secondary">
+          <button type="button" className="fx-stereo" onClick={toggleStereo} aria-pressed={stereoOn}>
+            <span className="fx-stereo-indicator" aria-hidden="true"/>
+            <span>{t('stereo_boost')}</span>
+          </button>
+          {!partyActive && <div className="fx-speed">
+            <div className="fx-speed-heading">
+              <span>{t('speed')}</span>
+              <span className="fx-speed-value">{speed.toFixed(2)}×</span>
+            </div>
             <FxSlider value={speed} min={SPEED_MIN} max={SPEED_MAX} step={0.01} origin={1}
               onChange={setSpeed} resetTo={1} label={t('speed')}/>
-          </div>
-
-          {/* тональность в плеере не настраивается: ползунок убран, а
-              «держать/не держать» переехало целиком в «Настройки» — это
-              решение на один раз, а не ручка, которую крутят по десять раз
-              за песню */}
-        </div>}
+          </div>}
+          <button type="button" className="fx-crossfade-link" onClick={onOpenCrossfade}
+            title={`${t('crossfade')}, ${t('settings_title')}`}>
+            <span>{t('crossfade')}</span>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 8h10M9 4l4 4-4 4"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -6869,7 +6655,7 @@ function Stepper({ value, onChange, step = 5, min = 0, label }) {
 }
 
 /* Геометрия морфится от уже показанного кадра: быстрые повторные клики не
-   сбрасывают линии. Разряд следует обеим кривым тем же кодом, что у EQ. */
+   сбрасывают линии. Разряд следует обеим кривым независимо от эффекта EQ. */
 function CrossfadeCurvePreview({ curve }) {
   const t = useLang();
   const reduced = useReducedMotion();
@@ -6905,14 +6691,14 @@ function CrossfadeCurvePreview({ curve }) {
       const progress = Math.min(1, elapsed / 420);
       const points = mixCurvePoints(from, to, 1 - (1 - progress) ** 4);
       paint(points);
-      const alpha = boltEnv(elapsed) * 0.72;
+      const alpha = crossfadeBoltEnvelope(elapsed) * 0.72;
       if (!alpha) { clear(); return; }
       const anchors = channel => points[channel].filter((_, i) => i % 6 === 0);
       const outgoing = anchors('out'), incoming = anchors('in');
-      const d = `${boltPath(outgoing)} ${boltPath(incoming)}`;
+      const d = `${crossfadeBoltPath(outgoing)} ${crossfadeBoltPath(incoming)}`;
       bolts.current.main.setAttribute('d', d);
       bolts.current.glow.setAttribute('d', d);
-      bolts.current.bits.setAttribute('d', `${boltBitsPath(outgoing)} ${boltBitsPath(incoming)}`);
+      bolts.current.bits.setAttribute('d', `${crossfadeBoltBranches(outgoing)} ${crossfadeBoltBranches(incoming)}`);
       bolts.current.main.style.opacity = alpha;
       bolts.current.glow.style.opacity = alpha * 0.36;
       bolts.current.bits.style.opacity = alpha * 0.5;
@@ -6965,24 +6751,35 @@ function CrossfadeCurvePicker({ value, onChange }) {
 function CrossfadeControls({ settings, onSettings }) {
   const t = useLang();
   const config = crossfadeSettings(settings);
+  const matched = CROSSFADE_PRESETS.find(preset =>
+    Math.abs(config.seconds - preset.seconds) < 0.01 && config.curve === preset.curve
+    && config.smart === preset.smart && Math.abs(config.intro - preset.intro) < 0.01)?.id;
+  const setPreset = preset => {
+    if (matched === preset.id) return;
+    onSettings(s => ({ ...s, crossfade: preset.seconds, crossfadeLast: preset.seconds,
+      crossfadeCurve: preset.curve, crossfadeSmart: preset.smart, crossfadeIntro: preset.intro }));
+  };
   const set = (key, value) => onSettings({ ...settings, [key]: value });
   return <Card>
+    <div className="settings-crossfade-highlight" aria-hidden="true"/>
     <Row label={t('crossfade')} last>
       <Switch label={t('crossfade')} on={config.seconds > 0} onChange={on => onSettings({ ...settings,
         crossfade: on ? (crossfadeSettings({ crossfade: settings.crossfadeLast ?? 5 }).seconds || 5) : 0,
         crossfadeLast: config.seconds || settings.crossfadeLast || 5,
       })}/>
     </Row>
+    <div className="crossfade-presets" role="group" aria-label={t('crossfade')}>
+      {CROSSFADE_PRESETS.map(preset => <button type="button" key={preset.id} className="crossfade-preset"
+        aria-pressed={matched === preset.id} onClick={() => setPreset(preset)}
+        title={`${t('crossfade_curve')}: ${t('crossfade_' + preset.curve)} · ${t('crossfade_intro')}: ${preset.intro ? `${preset.intro} ${t('sec')}` : t('off')}`}>
+        <span>{t('crossfade_' + preset.id)}</span>
+        <span className="crossfade-preset-duration">{preset.seconds} {t('sec')}</span>
+      </button>)}
+    </div>
     <Disclosure open={config.seconds > 0}>
       <MiniSlider label={t('crossfade_length')} min={0.5} max={CROSSFADE_MAX} step={0.5}
         value={config.seconds} display={`${config.seconds} ${t('sec')}`}
         onChange={value => set('crossfade', value)}/>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '0 16px 10px' }}>
-        {[['short', 2, 'smooth'], ['flow', 5, 'power'], ['mix', 8, 'smooth']].map(([label, seconds, curve]) =>
-          <Btn key={label} onClick={() => onSettings({ ...settings, crossfade: seconds, crossfadeCurve: curve, crossfadeSmart: true })}>
-            {t('crossfade_' + label)}
-          </Btn>)}
-      </div>
       <Row label={t('crossfade_curve')} last wrap>
         <CrossfadeCurvePicker value={config.curve} onChange={value => set('crossfadeCurve', value)}/>
       </Row>
@@ -7152,10 +6949,30 @@ const UI_HIDDEN_NONE = { source:false, miniPlayer:false, volume:false, caption:f
    `settings.uiHidden.source` — это TypeError на первом же запуске */
 const uiHiddenOf = s => ({ ...UI_HIDDEN_NONE, ...(s && s.uiHidden) });
 
-function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFolder, onClearCoversCache, onClearLikesCache, appAccent, scAuth, onScLogin, onScLogout, sec, setSec, discordStatus, winAccent }) {
+function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFolder, onClearCoversCache, onClearLikesCache, appAccent, scAuth, onScLogin, onScLogout, sec, setSec, discordStatus, winAccent, crossfadeFocus = 0 }) {
   const t = useLang();
   const lang = useLangCode();
   const reduced = useReducedMotion();
+  const settingsScrollRef = useRef(null);
+  const crossfadeTargetRef = useRef(null);
+  const handledCrossfadeFocus = useRef(0);
+  useEffect(() => {
+    if (!visible || sec !== 'playback' || !crossfadeFocus || handledCrossfadeFocus.current === crossfadeFocus) return;
+    let highlight;
+    const frame = requestAnimationFrame(() => {
+      const target = crossfadeTargetRef.current, scroller = settingsScrollRef.current;
+      if (!target || !scroller) return;
+      handledCrossfadeFocus.current = crossfadeFocus;
+      target.focus({ preventScroll: true });
+      const top = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 18;
+      scroller.scrollTo({ top: Math.max(0, top), behavior: reduced ? 'instant' : 'smooth' });
+      highlight = target.querySelector('.settings-crossfade-highlight')?.animate([
+        { opacity: 0 }, { opacity: 0.2, offset: 0.12 },
+        { opacity: 0.12, offset: 0.65 }, { opacity: 0 },
+      ], { duration: 1600, delay: reduced ? 0 : 180, easing: 'ease-out' });
+    });
+    return () => { cancelAnimationFrame(frame); highlight?.cancel(); };
+  }, [visible, sec, crossfadeFocus, reduced]);
   /* Материал окна выключает подсветку акцента — см. карточку акцента */
   const micaOn = settings.windowEffect === 'mica';
   const [scLoading, setScLoading] = useState(false);
@@ -7363,7 +7180,10 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
       </Card>
     ),
     playback: (<>
-      <CrossfadeControls settings={settings} onSettings={onSettings}/>
+      <div ref={crossfadeTargetRef} className="settings-crossfade-target" tabIndex={-1}
+        role="group" aria-label={t('crossfade')}>
+        <CrossfadeControls settings={settings} onSettings={onSettings}/>
+      </div>
 
       <Card title={t('speed_pitch')}>
         <MiniSlider label={t('speed')} value={speed} min={SPEED_MIN} max={SPEED_MAX} step={0.01}
@@ -7989,7 +7809,7 @@ appearance: (<>
       </div>
 
       {/* правый контент */}
-      <div className="scroll-thin" style={{ flex:1, minWidth:0, overflowY:'auto', padding:'34px 36px 40px' }}>
+      <div ref={settingsScrollRef} className="scroll-thin" style={{ flex:1, minWidth:0, overflowY:'auto', padding:'34px 36px 40px' }}>
         {/* Заголовок раздела над контентом удалён: он дублировал название
            слева в навигации, и оба менялись синхронно — при переключении
            раздела читались два одинаковых слова подряд.
@@ -14435,6 +14255,7 @@ function App() {
   };
 
   const [settingsSec, setSettingsSec] = useState('playback');
+  const [crossfadeFocus, setCrossfadeFocus] = useState(0);
   const plEditorRef = useRef(null);
   const handleNav = async (id) => {
     /* из редактора плейлиста выходим только через его гарды — если есть
@@ -14541,6 +14362,11 @@ function App() {
     }
   };
   handleNavRef.current = handleNav;
+  const openCrossfadeSettings = () => {
+    setSettingsSec('playback');
+    setCrossfadeFocus(value => value + 1);
+    handleNav('settings');
+  };
 
   const toggleParty = event => {
     // Keep the playlist editor's unsaved-work guard. Room view itself never changes playback.
@@ -15128,7 +14954,7 @@ function App() {
             onPickSource={handleLyricsPickSource}
             onFindLyrics={handleLyricsFind} onUnpin={handleLyricsUnpin}/>
           <FxPanel open={fxOpen} inPlayer={playerVisible} settings={settings} partyActive={partyActive}
-            onSettings={setSettings} onClose={() => setFxOpen(false)}/>
+            onSettings={setSettings} onClose={() => setFxOpen(false)} onOpenCrossfade={openCrossfadeSettings}/>
           </div>
         </div>
 
@@ -15388,7 +15214,7 @@ function App() {
           </div>
         )}
 
-        <SettingsView settings={settings} onSettings={setSettings} visible={view==='settings'} onScanTracks={handleScanTracks} onClearFolder={handleClearFolder} onClearCoversCache={handleClearCoversCache} onClearLikesCache={handleClearLikesCache} appAccent={appAccent} winAccent={winAccent} scAuth={settings.soundcloudAuth||null} onScLogin={handleScLogin} onScLogout={handleScLogout} sec={settingsSec} setSec={setSettingsSec} discordStatus={discordStatus}/>
+        <SettingsView settings={settings} onSettings={setSettings} visible={view==='settings'} onScanTracks={handleScanTracks} onClearFolder={handleClearFolder} onClearCoversCache={handleClearCoversCache} onClearLikesCache={handleClearLikesCache} appAccent={appAccent} winAccent={winAccent} scAuth={settings.soundcloudAuth||null} onScLogin={handleScLogin} onScLogout={handleScLogout} sec={settingsSec} setSec={setSettingsSec} discordStatus={discordStatus} crossfadeFocus={crossfadeFocus}/>
         <ListeningHistory visible={view==='history'} entries={listeningHistory} localTracks={tracks} cloudTracks={scTracks} covers={historyCovers}
           currentKey={hasTrack ? historyTrackKey(track, scPlayingTrack ? 'sc' : 'local') : null} isPlaying={isPlaying}
           loadingId={historyLoadingId || listeningHistory.find(entry => entry.source==='sc' && String(entry.track.id)===String(loadingTrackId))?.id}
