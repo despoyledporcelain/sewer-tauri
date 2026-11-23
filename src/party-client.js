@@ -6,7 +6,7 @@ const finite = value => typeof value === 'number' && Number.isFinite(value);
 
 export function partySnapshot(value, session) {
   if (!value || value.protocol !== 1 || value.code !== session.code || value.you?.id !== session.memberId
-    || value.you.role !== session.role || !Array.isArray(value.members) || value.members.length > 8
+    || !['host', 'guest'].includes(value.you.role) || !Array.isArray(value.members) || value.members.length > 8
     || !finite(value.serverTime) || !value.playback || typeof value.playback.playing !== 'boolean'
     || !finite(value.playback.position) || value.playback.position < 0 || !finite(value.playback.updatedAt)
     || !Number.isSafeInteger(value.playback.revision) || value.playback.revision < 0) throw new Error('protocol_error');
@@ -20,8 +20,16 @@ export function partySnapshot(value, session) {
     ids.add(member.id);
     return { id: member.id, role: member.role, name: member.name.slice(0, 64), avatarUrl: partyImageURL(member.avatarUrl) };
   });
-  return { type: 'room', protocol: 1, code: session.code, you: { id: session.memberId, role: session.role },
-    members, track, playback: { playing: value.playback.playing, position: value.playback.position,
+  const suggestions = value.suggestions ?? [];
+  if (!Array.isArray(suggestions) || suggestions.length > 20) throw new Error('protocol_error');
+  const cleanSuggestions = suggestions.map(item => {
+    const track = sharedPartyTrack(item?.track);
+    if (typeof item?.id !== 'string' || item.id.length > 64 || typeof item.memberId !== 'string'
+      || item.memberId.length > 64 || typeof item.name !== 'string' || !track) throw new Error('protocol_error');
+    return { id: item.id, memberId: item.memberId, name: item.name.slice(0, 64), track };
+  });
+  return { type: 'room', protocol: 1, code: session.code, you: { id: session.memberId, role: value.you.role },
+    members, track, suggestions: cleanSuggestions, playback: { playing: value.playback.playing, position: value.playback.position,
       updatedAt: value.playback.updatedAt, revision: value.playback.revision }, serverTime: value.serverTime };
 }
 
@@ -126,6 +134,7 @@ export class PartyClient {
         if (data?.type === 'room') {
           if (this.status === 'leaving') return;
           const snapshot = partySnapshot(data, this.session);
+          this.session.role = snapshot.you.role;
           if (this.snapshot && snapshot.playback.revision < this.snapshot.playback.revision) return;
           if (this.bestRTT === Infinity) this.offset = snapshot.serverTime - this.now();
           // Hosts own selection: a delayed acknowledgement must not cancel
@@ -279,6 +288,15 @@ export class PartyClient {
       this.failPlayback(error.message === 'login_required' ? 'login_required' : 'track_unavailable');
     }
   }
+
+  transferHost(memberId) { return this.role === 'host' && this.send({ type: 'transfer-host', memberId }); }
+  suggestTrack(track) {
+    if (!this.active || this.status !== 'connected') return false;
+    const shared = sharedPartyTrack(track);
+    if (!shared) { this.onState({ type: 'playback-error', error: 'soundcloud_only' }); return false; }
+    return this.send({ type: 'suggest', track: shared });
+  }
+  removeSuggestion(id) { return this.send({ type: 'suggestion-remove', id }); }
 
   follow() {
     if (!this.snapshot || this.followError) return;

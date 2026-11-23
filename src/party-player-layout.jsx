@@ -17,6 +17,10 @@ export class PartyLayout extends React.Component {
   componentDidUpdate(previous, state, snapshot) {
     if (previous.open !== this.props.open || previous.controlsAligned !== this.props.controlsAligned || previous.enabled !== this.props.enabled
       || previous.reduced !== this.props.reduced || previous.instant !== this.props.instant) {
+      if (!this.props.enabled) {
+        cancelPartyPlayerMotion(this.animations);
+        return;
+      }
       animatePartyPlayer(snapshot, this.root.current, { ...this.props, layoutOnly: previous.open === this.props.open }, this.animations);
     }
   }

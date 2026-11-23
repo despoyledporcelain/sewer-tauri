@@ -177,7 +177,7 @@ export class MyDurableObject extends DurableObject {
       if (this.room) return failure('code_in_use', 409);
       const body = await request.json();
       const memberId = randomHex(12), token = randomHex();
-      this.room = { code: body.code, expiresAt: Date.now() + ROOM_TTL, track: cleanTrack(body.track),
+      this.room = { code: body.code, expiresAt: Date.now() + ROOM_TTL, track: cleanTrack(body.track), suggestions: [],
         playback: { playing: false, position: 0, updatedAt: Date.now(), revision: 0 },
         sessions: [{ id: memberId, tokenHash: await hash(token), role: 'host', profile: profile(body.profile), expiresAt: Date.now() + ROOM_TTL }] };
       await this.save();
@@ -233,7 +233,7 @@ export class MyDurableObject extends DurableObject {
       const id = ws.deserializeAttachment().id;
       const session = this.room.sessions.find(value => value.id === id);
       this.send(ws, { type: 'room', protocol: 1, code: this.room.code, you: { id, role: session.role },
-        members, track: this.room.track, playback: this.room.playback, serverTime: Date.now() });
+        members, track: this.room.track, playback: this.room.playback, suggestions: this.room.suggestions || [], serverTime: Date.now() });
     }
   }
   send(ws, value) {
@@ -269,9 +269,37 @@ export class MyDurableObject extends DurableObject {
         this.detach(ws, 1000, 'left');
         await this.save(); this.broadcast(); return;
       }
+      if (data.type === 'transfer-host') {
+        if (session.role !== 'host') { this.send(ws, { type: 'error', error: 'host_only' }); return; }
+        const successor = this.room.sessions.find(value => value.id === data.memberId && value.id !== session.id
+          && value.role === 'guest' && this.peers().some(peer => peer.deserializeAttachment()?.id === value.id));
+        if (!successor) { this.send(ws, { type: 'error', error: 'member_not_found' }); return; }
+        session.role = 'guest'; successor.role = 'host'; await this.save(); this.broadcast(); return;
+      }
+      if (data.type === 'suggest') {
+        let track;
+        try { track = cleanTrack(data.track); } catch { this.send(ws, { type: 'error', error: 'invalid_track' }); return; }
+        if (!track) { this.send(ws, { type: 'error', error: 'invalid_track' }); return; }
+        const suggestions = this.room.suggestions || (this.room.suggestions = []);
+        if (suggestions.length >= 20) { this.send(ws, { type: 'error', error: 'suggestions_full' }); return; }
+        if (suggestions.some(item => item.memberId === session.id && item.track.id === track.id)) {
+          this.send(ws, { type: 'error', error: 'already_suggested' }); return;
+        }
+        suggestions.push({ id: randomHex(8), memberId: session.id, name: session.profile.name, track });
+        await this.save(); this.broadcast(); return;
+      }
+      if (data.type === 'suggestion-remove') {
+        const suggestions = this.room.suggestions || [];
+        const item = suggestions.find(value => value.id === data.id);
+        if (!item) return;
+        if (session.role !== 'host' && item.memberId !== session.id) { this.send(ws, { type: 'error', error: 'host_only' }); return; }
+        this.room.suggestions = suggestions.filter(value => value.id !== data.id);
+        await this.save(); this.broadcast(); return;
+      }
       if (session.role !== 'host') { this.send(ws, { type: 'error', error: 'host_only' }); return; }
       if (data.type === 'track') {
         try { this.room.track = cleanTrack(data.track); } catch { this.send(ws, { type: 'error', error: 'invalid_track' }); return; }
+        this.room.suggestions = (this.room.suggestions || []).filter(item => item.track.id !== this.room.track?.id);
         this.room.playback = { playing: false, position: 0, updatedAt: Date.now(), revision: this.room.playback.revision + 1 };
       } else if (data.type === 'playback') {
         if (!this.room.track || typeof data.playing !== 'boolean' || typeof data.position !== 'number'
@@ -287,7 +315,10 @@ export class MyDurableObject extends DurableObject {
     if (!this.room || this.peers().some(ws => ws.deserializeAttachment()?.id === id)) return;
     const session = this.room.sessions.find(value => value.id === id);
     if (!session) return;
-    if (session.role === 'guest') session.expiresAt = Math.min(session.expiresAt, this.room.expiresAt, Date.now() + 60000);
+    if (session.role === 'guest') {
+      session.expiresAt = Math.min(session.expiresAt, this.room.expiresAt, Date.now() + 60000);
+      this.room.suggestions = (this.room.suggestions || []).filter(item => item.memberId !== id);
+    }
     else if (this.room.playback.playing) {
       const state = this.room.playback;
       this.room.playback = { playing: false, position: Math.min(this.room.track.duration,

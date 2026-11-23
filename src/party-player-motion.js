@@ -4,8 +4,10 @@ const cleanups = new WeakMap();
 // Capture the rendered frame before React switches the grid. This also captures
 // an interrupted flight, so a quick second click reverses without a jump.
 export function snapshotPartyPlayer(root) {
-  const elements = new Map([...root.querySelectorAll('[data-party-motion]')].map(element => [element, {
-    rect: element.getBoundingClientRect(), kind: element.getAttribute('data-party-motion'),
+  const motionElements = [...root.querySelectorAll('[data-party-motion]')]
+    .filter(element => element.getAttribute('data-party-motion') !== 'art');
+  const elements = new Map(motionElements.map(element => [element, {
+    rect: element.getBoundingClientRect(),
   }]));
   const sidebar = root.querySelector('.party-sidebar');
   const rect = sidebar?.getBoundingClientRect();
@@ -25,10 +27,19 @@ export function cancelPartyPlayerMotion(animations) {
   animations.clear();
 }
 
-// FLIP only the cover and its neighbours, never the player engine or individual
-// buttons. Layout happens once; every animated frame uses transform/opacity.
+// FLIP the player layout around the fixed artwork slot. The portalized artwork
+// itself follows that slot directly so it cannot drift during the reflow.
 export function animatePartyPlayer(snapshot, root, { open, instant, reduced, layoutOnly = false }, animations) {
   cancelPartyPlayerMotion(animations);
+  const sharedArt = root.ownerDocument?.querySelector('[data-party-shared-art]');
+  const artSlot = root.querySelector('#player-album-art');
+  if (sharedArt && artSlot) {
+    const rect = artSlot.getBoundingClientRect();
+    Object.assign(sharedArt.style, {
+      left: `${rect.left}px`, top: `${rect.top}px`,
+      width: `${rect.width}px`, height: `${rect.height}px`,
+    });
+  }
   if (!snapshot || instant || reduced) return;
 
   const play = (element, frames, options, cleanup = () => {}) => {
@@ -51,17 +62,14 @@ export function animatePartyPlayer(snapshot, root, { open, instant, reduced, lay
   const after = new Map([...snapshot.elements.keys()].filter(element => root.contains(element))
     .map(element => [element, element.getBoundingClientRect()]));
   for (const [element, rect] of after) {
-    const { rect: old, kind } = snapshot.elements.get(element);
+    const { rect: old } = snapshot.elements.get(element);
     if (!rect.width || !rect.height || !old.width || !old.height) continue;
-    const scale = kind === 'art';
-    const dx = scale ? old.left - rect.left : old.left + old.width / 2 - rect.left - rect.width / 2;
+    const dx = old.left + old.width / 2 - rect.left - rect.width / 2;
     const dy = old.top - rect.top;
-    const sx = scale ? old.width / rect.width : 1;
-    const sy = scale ? old.height / rect.height : 1;
-    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(sx - 1) < 0.001 && Math.abs(sy - 1) < 0.001) continue;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
     play(element, [
-      { transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
-      { transform: 'translate(0, 0) scale(1, 1)' },
+      { transform: `translate(${dx}px, ${dy}px)` },
+      { transform: 'translate(0, 0)' },
     ], { duration: open ? 280 : 240 });
   }
 

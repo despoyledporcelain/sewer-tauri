@@ -27,6 +27,7 @@ export function MiniPlayer({ visible, track, isPlaying, onPrev, onToggle, onNext
             </svg>
             {track?.coverUrl && <img key={track.coverUrl} src={track.coverUrl} alt="" draggable={false}
               onError={e => { e.currentTarget.hidden = true; }}/>}
+            {track?.coverUrl && <span className="mini-player-cover-tint"/>}
           </span>
           <span className="mini-player-meta">
             <span className="mini-player-title">{title}</span>

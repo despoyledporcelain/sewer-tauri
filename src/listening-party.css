@@ -94,6 +94,12 @@
 .party-members { margin-top:27px; }
 .party-members ul { list-style:none; margin-top:10px; }
 .party-members li { display:flex; align-items:center; gap:9px; min-height:48px; }
+.party-small-action { flex-shrink:0; padding:4px 6px; border-radius:6px; color:var(--party-muted); background:var(--party-fill); font-size:var(--fs-eyebrow); }
+.party-suggestions { margin-top:20px; }
+.party-suggestions > small { display:block; margin-top:7px; color:var(--party-dim); font-size:var(--fs-eyebrow); line-height:1.4; }
+.party-suggestions ul { list-style:none; margin-top:8px; }
+.party-suggestions li { display:flex; align-items:center; gap:7px; min-height:42px; }
+.party-suggestions li > img { width:28px; height:28px; border-radius:5px; object-fit:cover; }
 .party-avatar {
   position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden;
   width:31px; height:31px; flex-shrink:0; border-radius:50%;

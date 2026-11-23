@@ -42,7 +42,7 @@ export function partyReducer(state, action) {
     case 'snapshot': return state.room?.code === action.code ? { ...state, connection: 'connected', busy: false, notice: '',
       room: { code: action.code, role: action.you.role, memberId: action.you.id,
         members: action.members.map(({ id, role, name, avatarUrl }) => ({ id, role, name, avatarUrl })),
-        track: sharedPartyTrack(action.track), revision: action.playback.revision } } : state;
+        track: sharedPartyTrack(action.track), suggestions: action.suggestions || [], revision: action.playback.revision } } : state;
     case 'connection': return state.room ? { ...state, connection: action.value } : state;
     case 'failed': return { ...state, busy: false, connection: 'idle', notice: action.error };
     case 'playback-error': return { ...state, playbackError: action.error };

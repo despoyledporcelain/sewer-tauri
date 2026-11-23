@@ -17,6 +17,8 @@ const STRINGS = {
     copy: 'скопировать код комнаты', copied: 'код скопирован',
     copyError: 'выдели код и скопируй вручную', invitation: 'пригласить друга',
     followsHost: 'трек и перемотка у ведущего',
+    transfer: 'передать ведущего', suggestions: 'предложенные треки', suggestHint: 'нажми на трек в приложении, чтобы предложить его',
+    playSuggestion: 'включить', removeSuggestion: 'убрать',
     leave: 'выйти из комнаты', end: 'закрыть комнату',
     confirmLeave: 'выйти из комнаты?', confirmEnd: 'закрыть комнату для всех?', stay: 'остаться',
     connecting: 'подключение', connected: 'вместе', reconnecting: 'переподключение', leaving: 'выходим', creating: 'создаём комнату', joining: 'входим в комнату',
@@ -29,6 +31,7 @@ const STRINGS = {
     error_host_only: 'трек и перемотку меняет ведущий', error_host_left: 'ведущий закрыл комнату',
     error_expired: 'время комнаты истекло', error_replaced: 'комната открыта в другом окне',
     error_leave_unconfirmed: 'сервер не подтвердил выход, комната может оставаться открытой',
+    error_suggestions_full: 'список предложений заполнен', error_already_suggested: 'этот трек уже предложен',
   },
   en: {
     title: 'rooms', close: 'back to the player',
@@ -43,6 +46,8 @@ const STRINGS = {
     copy: 'copy the room code', copied: 'code copied',
     copyError: 'select the code and copy it manually', invitation: 'invite a friend',
     followsHost: 'the host chooses tracks and seeks',
+    transfer: 'make host', suggestions: 'suggested tracks', suggestHint: 'click a track in the app to suggest it',
+    playSuggestion: 'play', removeSuggestion: 'remove',
     leave: 'leave the room', end: 'close the room',
     confirmLeave: 'leave this room?', confirmEnd: 'close the room for everyone?', stay: 'stay',
     connecting: 'connecting', connected: 'together', reconnecting: 'reconnecting', leaving: 'leaving', creating: 'creating a room', joining: 'joining the room',
@@ -55,6 +60,7 @@ const STRINGS = {
     error_host_only: 'only the host can change tracks or seek', error_host_left: 'the host closed the room',
     error_expired: 'the room has expired', error_replaced: 'the room is open in another window',
     error_leave_unconfirmed: 'the server did not confirm leaving, the room may still be open',
+    error_suggestions_full: 'suggestion list is full', error_already_suggested: 'this track was already suggested',
   },
 };
 
@@ -88,7 +94,7 @@ export function PartyAvatar({ user }) {
 }
 
 // The left side of the player stage. The real artwork and transport remain owned by App.
-export function PartySurface({ state, labels: l, user, dispatch, onCreate, onJoin, onCopy, onClose, onLeave, onRetry, onLogin }) {
+export function PartySurface({ state, labels: l, user, dispatch, onCreate, onJoin, onCopy, onClose, onLeave, onRetry, onLogin, onTransferHost, onPlaySuggestion, onRemoveSuggestion }) {
   const room = state.room;
   const host = room?.role === 'host';
   const username = user?.username || l.you;
@@ -138,7 +144,7 @@ export function PartySurface({ state, labels: l, user, dispatch, onCreate, onJoi
     {state.screen !== 'join' && <div className="party-members">
       <div className="party-section-heading"><h3 className="party-eyebrow">{l.people}</h3><span>{String(members.length).padStart(2, '0')}</span></div>
       <ul>
-        {members.map(member => <li key={member.id}><PartyAvatar user={member}/><span className="party-member-meta"><strong>{member.name}</strong><span>{member.id === room?.memberId ? `${l.you} · ` : ''}{member.role ? l[member.role] : l.you}</span></span></li>)}
+        {members.map(member => <li key={member.id}><PartyAvatar user={member}/><span className="party-member-meta"><strong>{member.name}</strong><span>{member.id === room?.memberId ? `${l.you} · ` : ''}{member.role ? l[member.role] : l.you}</span></span>{host && member.role !== 'host' && <button type="button" className="party-small-action" onClick={() => onTransferHost(member.id)}>{l.transfer}</button>}</li>)}
         {(!room || host && members.length < 8) && <li className="party-empty-seat"><span className="party-avatar party-avatar-invite" aria-hidden="true"><Icon name="plus" size={15}/></span><span className="party-member-meta"><strong>{l.friendSeat}</strong><span>{l.inviteFriend}</span></span></li>}
       </ul>
     </div>}
@@ -153,6 +159,16 @@ export function PartySurface({ state, labels: l, user, dispatch, onCreate, onJoi
           </button>
         </div>
         {copyStatus && <span className="party-copy-status" role="status">{copyStatus}</span>}
+      </div>
+      <div className="party-suggestions">
+        <div className="party-section-heading"><h3 className="party-eyebrow">{l.suggestions}</h3><span>{String(room.suggestions?.length || 0).padStart(2, '0')}</span></div>
+        {!host && <small>{l.suggestHint}</small>}
+        {!!room.suggestions?.length && <ul>{room.suggestions.map(item => <li key={item.id}>
+          {item.track.coverUrl && <img src={item.track.coverUrl} alt=""/>}
+          <span className="party-member-meta"><strong>{item.track.title || item.track.id}</strong><span>{item.track.artist || item.name}</span></span>
+          {host && <button type="button" className="party-small-action" onClick={() => onPlaySuggestion(item)}>{l.playSuggestion}</button>}
+          {(host || item.memberId === room.memberId) && <button type="button" className="party-small-action" onClick={() => onRemoveSuggestion(item.id)}>{l.removeSuggestion}</button>}
+        </li>)}</ul>}
       </div>
       <div className="party-room-bottom">
         {state.confirmLeave ? <div className="party-leave-confirm" role="group" aria-label={host ? l.confirmEnd : l.confirmLeave}>
@@ -172,7 +188,7 @@ export function PartySurface({ state, labels: l, user, dispatch, onCreate, onJoi
   </>;
 }
 
-export function ListeningParty({ visible, instant, state, dispatch, onClose, triggerRef, user, locale = 'ru', onCreate, onJoin, onLeave, onRetry, onLogin }) {
+export function ListeningParty({ visible, instant, state, dispatch, onClose, triggerRef, user, locale = 'ru', onCreate, onJoin, onLeave, onRetry, onLogin, onTransferHost, onPlaySuggestion, onRemoveSuggestion }) {
   const sidebarRef = useRef(null);
   const l = partyLabels(locale);
 
@@ -214,6 +230,7 @@ export function ListeningParty({ visible, instant, state, dispatch, onClose, tri
     aria-label={l.title} tabIndex={-1} data-instant={instant ? 'true' : undefined}
     onKeyDownCapture={event => { if (event.key === 'Tab') event.stopPropagation(); }}>
     <PartySurface state={state} labels={l} user={user} dispatch={dispatch}
-      onCreate={onCreate} onJoin={onJoin} onLeave={onLeave} onRetry={onRetry} onLogin={onLogin} onCopy={copy} onClose={close}/>
+      onCreate={onCreate} onJoin={onJoin} onLeave={onLeave} onRetry={onRetry} onLogin={onLogin} onCopy={copy} onClose={close}
+      onTransferHost={onTransferHost} onPlaySuggestion={onPlaySuggestion} onRemoveSuggestion={onRemoveSuggestion}/>
   </section>;
 }

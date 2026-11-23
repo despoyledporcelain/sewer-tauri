@@ -257,7 +257,7 @@
   }
   .mini-player-slot {
     flex:1; min-width:0; max-width:280px; margin-left:6px;
-    container-type:inline-size; -webkit-app-region:no-drag;
+    container-type:inline-size;
   }
   .mini-player {
     display:flex; align-items:center; gap:8px; height:34px; padding:3px;
@@ -272,8 +272,11 @@
   .mini-player-track {
     display:flex; align-items:center; gap:8px; flex:1; min-width:0; height:28px;
     padding:0; border:0; border-radius:8px; background:none; color:inherit;
-    font:inherit; text-align:left; cursor:pointer; -webkit-app-region:no-drag;
+    font:inherit; text-align:left; cursor:pointer;
   }
+  .mini-player[data-visible="true"],
+  .mini-player[data-visible="true"] .mini-player-track,
+  .mini-player[data-visible="true"] .mini-player-button { -webkit-app-region:no-drag; }
   .mini-player-track:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .mini-player-track:disabled { cursor:default; }
   .mini-player-cover {
@@ -285,6 +288,12 @@
     position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
   }
   .mini-player-cover img[hidden] { display:none; }
+  .mini-player-cover-tint {
+    position:absolute; inset:0; pointer-events:none;
+    background:rgb(var(--cover-tint-rgb)); mix-blend-mode:color;
+    opacity:var(--cover-tint, 0);
+    transition:background 0.5s ease, opacity 0.3s ease;
+  }
   .mini-player-meta { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
   .mini-player-title, .mini-player-artist {
     display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
@@ -295,7 +304,7 @@
   .mini-player-button {
     display:flex; align-items:center; justify-content:center; width:28px; height:28px;
     flex-shrink:1; min-width:0; border:0; border-radius:8px; background:none;
-    color:oklch(0.77 0.008 285); cursor:pointer; -webkit-app-region:no-drag;
+    color:oklch(0.77 0.008 285); cursor:pointer;
     transition:color 140ms ease-out, background-color 140ms ease-out, transform 140ms ease-out;
   }
   .mini-player-button:not(:disabled):hover {
@@ -453,6 +462,13 @@
        допускает и остаётся именно обрезкой. */
     overflow:clip visible;
   }
+  #app-shell.lyrics-fullscreen-open > #root {
+    opacity:0 !important; pointer-events:none !important;
+  }
+  #app-shell.lyrics-fullscreen-open > #titlebar {
+    opacity:0 !important; pointer-events:none !important;
+  }
+  #app-shell.lyrics-fullscreen-open > #accent-top { opacity:0 !important; }
   ::-webkit-scrollbar { width:2px; }
   ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.07); border-radius:2px; }
   .scroll-thin::-webkit-scrollbar { width:8px; }
@@ -617,16 +633,59 @@
     to   { opacity:1; transform:none; }
   }
 
-  /* вспышка текущей строки текста: в момент, когда строка становится
-     текущей, акцентное свечение вспыхивает и оседает до рабочего уровня.
-     Это keyframes, а не transition: transition ведёт переход между двумя
-     значениями, а вспышка — короткий пик, которого в конечном стиле нет.
-     перезапуск получается сам: у новой строки animation меняется с none на
-     имя, и браузер играет её заново. Конечный кадр совпадает с инлайновым
-     text-shadow, поэтому после анимации ничего не дёргается. */
+  /* Короткая мягкая подсветка на смене активной строки. */
   @keyframes lyricLit {
-    from { text-shadow: 0 0 40px rgba(var(--accent-rgb),0.9), 0 0 9px rgba(var(--accent-rgb),0.65); }
-    to   { text-shadow: 0 0 26px rgba(var(--accent-rgb),0.42), 0 0 4px rgba(var(--accent-rgb),0.35); }
+    from { text-shadow: 0 0 29px rgba(var(--accent-rgb),0.58), 0 0 7px rgba(var(--accent-rgb),0.4); }
+    to   { text-shadow: 0 0 20px rgba(var(--accent-rgb),0.34), 0 0 4px rgba(var(--accent-rgb),0.28); }
+  }
+
+  .lyrics-fullscreen {
+    position:fixed; inset:0; z-index:9999; overflow:hidden;
+    display:flex; align-items:center; justify-content:center;
+    color:var(--text); background:transparent;
+  }
+  .lyrics-fullscreen-content {
+    position:relative; z-index:1; width:min(1420px,88vw); height:min(820px,82vh);
+    display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+    align-items:center; gap:clamp(54px,8vw,124px);
+  }
+  .lyrics-fullscreen-artwork { min-width:0; display:flex; flex-direction:column; align-items:center; transform:translateY(-18px); }
+  .lyrics-fullscreen-meta { width:min(100%,min(58vh,38vw)); margin:0 auto 22px; }
+  .lyrics-fullscreen-art {
+    position:relative; isolation:isolate; overflow:hidden;
+    width:min(100%,min(58vh,38vw)); aspect-ratio:1; border-radius:16px;
+    background:transparent;
+  }
+  .lyrics-fullscreen-art img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
+  .lyrics-fullscreen-meta .lyrics-fullscreen-track { font-size:26px; font-weight:650; letter-spacing:-.025em; line-height:1.2; }
+  .lyrics-fullscreen-artist { margin-top:7px; color:rgba(255,255,255,.54); font-size:15px; line-height:1.4; }
+  .lyrics-fullscreen-lines {
+    align-self:stretch; min-width:0; max-height:76vh; overflow:auto; padding:28px 26px 28px 0;
+    scrollbar-width:none; mask-image:linear-gradient(transparent,#000 7%,#000 93%,transparent);
+  }
+  .lyrics-fullscreen-lines::-webkit-scrollbar { display:none; }
+  .lyrics-fullscreen-line {
+    width:fit-content; max-width:100%; padding:7px 0; overflow-wrap:anywhere;
+    color:rgba(255,255,255,.3); font-size:clamp(20px,2.1vw,30px); font-weight:500; line-height:1.36;
+    transform-origin:left center;
+    transition:color .24s ease, transform .3s cubic-bezier(.23,1,.32,1),text-shadow .24s ease;
+  }
+  .lyrics-fullscreen-line.is-near { color:rgba(255,255,255,.56); }
+  .lyrics-fullscreen-line.is-active { color:var(--text); transform:translateX(4px); font-weight:700; text-shadow:0 0 20px rgba(var(--accent-rgb),.25); }
+  .lyrics-fullscreen-close {
+    position:absolute; z-index:2; top:28px; right:32px; display:grid; place-items:center;
+    width:42px; height:42px; color:rgba(255,255,255,.62); cursor:pointer;
+    background:rgba(255,255,255,.055); border:1px solid rgba(255,255,255,.09); border-radius:50%;
+    transition:background .18s ease,color .18s ease;
+  }
+  .lyrics-fullscreen-close:hover { color:white; background:rgba(255,255,255,.12); }
+  @media (max-width:760px) {
+    .lyrics-fullscreen-content { width:88vw; height:88vh; grid-template-columns:1fr 1fr; gap:24px; }
+    .lyrics-fullscreen-meta { width:100%; margin-bottom:14px; }
+    .lyrics-fullscreen-art { width:100%; }
+    .lyrics-fullscreen-meta .lyrics-fullscreen-track { font-size:19px; }
+    .lyrics-fullscreen-artist { font-size:13px; }
+    .lyrics-fullscreen-lines { max-height:78vh; padding-right:8px; }
   }
 
   /* редактор плейлиста: hover обложки и карандаш у названия */

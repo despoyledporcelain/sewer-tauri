@@ -46,7 +46,7 @@ import { waitForPartyAudio } from './party-audio.js'
 import { createNavigationOwner, createToastOwner, createFeedbackMotion, isFineHover } from './motion-lifecycle.js'
 import { useSuccessFeedback } from './use-motion-feedback.js'
 import { useReducedMotion } from './use-motion-preference.js'
-import { reducedMotionNow, subscribeReducedMotion, animateHeroFlight, heroMayReveal } from './motion-preference.js'
+import { reducedMotionNow, subscribeReducedMotion, animateHeroFlight } from './motion-preference.js'
 
 
 /* десктоп-поведение вместо сайт-поведения:
@@ -115,20 +115,11 @@ function hsvToRgb(h, s, v) {
 
 const hexToHsv = h => { const c = hexToRgb(h) || { r: 178, g: 178, b: 178 }; return rgbToHsv(c.r, c.g, c.b); };
 
-/* Поверхность всплывающих панелей: меню ПКМ в списке, форма ручного поиска
-   текста, диалоги, тосты. Раньше это был жёстко прописанный
-   rgba(24,24,24,0.97) — на цветной теме поповер выглядел заплаткой из другого
-   приложения, а на «Обложке» и вовсе спорил с живым фоном.
-
-   Оттенок берём у фона темы, а светлоту задаём сами: в поповерах белый текст,
-   и на светлой теме он бы просто пропал. Насыщенность приглушена — иначе
-   кислотный фон давал бы цветную заливку вместо стекла. */
-function popupSurface(hex, alpha = 0.97) {
-  const { h, s } = hexToHsv(hex);
-  /* 14% светлоты — это уже читаемо белым текстом, но оттенок темы виден;
-     ярче делать нельзя: панель начинает выглядеть цветной заливкой. */
-  const c = hsvToRgb(h, Math.min(s, 60) * 0.9, 14);
-  return `rgba(${c.r}, ${c.g}, ${c.b}, ${alpha})`;
+function mixHex(a, b, amount = 0.5) {
+  const ca = hexToRgb(a) || hexToRgb(THEME_DEFAULT.bgColor);
+  const cb = hexToRgb(b) || ca;
+  return rgbToHex(ca.r + (cb.r - ca.r) * amount,
+    ca.g + (cb.g - ca.g) * amount, ca.b + (cb.b - ca.b) * amount);
 }
 
 /* Случайный цвет для «удиви меня». Оттенок берём целиком, а насыщенность и
@@ -799,6 +790,15 @@ async function fetchLrclib(artist, title, duration) {
       }
     }
     if (hit) {
+      /* Для нечёткого /search не принимаем просто ближайший трек: если его
+         длительность сильно отличается, почти наверняка это другая версия
+         или одноимённая песня. Небольшой допуск оставляет место для тишины
+         в начале/конце и расхождения метаданных у разных релизов. */
+      if (duration > 0 && Number(hit.duration) > 0
+        && Math.abs(Number(hit.duration) - duration) > Math.max(8, duration * 0.08)) {
+        hit = null;
+        continue;
+      }
       /* та же страховка, что в fetchGenius: однословное название не
          различает трек. у LRCLib она почти не срабатывает — /api/get
          требует точного имени, — но /api/search нечёткий и проверка
@@ -2102,6 +2102,7 @@ const STRINGS = {
     lyrics_edit_find:'найти', lyrics_edit_unpin:'сбросить',
     lyrics_src_switch:'показать текст из этого источника',
     lyrics_refresh:'найти текст заново',
+    lyrics_fullscreen:'полноэкранный текст', lyrics_close:'закрыть полноэкранный текст',
     lyrics_loading:'ищем текст…', lyrics_notfound:'текст не нашёлся',
     lyrics_err:'не удалось загрузить текст', lyrics_err_sub:'источники не ответили',
     lyrics_notfound_sub:'попробовали все включённые источники',
@@ -2300,6 +2301,7 @@ const STRINGS = {
     lyrics_edit_find:'search', lyrics_edit_unpin:'reset',
     lyrics_src_switch:'show the lyrics from this source',
     lyrics_refresh:'search for the lyrics again',
+    lyrics_fullscreen:'fullscreen lyrics', lyrics_close:'close fullscreen lyrics',
     lyrics_loading:'looking for lyrics…', lyrics_notfound:'lyrics not found',
     lyrics_err:'could not load lyrics', lyrics_err_sub:'sources did not respond',
     lyrics_notfound_sub:'tried every enabled source',
@@ -2970,7 +2972,6 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
             left: tip.x, top: -4,
             translate: '-50% -100%',
             background:'var(--pop-bg)',
-            backdropFilter:'blur(10px)', WebkitBackdropFilter:'blur(10px)',
             border:'1px solid rgba(255,255,255,0.055)',
             padding:'4px 9px', borderRadius:6,
             fontSize: 'var(--fs-xs)', fontWeight:600, fontVariantNumeric:'tabular-nums',
@@ -4129,9 +4130,9 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
            пересчитывает блюр у всех элементов в нём, когда рядом появляется
            анимированный контент. Он же раньше ломал position:fixed потомков.
            Возврат блюра = шаг назад: 465мс висения панели и наезд сабменю. */
-        border:'1px solid rgba(255,255,255,0.055)',
+        border:'1px solid rgba(255,255,255,0.035)',
         borderRadius:11, padding:4,
-        boxShadow:'0 16px 44px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.32)',
+        boxShadow:'0 10px 28px rgba(0,0,0,0.42), 0 1px 4px rgba(0,0,0,0.22)',
         zIndex: 9998,
       }}>
       <div style={{ display:'flex', flexDirection:'column' }}>
@@ -4207,9 +4208,9 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
               position:'fixed', left: subPos?.x ?? -9999, top: subPos?.y ?? -9999,
               width: SUB_W,
               background:'var(--pop-bg)',
-              border:'1px solid rgba(255,255,255,0.055)',
+              border:'1px solid rgba(255,255,255,0.035)',
               borderRadius:11, padding:4,
-              boxShadow:'0 16px 44px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.32)',
+              boxShadow:'0 10px 28px rgba(0,0,0,0.42), 0 1px 4px rgba(0,0,0,0.22)',
               zIndex: 9998,
             }}>
             <div style={{padding:'5px 9px 6px', fontSize: 'var(--fs-eyebrow)', letterSpacing:'0.13em',
@@ -4461,7 +4462,6 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
           /* zIndex выше меню (9998): клик по «Скачать» закрывает меню, и его
              exit-анимация не должна прорисоваться поверх диалога */
           style={{ position: 'absolute', inset: 0, zIndex: 10000, background: 'rgba(4,4,8,0.55)',
-            backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <motion.div data-motion-spatial=""
             initial={{ scale: 0.97, y: 10, opacity: 0 }}
@@ -4469,7 +4469,6 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
             exit={{ scale: 0.98, y: 6, opacity: 0, transition: { duration: 0.13, ease: [0.22, 1, 0.36, 1] } }}
             transition={{ type: 'spring', stiffness: 420, damping: 32, mass: 0.7 }}
             style={{ width: 384, background: 'var(--pop-bg)',
-              backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
               border: '1px solid rgba(255,255,255,0.055)', borderRadius: 14, padding: 16,
               boxShadow: '0 24px 60px rgba(0,0,0,0.5)' }}>
 
@@ -4838,8 +4837,12 @@ function SourceMark({ busy, dead }) {
    (settings.lyricsQueries) и подставляется в поиск в следующий раз. сама панель
    по-прежнему закрывается Escape и кнопкой текста в управлении плеером. */
 function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRefresh, sources,
-                       query, pinned, onFindLyrics, onUnpin, onPickSource }) {
+                       query, pinned, onFindLyrics, onUnpin, onPickSource, track,
+                       coverTrack: coverTrackProp, isPlaying, coverInstant, coverVisible, onCoverReady, artEntranceRef, entryHero, exitHero,
+                       partyLayoutOpen, partyControlsAligned,
+                       onEntryCoverFlightStart, onEntryCoverFlightComplete, onExitCoverFlightComplete }) {
   const t = useLang();
+  const reduced = useReducedMotion();
   const bodyRef  = useRef(null);
   const lineRefs = useRef([]);
   const userScrollRef = useRef(0);
@@ -4848,6 +4851,33 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   /* форма ручного поиска (карандаш). поля живут отдельно от `query`: пока
      идёт поиск по прошлой паре, набранное в них не должно меняться под рукой */
   const [editOpen, setEditOpen] = useState(false);
+  const [fullScreen, setFullScreen] = useState(false);
+  const [fullscreenSurface, setFullscreenSurface] = useState(false);
+  const [fullscreenFlightStart, setFullscreenFlightStart] = useState(null);
+  const [sharedCoverMotion, setSharedCoverMotion] = useState(null);
+  const [fullscreenReturning, setFullscreenReturning] = useState(false);
+  const [fullscreenFlightReady, setFullscreenFlightReady] = useState(false);
+  const fullscreenFlightStartedAtRef = useRef(0);
+  const sharedCoverRef = useRef(null);
+  const [sharedCoverRect, setSharedCoverRect] = useState(null);
+  const [readyCoverKey, setReadyCoverKey] = useState(null);
+  const fullscreenTransitionRef = useRef(false);
+  const fullscreenClosingRef = useRef(false);
+  const fullscreenTrackIdRef = useRef(null);
+  const lyricsTrackIdRef = useRef(track?.id);
+  lyricsTrackIdRef.current = track?.id;
+  const fullscreenArtRef = useRef(null);
+  const fullLineRefs = useRef([]);
+  const setSharedCoverNode = useCallback(node => {
+    sharedCoverRef.current = node;
+    if (artEntranceRef) artEntranceRef.current = node;
+  }, [artEntranceRef]);
+  const coverTrack = coverTrackProp || track;
+  const coverKey = `${coverTrack?.id ?? ''}:${coverTrack?.coverUrl ?? ''}`;
+  const handleSharedCoverReady = useCallback(() => {
+    setReadyCoverKey(coverKey);
+    onCoverReady?.();
+  }, [coverKey, onCoverReady]);
   const [qArtist,  setQArtist]  = useState('');
   const [qTitle,   setQTitle]   = useState('');
   lineRefs.current = [];
@@ -4862,6 +4892,246 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
      у обычного подсветки нет вовсе, и ровный серый должен читаться сам —
      он чуть светлее. */
   const synced  = state?.status === 'ready' && !!state.synced;
+  useEffect(() => {
+    if ((!fullScreen && !fullscreenFlightStart) || fullscreenTrackIdRef.current === track?.id) return;
+    setFullscreenReturning(true);
+    setSharedCoverMotion(null);
+    setFullscreenFlightStart(null);
+    setFullscreenSurface(false);
+    setFullScreen(false);
+    fullscreenTransitionRef.current = false;
+    fullscreenClosingRef.current = false;
+  }, [track?.id, fullScreen, fullscreenFlightStart]);
+  useLayoutEffect(() => {
+    const shell = document.getElementById('app-shell');
+    const waitForIncomingCover = fullscreenFlightStart?.direction === 'in' && !fullscreenFlightReady;
+    shell?.classList.toggle('lyrics-fullscreen-open', fullscreenSurface && !waitForIncomingCover);
+    return () => {
+      shell?.classList.remove('lyrics-fullscreen-open');
+    };
+  }, [fullscreenSurface, fullscreenFlightStart, fullscreenFlightReady]);
+  const requestFullscreenClose = () => {
+    if (!fullScreen || fullscreenClosingRef.current) return;
+    fullscreenClosingRef.current = true;
+    fullscreenTransitionRef.current = true;
+    const source = fullscreenArtRef.current?.getBoundingClientRect();
+    const target = document.getElementById('player-album-art')?.getBoundingClientRect();
+    const trackId = track?.id;
+    if (lyricsTrackIdRef.current !== trackId) {
+      setFullscreenSurface(false);
+      setFullScreen(false);
+      setFullscreenReturning(false);
+      fullscreenTransitionRef.current = false;
+      fullscreenClosingRef.current = false;
+      return;
+    }
+    if (!reduced && source && target) {
+      setFullscreenFlightStart({
+        direction:'out', trackId,
+        rect:{left:source.left, top:source.top, width:source.width, height:source.height},
+      });
+    } else {
+      setSharedCoverMotion(null);
+      setFullscreenFlightStart(null);
+    }
+    /* Плеер и полноэкранный текст переключаются сразу; один и тот же
+       AlbumArt остаётся поверх обеих сцен и физически перемещается между
+       измеренными позициями. */
+    setFullscreenReturning(true);
+    setFullScreen(false);
+    setFullscreenSurface(false);
+  };
+  useLayoutEffect(() => {
+    if (!fullscreenFlightStart) {
+      // Track changes are common while entering the player. Only clear a
+      // stale fullscreen flight here; clearing player-entry cancels the live
+      // cover after its source card has already been hidden.
+      setSharedCoverMotion(current => current?.kind === 'fullscreen' ? null : current);
+      return;
+    }
+    if (fullscreenFlightStart.trackId !== track?.id) return;
+    const targetEl = fullscreenFlightStart.direction === 'out'
+      ? document.getElementById('player-album-art')
+      : fullscreenArtRef.current;
+    if (!targetEl) {
+      setFullscreenFlightReady(true);
+      setFullscreenFlightStart(null);
+      if (fullscreenFlightStart.direction === 'out') setFullscreenReturning(false);
+      fullscreenTransitionRef.current = false;
+      fullscreenClosingRef.current = false;
+      return;
+    }
+    const target = targetEl.getBoundingClientRect();
+    const targetRect = { left:target.left, top:target.top, size:target.width };
+    setSharedCoverRect(targetRect);
+    if (reduced) {
+      setFullscreenFlightReady(true);
+      setFullscreenFlightStart(null);
+      if (fullscreenFlightStart.direction === 'out') setFullscreenReturning(false);
+      fullscreenTransitionRef.current = false;
+      fullscreenClosingRef.current = false;
+      return;
+    }
+    fullscreenFlightStartedAtRef.current = 0;
+    setSharedCoverMotion({
+      kind:'fullscreen',
+      direction:fullscreenFlightStart.direction,
+      startRect: fullscreenFlightStart.rect,
+      targetRect,
+    });
+    setFullscreenFlightReady(true);
+    let raf = 0;
+    const tick = now => {
+      const flightStartedAt = fullscreenFlightStartedAtRef.current;
+      if (flightStartedAt && now - flightStartedAt >= HERO_DUR_MS) {
+        setSharedCoverMotion(null);
+        setFullscreenFlightStart(null);
+        setFullscreenReturning(false);
+        fullscreenTransitionRef.current = false;
+        fullscreenClosingRef.current = false;
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [fullscreenFlightStart, track?.id, reduced]);
+  useLayoutEffect(() => {
+    if (!sharedCoverMotion || sharedCoverMotion.kind === 'player-entry' || sharedCoverMotion.kind === 'player-exit') return;
+    const el = sharedCoverRef.current;
+    if (!el) return;
+    const { startRect, targetRect } = sharedCoverMotion;
+    const dx = startRect.left - targetRect.left;
+    const dy = startRect.top - targetRect.top;
+    const scale = startRect.width / targetRect.size;
+    const animation = el.animate([
+      { transform:`translate3d(${dx}px, ${dy}px, 0) scale(${scale})` },
+      { transform:'translate3d(0, 0, 0) scale(1)' },
+    ], { duration:HERO_DUR_MS, easing:HERO_EASE, fill:'forwards' });
+    fullscreenFlightStartedAtRef.current = performance.now();
+    return () => animation.cancel();
+  }, [sharedCoverMotion]);
+  useLayoutEffect(() => {
+    if (!entryHero || !inPlayer || fullScreen || fullscreenFlightStart
+      || String(entryHero.track?.id) !== String(coverTrack?.id) || readyCoverKey !== coverKey) return;
+    if (reduced) {
+      onEntryCoverFlightComplete?.();
+      return;
+    }
+    const target = document.getElementById('player-album-art')?.getBoundingClientRect();
+    if (!target?.width || !target.height) {
+      onEntryCoverFlightComplete?.();
+      return;
+    }
+    const targetRect = { left:target.left, top:target.top, size:target.width };
+    setSharedCoverRect(targetRect);
+    setSharedCoverMotion({
+      kind:'player-entry', startRect:entryHero.startRect, targetRect,
+    });
+  }, [entryHero, inPlayer, reduced, fullScreen, fullscreenFlightStart, coverTrack?.id, readyCoverKey, coverKey, onEntryCoverFlightComplete]);
+  useLayoutEffect(() => {
+    if (sharedCoverMotion?.kind !== 'player-entry') return;
+    const el = sharedCoverRef.current;
+    if (!el) return;
+    const { startRect, targetRect } = sharedCoverMotion;
+    const dx = startRect.left - targetRect.left;
+    const dy = startRect.top - targetRect.top;
+    const scale = startRect.width / targetRect.size;
+    const animation = el.animate([
+      { transform:`translate3d(${dx}px, ${dy}px, 0) scale(${scale})` },
+      { transform:'translate3d(0, 0, 0) scale(1)' },
+    ], { duration:HERO_DUR_MS, easing:HERO_EASE, fill:'forwards' });
+    onEntryCoverFlightStart?.();
+    animation.onfinish = () => {
+      setSharedCoverMotion(current => current === sharedCoverMotion ? null : current);
+      onEntryCoverFlightComplete?.();
+    };
+    return () => { animation.onfinish = null; animation.cancel(); };
+  }, [sharedCoverMotion, onEntryCoverFlightStart, onEntryCoverFlightComplete]);
+  useLayoutEffect(() => {
+    if (!exitHero || fullscreenFlightStart) return;
+    if (String(exitHero.track?.id) !== String(coverTrack?.id) || reduced) {
+      onExitCoverFlightComplete?.();
+      return;
+    }
+    const { startRect, targetRect } = exitHero;
+    if (!startRect?.width || !targetRect?.size) {
+      onExitCoverFlightComplete?.();
+      return;
+    }
+    setSharedCoverRect({ left:targetRect.left, top:targetRect.top, size:targetRect.size });
+    setSharedCoverMotion({ kind:'player-exit', startRect, targetRect });
+  }, [exitHero, fullscreenFlightStart, coverTrack?.id, reduced, onExitCoverFlightComplete]);
+  useLayoutEffect(() => {
+    if (entryHero || sharedCoverMotion?.kind !== 'player-entry') return;
+    setSharedCoverMotion(null);
+  }, [entryHero, sharedCoverMotion]);
+  useLayoutEffect(() => {
+    if (sharedCoverMotion?.kind !== 'player-exit') return;
+    const el = sharedCoverRef.current;
+    if (!el) { onExitCoverFlightComplete?.(); return; }
+    const { startRect, targetRect } = sharedCoverMotion;
+    const dx = startRect.left - targetRect.left;
+    const dy = startRect.top - targetRect.top;
+    const scale = startRect.width / targetRect.size;
+    const animation = el.animate([
+      { transform:`translate3d(${dx}px, ${dy}px, 0) scale(${scale})` },
+      { transform:'translate3d(0, 0, 0) scale(1)' },
+    ], { duration:HERO_DUR_MS, easing:HERO_EASE, fill:'forwards' });
+    animation.onfinish = () => {
+      setSharedCoverMotion(current => current === sharedCoverMotion ? null : current);
+      onExitCoverFlightComplete?.();
+    };
+    return () => { animation.onfinish = null; animation.cancel(); };
+  }, [sharedCoverMotion, onExitCoverFlightComplete]);
+  useLayoutEffect(() => {
+    const measure = () => {
+      if (sharedCoverMotion) return;
+      const target = fullScreen ? fullscreenArtRef.current : document.getElementById('player-album-art');
+      if (!target) return;
+      const rect = target.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const next = { left:rect.left, top:rect.top, size:rect.width };
+      const el = sharedCoverRef.current;
+      if (el) {
+        el.style.left = `${next.left}px`;
+        el.style.top = `${next.top}px`;
+        el.style.width = `${next.size}px`;
+        el.style.height = `${next.size}px`;
+      } else {
+        setSharedCoverRect(next);
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    const playerArt = document.getElementById('player-album-art');
+    if (playerArt) observer.observe(playerArt);
+    if (fullscreenArtRef.current) observer.observe(fullscreenArtRef.current);
+    window.addEventListener('resize', measure);
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
+  }, [fullScreen, fullscreenSurface, sharedCoverMotion, track?.id, inPlayer, partyLayoutOpen, partyControlsAligned]);
+  useEffect(() => {
+    if (!fullScreen || !synced || !open) setFullScreen(false);
+  }, [fullScreen, synced, open, track?.id]);
+  useEffect(() => {
+    if (!fullScreen) return;
+    const closeOnEscape = e => {
+      if (e.key !== 'Escape') return;
+      e.stopImmediatePropagation();
+      requestFullscreenClose();
+    };
+    window.addEventListener('keydown', closeOnEscape, true);
+    return () => window.removeEventListener('keydown', closeOnEscape, true);
+  }, [fullScreen, requestFullscreenClose]);
+  useEffect(() => {
+    if (activeLine < 0) return;
+    const el = fullLineRefs.current[activeLine];
+    const list = el?.parentElement;
+    if (el && list) {
+      const target = el.offsetTop - list.clientHeight / 2 + el.offsetHeight / 2;
+      list.scrollTo({ top:Math.max(0, target), behavior:reduced ? 'auto' : 'smooth' });
+    }
+  }, [activeLine, fullScreen, reduced]);
   /* Тексты, между которыми можно переключаться: источники, которые реально
      дали строки. Обычно один, но иногда оба — тогда плашки в шапке становятся
      переключателем. Set, потому что проверка идёт у каждого чипа на каждом
@@ -5019,6 +5289,22 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     if (e.key === 'Enter')  { e.stopPropagation(); submitEditor(); }
   };
 
+  const openFullscreen = () => {
+    if (!synced || fullscreenTransitionRef.current || sharedCoverMotion) return;
+    fullscreenTransitionRef.current = true;
+    fullscreenTrackIdRef.current = track?.id;
+    const source = document.getElementById('player-album-art')?.getBoundingClientRect();
+    const trackId = track?.id;
+    setFullscreenFlightReady(false);
+    setFullscreenFlightStart(!reduced && source ? {
+      direction:'in', trackId,
+      rect:{ left:source.left, top:source.top, width:source.width, height:source.height },
+    } : null);
+    setFullscreenSurface(true);
+    setFullScreen(true);
+    if (reduced || !source) fullscreenTransitionRef.current = false;
+  };
+
   return (
     <div data-motion-spatial="" style={{
       position:'absolute', inset:0, display:'flex', flexDirection:'column',
@@ -5110,6 +5396,13 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
           );
         })}
         <div style={{flex:1, minWidth:4}}/>
+        {synced && <div onClick={openFullscreen} title={t('lyrics_fullscreen')} style={{
+          ...CHIP, flexShrink:0, cursor:'pointer', justifyContent:'center',
+          color:'rgba(255,255,255,0.42)', transition:'background 0.18s, color 0.18s',
+        }} onMouseEnter={e => { e.currentTarget.style.background='rgba(255,255,255,0.09)'; e.currentTarget.style.color='white'; }}
+          onMouseLeave={e => { e.currentTarget.style.background=CHIP.background; e.currentTarget.style.color='rgba(255,255,255,0.42)'; }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg>
+        </div>}
         {/* Обновление: иконка-стрелка по кругу, тот же приём, что у retry.
             Кнопка работает в любом состоянии, а не только при ошибке —
             на обычном «нашлось не то» перечитать нужно не меньше. */}
@@ -5148,6 +5441,67 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
           </svg>
         </div>
       </div>
+
+      {createPortal(<AnimatePresence onExitComplete={() => {
+        if (!fullScreen) {
+          setFullscreenSurface(false);
+          if (fullscreenFlightStart?.direction !== 'out') {
+            setFullscreenReturning(false);
+            fullscreenTransitionRef.current = false;
+            fullscreenClosingRef.current = false;
+          }
+        }
+      }}>
+        {fullScreen && synced && lines && <motion.div key="fullscreen-lyrics" className="lyrics-fullscreen" role="dialog" aria-modal="true"
+          initial={{opacity:0}}
+          animate={{opacity:fullscreenFlightStart?.direction === 'in' && !fullscreenFlightReady ? 0 : 1}}
+          exit={{opacity:0}}
+          transition={{duration:reduced ? 0.12 : fullscreenReturning ? HERO_FADE_MS / 1000 : 0.26, ease:[0.23,1,0.32,1]}}>
+          <button className="lyrics-fullscreen-close" onClick={requestFullscreenClose} aria-label={t('lyrics_close')} title={`${t('lyrics_close')} (Esc)`}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="m18 6-12 12M6 6l12 12"/></svg>
+          </button>
+          <div className="lyrics-fullscreen-content">
+            <div className="lyrics-fullscreen-artwork">
+              <div className="lyrics-fullscreen-meta" style={{
+                opacity:fullscreenReturning ? 0 : 1,
+                transform:fullscreenReturning && !reduced ? 'translateY(-5px)' : 'translateY(0)',
+                transition:reduced ? 'none' : 'opacity 180ms ease, transform 180ms cubic-bezier(0.23,1,0.32,1)',
+              }}>
+                <div className="lyrics-fullscreen-track">{track?.title || ''}</div>
+                <div className="lyrics-fullscreen-artist">{track?.artist || ''}</div>
+              </div>
+              <div ref={fullscreenArtRef} className="lyrics-fullscreen-art" aria-hidden="true"/>
+            </div>
+            <motion.div className="lyrics-fullscreen-lines" key={waveKey}
+              initial={{opacity:0, y:reduced ? 0 : 8}}
+              animate={{opacity:fullscreenReturning ? 0 : 1, y:fullscreenReturning && !reduced ? 6 : 0}}
+              transition={{duration:reduced ? 0.12 : 0.32, delay:reduced ? 0 : 0.12, ease:[0.23,1,0.32,1]}}>
+              {lines.map((line, i) => line.section ? null : <div key={i} ref={el => { fullLineRefs.current[i] = el; }}
+                onClick={() => line.t != null && onSeek(line.t)}
+                className={`lyrics-fullscreen-line${i === activeLine ? ' is-active' : Math.abs(i-activeLine) === 1 ? ' is-near' : ''}`}
+                style={{cursor:line.t != null ? 'pointer' : 'default'}}>{line.text}</div>)}
+            </motion.div>
+          </div>
+        </motion.div>}
+      </AnimatePresence>, document.getElementById('app-shell') || document.body)}
+      {sharedCoverRect && createPortal(<div ref={setSharedCoverNode} data-party-shared-art="true" aria-hidden="true" style={{
+        position:'fixed', left:sharedCoverMotion?.targetRect.left ?? sharedCoverRect.left,
+        top:sharedCoverMotion?.targetRect.top ?? sharedCoverRect.top,
+        width:sharedCoverMotion?.targetRect.size ?? sharedCoverRect.size,
+        height:sharedCoverMotion?.targetRect.size ?? sharedCoverRect.size,
+        transformOrigin:'top left',
+        transform:sharedCoverMotion
+          ? `translate3d(${sharedCoverMotion.startRect.left - sharedCoverMotion.targetRect.left}px, ${sharedCoverMotion.startRect.top - sharedCoverMotion.targetRect.top}px, 0) scale(${sharedCoverMotion.startRect.width / sharedCoverMotion.targetRect.size})`
+          : 'none',
+        zIndex:fullScreen || fullscreenFlightStart ? 10001 : sharedCoverMotion?.kind === 'player-exit' ? 960 : 2,
+        opacity:coverVisible || sharedCoverMotion?.kind === 'player-entry' || sharedCoverMotion?.kind === 'player-exit' ? 1 : 0,
+        pointerEvents:'none',
+        overflow:'hidden', borderRadius:16,
+        willChange:'transform',
+        boxShadow:fullScreen ? '0 24px 70px rgba(0,0,0,0.3)' : 'none',
+      }}>
+        <AlbumArt track={coverTrack} isPlaying={isPlaying} instant={coverInstant} onReady={handleSharedCoverReady}/>
+      </div>, document.body)}
 
       {/* форма ручного поиска. всплывает под шапкой, а не занимает место в
           колонке: текст под ней остаётся виден, и после «найти» список
@@ -5243,20 +5597,9 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
             пропускаем их только на отрисовке */}
         {lines && lines.map((l, i) => {
           if (l.section) return null;
-          /* Подсветка. Плашки под строкой нет — она читалась как кнопка в
-             списке и спорила с текстом. Вместо неё три вещи разом:
-
-             · активная строка ВЫЕЗЖАЕТ вперёд: сдвиг вправо и масштаб 1.8%
-               от левого края. это и есть «ближе» — строка будто отделяется
-               от плоской стены текста;
-             · акцентное свечение вокруг букв. вспышка при смене строки
-               (keyframes lyricLit в styles.css) + ровное свечение после неё;
-             · фокус: две ближайшие строки чуть размыты, дальние нет. глаз
-               читает активную резче остальных, и список перестаёт быть
-               ровной серой простынёй.
-
-             остальное — прозрачность и цвет по расстоянию: соседние светлее
-             дальних, поэтому видно не только «где я», но и «куда поедет». */
+          /* Тихая акцентная вуаль помогает найти текущую строку, не превращая
+             её в отдельную кнопку. Соседние строки остаются резкими: контраст
+             и вертикальный ритм дают глубину без размытия текста. */
           const on = i === activeLine;
           const d  = activeLine >= 0 ? Math.abs(i - activeLine) : 99;
           return (
@@ -5264,27 +5607,24 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
               onClick={() => l.t != null && onSeek(l.t)}
               title={l.t != null ? t('lyrics_tap_line') : undefined}
               style={{
-                fontSize:'var(--fs-md)', lineHeight:1.5,
+                fontSize:'var(--fs-md)', lineHeight:1.58,
                 /* правый отступ — запас под сдвиг и масштаб: без него
                    выехавшая строка вылезает за колонку и появляется
                    горизонтальный скролл */
-                padding:'3px 12px 3px 0', boxSizing:'border-box',
-                transform: on ? 'translateX(7px) scale(1.018)' : 'none',
+                padding:'4px 10px 4px 0', boxSizing:'border-box',
+                transform: on ? 'translateX(3px) scale(1.015)' : 'none',
                 transformOrigin:'left center',
-                color: on ? 'rgba(255,255,255,0.98)'
-                     : d === 1 ? 'rgba(255,255,255,0.44)'
-                     : synced ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.34)',
-                fontWeight: on ? 600 : 500,
+                color: on ? 'color-mix(in srgb, var(--text) 94%, var(--accent))'
+                     : d === 1 ? 'rgba(255,255,255,0.48)'
+                     : synced ? 'rgba(255,255,255,0.27)' : 'rgba(255,255,255,0.36)',
+                fontWeight: on ? 650 : 500,
                 /* конечное значение обязано совпадать с кадром `to` у
                    lyricLit, иначе в конце вспышки будет рывок */
-                textShadow: on ? '0 0 26px rgba(var(--accent-rgb),0.42), 0 0 4px rgba(var(--accent-rgb),0.35)' : 'none',
-                filter: on || !synced ? 'none'
-                      : d === 1 ? 'blur(0.35px)'
-                      : d === 2 ? 'blur(0.7px)'
-                      : 'none',
-                animation: on ? 'lyricLit 0.6s ease-out' : 'none',
+                textShadow: on ? '0 0 20px rgba(var(--accent-rgb),0.34), 0 0 4px rgba(var(--accent-rgb),0.28)' : 'none',
+                filter: on ? 'drop-shadow(0 0 5px rgba(var(--accent-rgb),0.18))' : 'none',
+                animation: on ? 'lyricLit 0.9s cubic-bezier(0.22,1,0.36,1)' : 'none',
                 cursor: l.t != null ? 'pointer' : 'default',
-                transition:'color 0.3s ease, filter 0.3s ease, transform 0.42s cubic-bezier(0.22,1,0.36,1), text-shadow 0.3s ease',
+                transition:'color 0.52s ease, filter 0.52s ease, transform 0.58s cubic-bezier(0.22,1,0.36,1), text-shadow 0.52s ease, font-weight 0.52s ease',
               }}>
               {/* Волна появления — на внутреннем span, а не на самой строке:
                   у строки свой transform (выезд и масштаб активной) и своя
@@ -5799,8 +6139,10 @@ function cssCorners(el) {
     return nums.slice(0,4);
   } catch { return [16,16,16,16]; }
 }
-function HeroClone({ hero, exiting, reverse = false }) {
+function HeroClone({ hero, exiting, reverse = false, portalTarget = document.body, zIndex = 960, onFlightStart, onFlightReady }) {
   const cloneRef = useRef(null);
+  const imageRef = useRef(null);
+  const [imageReady, setImageReady] = useState(!hero.track.coverUrl);
   /* внутренний элемент: скругление и обрезка. transform живёт на внешнем —
      см. комментарий у эффекта ниже */
   const clipRef  = useRef(null);
@@ -5851,9 +6193,31 @@ function HeroClone({ hero, exiting, reverse = false }) {
     const to = reverse
       ? { x: dx, y: dy, scale: sc, br: BR_END }
       : { x: 0, y: 0, scale: 1, br: BR4 };
-    return animateHeroFlight(el, clip, from, to,
-      { duration: DUR * 1000, easing: HERO_EASE, fill: 'forwards' });
-  }, [hero, reverse]);
+    let alive = true, stopFlight = null;
+    const start = () => {
+      if (!alive) return;
+      setImageReady(true);
+      onFlightReady?.();
+      onFlightStart?.();
+      stopFlight = animateHeroFlight(el, clip, from, to,
+        { duration: DUR * 1000, easing: HERO_EASE, fill: 'forwards' });
+    };
+    const img = imageRef.current;
+    if (!hero.track.coverUrl || img?.complete && img.naturalWidth > 0) {
+      Promise.resolve(img?.decode?.()).catch(() => {}).then(start);
+    } else if (img) {
+      const loaded = () => Promise.resolve(img.decode?.()).catch(() => {}).then(start);
+      img.addEventListener('load', loaded, { once:true });
+      img.addEventListener('error', start, { once:true });
+      return () => {
+        alive = false;
+        img.removeEventListener('load', loaded);
+        img.removeEventListener('error', start);
+        stopFlight?.();
+      };
+    } else start();
+    return () => { alive = false; stopFlight?.(); };
+  }, [hero, reverse, onFlightStart, onFlightReady]);
 
   /* ❌ Раньше гашение клона было gsap-твином в useEffect: `exiting` ставился
      таймером, эффект ждал ленивый gsap и только потом начинал фейд — клон
@@ -5871,7 +6235,7 @@ function HeroClone({ hero, exiting, reverse = false }) {
       position:'fixed',
       left: tLeft, top: tTop,
       width: size, height: size,
-      zIndex:960, pointerEvents:'none',
+      zIndex, pointerEvents:'none',
       transformOrigin:'center center',
       transform: initialTransform,
       /* фон и обрезка — на внутреннем элементе: у внешнего не должно быть
@@ -5880,7 +6244,7 @@ function HeroClone({ hero, exiting, reverse = false }) {
       willChange:'transform, opacity',
       backfaceVisibility:'hidden',
       contain:'layout style paint',
-      opacity: exiting ? 0 : 1,
+      opacity: exiting || !imageReady ? 0 : 1,
       transition: `opacity ${HERO_FADE_MS / 1000}s ease-out`,
     }}>
       <div ref={clipRef} style={{
@@ -5899,7 +6263,7 @@ function HeroClone({ hero, exiting, reverse = false }) {
            мельче, и в момент подмены кадр прыгал: обложка «обрезалась»
            сразу после прилёта. здесь ровно тот же кадр, что у AlbumArt;
            лишний px срезает overflow:hidden родителя. */
-        <img src={hero.track.coverUrl}
+        <img ref={imageRef} src={hero.track.coverUrl}
           loading="eager" decoding="sync"
           style={{
             position:'absolute', left:-1, top:-1,
@@ -5924,7 +6288,7 @@ function HeroClone({ hero, exiting, reverse = false }) {
       <CoverTint/>
       </div>
     </div>,
-    document.body
+    portalTarget
   );
 }
 
@@ -7121,6 +7485,7 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     const next = {
       ...s,
       ...(fx || {}),
+      windowEffect: fx?.windowEffect || 'off',
       theme: cleanTheme({ ...THEME_DEFAULT, ...v, preset: presetId }),
     };
     if (v.bgMode === 'cover' && s.accentMode !== 'cover') next.accentMode = 'cover';
@@ -8038,15 +8403,14 @@ function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoadi
         opacity: isError ? 0.55 : 1,
         transition: 'opacity 0.18s ease',
       }}>
-      {/* cover. data-sewer-art — по нему App находит обложку, когда трек
-          открывают в плеере: клон hero стартует ровно из этого квадрата */}
+      {/* data-sewer-art — точка старта общего AlbumArt, когда трек
+          открывают в плеере из этой строки. */}
       <div data-sewer-art={track.id} onClick={e=>{e.stopPropagation(); if(!isLoading) onCoverClick();}} style={{
         width:44, height:44, borderRadius:8, flexShrink:0,
         background:'#111116', overflow:'hidden', position:'relative',
         cursor: isLoading ? 'default' : 'pointer',
-        /* на время полёта клона обложка прячется — иначе она осталась бы
-           висеть в строке вторым экземпляром. ненавязчиво, потому что сам
-           клон улетает отсюда и через 430мс её заменяет обложка плеера */
+        /* Пока общий AlbumArt летит к плееру, прячем исходную миниатюру,
+           чтобы на экране оставалось только одно изображение. */
         opacity: artHidden ? 0 : 1, transition:'opacity 0.14s ease',
       }}>
         {track.coverUrl && <img src={track.coverUrl} loading="lazy" decoding="async" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',clipPath:'inset(0 round 8px)',display:'block'}}
@@ -9084,7 +9448,6 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
           <motion.div key="plExitGuard" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}
             transition={{duration:0.16}}
             style={{position:'absolute', inset:0, zIndex:10, background:'rgba(4,4,8,0.55)',
-              backdropFilter:'blur(12px)', WebkitBackdropFilter:'blur(12px)',
               display:'flex', alignItems:'center', justifyContent:'center'}}>
             <motion.div
               initial={{scale:0.97, y:10, opacity:0}}
@@ -9094,7 +9457,6 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
               transition={{type:'spring', stiffness:420, damping:32, mass:0.7}}
               style={{width:272,
                 background:'var(--pop-bg)',
-                backdropFilter:'blur(14px)', WebkitBackdropFilter:'blur(14px)',
                 border:'1px solid rgba(255,255,255,0.055)', borderRadius:11,
                 padding:'16px 12px 12px', transformOrigin:'center',
                 boxShadow:'0 16px 44px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.32)'}}>
@@ -9251,9 +9613,8 @@ function SearchTopResult({ track, isLiked, onLike, onPlay, onSelect, isLoading, 
           : 'none',
         opacity: glow && !glowOff ? 1 : 0, transition:'opacity 0.5s ease', pointerEvents:'none',
       }}/>
-      {/* обложка. data-sewer-art — точка отрыва для hero: клик по карточке
-          уводит в плеер, и клон обложки стартует ровно отсюда, как на
-          главной (см. findArtEl и openSearchTrack) */}
+      {/* data-sewer-art — точка старта общей обложки при переходе
+          из выдачи в плеер (см. findArtEl и openSearchTrack). */}
       <div data-sewer-art={track.id} onClick={e => { e.stopPropagation(); if (!isLoading) onPlay(); }} style={{
         position:'relative', width:92, height:92, borderRadius:14, flexShrink:0,
         background:'#111116', overflow:'hidden',
@@ -9403,10 +9764,10 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
       if (!hasMoreRef.current || loadingRef.current) return;
       doSearch(queryRef.current, offsetRef.current);
     },
-    /* Обложка трека в этом списке — для hero-перелёта в плеер. Ищем только
+    /* Обложка трека в этом списке — источник полёта в плеер. Ищем только
        ВНУТРИ своей вёрстки, а не по всему экрану: те же data-sewer-art стоят
        на строках экрана артиста и на карточках главной, и общий поиск отдал бы
-       hero элемент из невидимой вкладки — клон улетел бы из пустоты. */
+       элемент из невидимой вкладки. */
     findArt: (id) => listRef.current?.querySelector(`[data-sewer-art="${CSS.escape(String(id))}"]`) || null,
   }));
 
@@ -10484,6 +10845,7 @@ function App() {
   useEffect(() => () => navigationRef.current.cancel(), []);
   const [tracks,        setTracks]        = useState([]);
   const [trackIdx,      setTrackIdx]      = useState(-1);   /* -1 = трек не выбран */
+  const [pendingPlayerTrack, setPendingPlayerTrack] = useState(null);
   const [isPlaying,     setIsPlaying]     = useState(false);
   const progressRef = useRef(0);
   const [shuffle,       setShuffle]       = useState(false);
@@ -10495,8 +10857,8 @@ function App() {
   const [playerVisible,      setPlayerVisible]      = useState(false);
   const [homeVisible,        setHomeVisible]        = useState(true);
   const [heroExiting,        setHeroExiting]        = useState(false);
+  const [entryCoverFlightStarted, setEntryCoverFlightStarted] = useState(false);
   const [reverseHero,        setReverseHero]        = useState(null);
-  const [reverseHeroExiting, setReverseHeroExiting] = useState(false);
   const [artistView,         setArtistView]         = useState(null);
   const [libCollapsed,  setLibCollapsed]  = useState(false);
   const [partyOpen, setPartyOpen] = useState(false);
@@ -10768,11 +11130,14 @@ function App() {
      ⚠️ `|| tracks[0]` из старого выражения убран СОЗНАТЕЛЬНО: именно он
      молча подставлял первый трек, даже когда индекс пуст. */
   const track = scPlayingTrack || (trackIdx >= 0 ? tracks[trackIdx] : null) || BLANK_TRACK;
+  const playerDisplayTrack = pendingPlayerTrack || track;
   /* есть ли что показывать в плеере. Имя и мысль совпадают с локальной
      проверкой в обработчике перетаскивания (строка ниже по файлу): она
      читает refs намеренно, чтобы не тащить себя в deps обработчика
      mouseup, — поэтому это отдельная переменная, а не эта */
-  const hasTrack = !!scPlayingTrack || (trackIdx >= 0 && !!tracks[trackIdx]);
+  const hasTrack = !!pendingPlayerTrack || !!scPlayingTrack || (trackIdx >= 0 && !!tracks[trackIdx]);
+  const clearPendingPlayerTrack = id => setPendingPlayerTrack(current =>
+    current && String(current.id) === String(id) ? null : current);
 
   useEffect(() => {
     if (!track?.coverUrl) { setAccentRGB(null); return; }
@@ -10837,12 +11202,16 @@ function App() {
     else st.setProperty('--bg', solid);
     if (bgMode === 'color' || bgMode === 'default') st.removeProperty('--bg-image');
     else st.setProperty('--bg-image', themeBgImage({ ...t, bgMode }));
-    /* Поверхность всплывающих панелей. Оттенок — от фона темы, но только
-       когда фон действительно цветной: в «Стандарте», под материалом окна и
-       на «Обложке» (там фон рисует живой градиент, а bgColor — просто
-       оставшееся от прошлой темы значение) берём стоковый тёмный. */
-    st.setProperty('--pop-bg', popupSurface(
-      (bgMode === 'default' || bgMode === 'cover') ? THEME_DEFAULT.bgColor : t.bgColor));
+    /* Меню и диалоги используют реальную палитру активного фона. Для
+       градиента берём середину двух цветов, для «Обложки» тонируем базовый
+       фон живым акцентом, который уже обновляется при смене обложки. */
+    const popBgColor = bgMode === 'cover'
+      ? `color-mix(in srgb, ${THEME_DEFAULT.bgColor} 88%, var(--accent))`
+      : bgMode === 'gradient' ? mixHex(t.bgColor, t.bgColor2)
+        : bgMode === 'color' ? t.bgColor : THEME_DEFAULT.bgColor;
+    /* Небольшая альфа пропускает фон темы и DWM-материал под Mica, не
+       добавляя второго blur-слоя поверх системного эффекта. */
+    st.setProperty('--pop-bg', `color-mix(in srgb, ${popBgColor} 72%, transparent)`);
     st.setProperty('--glow-strength', String(t.glowStrength));
     st.setProperty('--radius', `${t.radius}px`);
     st.setProperty('--grain', String(t.grain));
@@ -11475,15 +11844,9 @@ function App() {
     api.onMediaPrev(() => handlePrevRef.current?.());
   }, []);
 
-  /* Снятие hero-клона — по готовности новой обложки, а не по слепому
-     таймеру. Таймер остаётся как страховка (ART_READY_WAIT_MS), потому что
-     обложка может не загрузиться вообще (retry исчерпан, onFailed).
-
-     ⚠️ И ждём ещё как минимум собственный фейд клона. Без этого условия
-     клон снимался НА ПЕРВОМ ЖЕ кадре после `heroExiting`: обложка под ним к
-     этому моменту обычно уже отрисована, `artReady` true, а фейд ещё не
-     проиграл — обложка пропадала раньше, чем клон успевал погаснуть, и на
-     кадр мелькала подмена. Теперь снятие ждёт конец фейда. */
+  /* Карточка-источник остаётся скрыта, пока единственный AlbumArt не долетит
+     до слота плеера. Ошибка или медленная загрузка не должны блокировать
+     переключение бесконечно. */
   const ART_READY_WAIT_MS = 900;
   useEffect(() => {
     if (!hero || !heroExiting) return;
@@ -11492,8 +11855,8 @@ function App() {
     const wait = () => {
       if (!alive) return;
       const elapsed = performance.now() - t0;
-      const faded = elapsed >= HERO_FADE_MS + 20;
-      if (!faded || (!artReadyRef.current && elapsed < ART_READY_WAIT_MS)) {
+      if (entryCoverFlightRef.current === 'started'
+        || (!artReadyRef.current && elapsed < ART_READY_WAIT_MS)) {
         raf = requestAnimationFrame(wait); return;
       }
       setHero(null); setHeroExiting(false);
@@ -11513,65 +11876,50 @@ function App() {
     return () => window.cancelIdleCallback?.(id);
   }, []);
 
-  /* анимация обложки при входе в плеер не из home */
-  /* 🚨 готовность НОВОЙ обложки в AlbumArt. hero-клон снимается по таймеру
-     на 510мс, а AlbumArt к этому моменту под клоном ещё рисует ПРЕДЫДУЩУЮ
-     обложку (новый слой = загрузка + decode + draw в canvas). снятие клона
-     показывало её на кадр — «вспышка старой обложки» после прилёта.
-     Теперь клон ждёт готовности, но не дольше ART_READY_WAIT_MS, иначе
-     при неудачной загрузке обложки клон зависнет навсегда. */
+  /* Готовность общего AlbumArt: карточка-источник ждёт новый canvas-слой,
+     а полёт начинается только с актуальной картинкой трека. */
   const artReadyRef = useRef(true);
-  useLayoutEffect(() => { artReadyRef.current = false; }, [track?.id, track?.coverUrl]);
+  const entryCoverFlightRef = useRef('idle');
+  useLayoutEffect(() => { artReadyRef.current = false; }, [playerDisplayTrack?.id, playerDisplayTrack?.coverUrl]);
   const handleArtReady = useCallback(() => { artReadyRef.current = true; }, []);
+  const handleEntryCoverFlightStart = useCallback(() => {
+    entryCoverFlightRef.current = 'started';
+    setEntryCoverFlightStarted(true);
+  }, []);
+  const handleEntryCoverFlightComplete = useCallback(() => {
+    entryCoverFlightRef.current = 'complete';
+    setEntryCoverFlightStarted(false);
+    setHeroExiting(true);
+  }, []);
+  const beginHeroFlight = useCallback(nextHero => {
+    entryCoverFlightRef.current = 'idle';
+    setEntryCoverFlightStarted(false);
+    setHeroExiting(false);
+    setReverseHero(null);
+    setHero(nextHero);
+  }, []);
+  const handleExitCoverFlightComplete = useCallback(() => {
+    entryCoverFlightRef.current = 'idle';
+    setEntryCoverFlightStarted(false);
+    setHero(null);
+    setHeroExiting(false);
+    setReverseHero(null);
+  }, []);
 
-  useLayoutEffect(() => {
-    if (!reverseHero) return;
-    setReverseHeroExiting(false);
-    let alive = true, closing = false, remove;
-    const beginExit = () => {
-      if (!alive || closing) return;
-      closing = true;
-      clearTimeout(exit);
-      setReverseHeroExiting(true);
-      remove = setTimeout(() => {
-        if (!alive) return;
-        setReverseHero(null); setReverseHeroExiting(false);
-      }, HERO_FADE_MS + 20);
-    };
-    const exit = setTimeout(beginExit, reducedMotionNow() ? 0 : HERO_DUR_MS);
-    const unsubscribe = subscribeReducedMotion(event => { if (event.matches) beginExit(); });
-    return () => { alive = false; unsubscribe(); clearTimeout(exit); clearTimeout(remove); };
-  }, [reverseHero]);
-
-  // Normal handoff keeps 430ms travel / 140ms fade. Reduced motion skips only
-  // travel: retain the new clone until decode/draw reports readiness (bounded).
+  // Release the source card when the shared artwork reports that it has landed.
+  // The timeout is only a guard for missing DOM targets or failed image loads.
   useLayoutEffect(() => {
     if (!hero) return;
-    setHeroExiting(false);
-    let alive = true, revealed = false, frame = 0, timer;
-    const started = performance.now();
-    const reveal = () => {
-      if (!alive || revealed) return;
-      revealed = true;
-      setHeroExiting(true);
-    };
-    const wait = () => {
-      frame = 0;
-      if (!alive || revealed) return;
-      if (!heroMayReveal(artReadyRef.current, performance.now() - started, ART_READY_WAIT_MS)) {
-        frame = requestAnimationFrame(wait); return;
+    const fallback = setTimeout(() => {
+      if (entryCoverFlightRef.current !== 'complete') {
+        // A cancelled WAAPI flight must never leave both the source card and
+        // player cover hidden. Reveal the shared cover at its player slot.
+        entryCoverFlightRef.current = 'fallback';
+        setEntryCoverFlightStarted(false);
+        setHeroExiting(true);
       }
-      reveal();
-    };
-    const skipTravel = () => {
-      if (!alive || revealed) return;
-      clearTimeout(timer);
-      if (!frame) frame = requestAnimationFrame(wait);
-    };
-    const unsubscribe = subscribeReducedMotion(event => { if (event.matches) skipTravel(); });
-    if (reducedMotionNow()) skipTravel();
-    else timer = setTimeout(reveal, HERO_DUR_MS);
-    return () => { alive = false; unsubscribe(); clearTimeout(timer); cancelAnimationFrame(frame); };
+    }, ART_READY_WAIT_MS + HERO_DUR_MS + 250);
+    return () => clearTimeout(fallback);
   }, [hero]);
 
   const artEntranceTweenRef = useRef(null);
@@ -13293,6 +13641,7 @@ function App() {
       return;
     }
     if (entry.source === 'local') {
+      setPendingPlayerTrack(null);
       const idx = tracks.findIndex(local => local.path?.toLowerCase() === entry.track.path.toLowerCase());
       if (idx < 0) { setHistoryLoadingId(null); showToast(t('history_unavailable')); return; }
       ++scReqRef.current;
@@ -13343,8 +13692,13 @@ function App() {
   };
 
   async function handleScTrackClick(scTrack, idx, autoSkip = false, skipCount = 0, direction = 1) {
+    if (partyClientRef.current?.active && partyClientRef.current.role === 'guest') {
+      partyClientRef.current.suggestTrack(scTrack);
+      return;
+    }
     if (!partyCanSelect(false)) return;
     if (partyClientRef.current?.active) { await partyClientRef.current.selectTrack(scTrack); return; }
+    setPendingPlayerTrack(scTrack);
     /* Токен запроса. handleScTrackClick делает await'ы (streamUrl, потом HLS),
        и без guard'а два быстрых клика давали гонку: первый запрос резолвился
        вторым и перебивал setScPlayingTrack — включался не тот трек, на который
@@ -13370,7 +13724,7 @@ function App() {
     destroyHls();
 
     const auth = scAuthRef.current;
-    if (!auth) { trackSwitchingRef.current = false; setLoadingTrackId(null); setIsPlaying(false); return; }
+    if (!auth) { clearPendingPlayerTrack(scTrack.id); trackSwitchingRef.current = false; setLoadingTrackId(null); setIsPlaying(false); return; }
 
     if (!autoSkip && shuffle) {
       /* Клик по треку в перемешанном режиме: он встаёт первым, остальное
@@ -13431,6 +13785,7 @@ function App() {
     };
 
     if (!scTrack.streamUrl && !scTrack.hlsUrl) {
+      clearPendingPlayerTrack(scTrack.id);
       trackSwitchingRef.current = false;
       setLoadingTrackId(null);
       setIsPlaying(false);
@@ -13451,6 +13806,7 @@ function App() {
     const isHls = !!r?.isHls;
 
     if (!resolvedUrl) {
+      clearPendingPlayerTrack(scTrack.id);
       trackSwitchingRef.current = false;
       setLoadingTrackId(null);
       setIsPlaying(false);
@@ -13463,6 +13819,7 @@ function App() {
     scPlayingTrackRef.current = resolved;
     trackRef.current = resolved;
     setScPlayingTrack(resolved);
+    clearPendingPlayerTrack(scTrack.id);
 
     const audio = audioRef.current;
     if (!audio) { setLoadingTrackId(null); return; }
@@ -13706,6 +14063,7 @@ function App() {
   async function selectTrack(t) {
     if (!partyCanSelect(!!t.path)) return;
     const startPlayLocal = (idx) => {
+      setPendingPlayerTrack(null);
       setScPlayingTrack(null);
       setTrackIdx(idx);
       progressRef.current = 0;
@@ -13770,7 +14128,7 @@ function App() {
     if (artEl && par) {
       const startRect = artEl.getBoundingClientRect();
       const targetRect = { left: par.left, top: par.top, size: par.width };
-      setHero({ track: t, startRect, targetRect, corners: cssCorners(artEl) });
+      beginHeroFlight({ track: t, startRect, targetRect, corners: cssCorners(artEl) });
       setHomeVisible(false);
       setPlayerVisible(true);
       setView('player');
@@ -13792,17 +14150,16 @@ function App() {
   selectTrackRef.current = selectTrack;
   const selectTrackStable = useCallback((t) => selectTrackRef.current(t), []);
 
-  /* Открыть трек из ВЫДАЧИ ПОИСКА в плеере — с тем же перелётом обложки,
-     что и на главной.
+  /* Открыть трек из ВЫДАЧИ ПОИСКА в плеере — с тем же полётом общей
+     обложки, что и на главной.
      ⚠️ Раньше здесь был голый `setView('player')` без hero: из поиска трек
      просто появлялся в плеере, и переход читался как мгновенный прыжок
-     между двумя вкладками. Теперь клон обложки отрывается от найденной
-     карточки и садится на место обложки плеера — как при клике по карточке
-     на главной.
+     между двумя вкладками. Теперь тот же экземпляр AlbumArt летит от
+     найденной карточки и садится на место обложки плеера.
 
      Обложку ищем через `searchViewRef.findArt`, а не общим findArtEl: те же
      data-sewer-art стоят на карточках главной и на строках экрана артиста,
-     и общий поиск отдал бы элемент из невидимой вкладки — клон улетел бы
+     и общий поиск отдал бы элемент из невидимой вкладки — обложка летела бы
      из пустоты. Если обложки нет (трек ещё не отрисовался, список
      перерисовывается), переход всё равно происходит, просто без анимации. */
   const openSearchTrack = (t) => {
@@ -13811,12 +14168,12 @@ function App() {
     const artEl = searchViewRef.current?.findArt?.(t.id);
     const par   = playerArtRef.current?.getBoundingClientRect();
     /* строка может быть за нижним краем списка — подкручиваем к ней, иначе
-       клон стартует из-под нижней кромки и перелёт выглядит обрезанным.
+       обложка стартует из-под нижней кромки и перелёт выглядит обрезанным.
        'nearest' двигает ровно настолько, чтобы элемент стал виден */
     if (artEl) artEl.scrollIntoView({ block: 'nearest' });
     if (artEl && par) {
       const startRect = artEl.getBoundingClientRect();
-      setHero({
+      beginHeroFlight({
         track: t,
         startRect,
         targetRect: { left: par.left, top: par.top, size: par.width },
@@ -13854,6 +14211,7 @@ function App() {
     const idx = tracks.indexOf(t);
     if (idx < 0) return;
     if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
+    setPendingPlayerTrack(null);
     setScPlayingTrack(null);
     if (idx === trackIdx) {
       /* Клик по уже загруженному треку. Раньше здесь был
@@ -14397,7 +14755,7 @@ function App() {
     setNavActive(id);
     if (id === 'home') {
       if (view === 'player') {
-        const artEl = findArtEl(track.id);
+        const artEl = findArtEl(playerDisplayTrack.id);
         const par = playerArtRef.current?.getBoundingClientRect();
         if (artEl && par) {
           const scrollEl = homeScrollRef.current;
@@ -14413,10 +14771,11 @@ function App() {
           }
 
           const cardRect = artEl.getBoundingClientRect();
+          const currentArtRect = artEntranceRef.current?.getBoundingClientRect() || par;
           setReverseHero({
-            track: track,
-            targetRect: { left: par.left, top: par.top, size: par.width },
-            startRect:  { left: cardRect.left, top: cardRect.top, width: cardRect.width, height: cardRect.height },
+            track: playerDisplayTrack,
+            startRect: { left: currentArtRect.left, top: currentArtRect.top, width: currentArtRect.width, height: currentArtRect.height },
+            targetRect: { left: cardRect.left, top: cardRect.top, size: cardRect.width },
             corners: cssCorners(artEl),
           });
         }
@@ -14463,7 +14822,7 @@ function App() {
         }
         const startRect = artEl.getBoundingClientRect();
         const targetRect = { left: par.left, top: par.top, size: par.width };
-        setHero({ track: track, startRect, targetRect, corners: cssCorners(artEl) });
+        beginHeroFlight({ track: track, startRect, targetRect, corners: cssCorners(artEl) });
       }
       setHomeVisible(false);
       setPlayerVisible(true);
@@ -14614,12 +14973,10 @@ function App() {
          По горизонтали clip оставлен, чтобы колонки не наезжали друг на друга */
       overflow:'clip visible',
     }}>
-      {hero && hero.targetRect && <HeroClone hero={hero} exiting={heroExiting}/>}
-      {reverseHero && reverseHero.targetRect && <HeroClone hero={reverseHero} exiting={reverseHeroExiting} reverse={true}/>}
       <TopBar navActive={navActive} onNav={handleNav}
         libCollapsed={libCollapsed} onToggleLib={event=>{ setPartyInstant(event.detail === 0); setLibCollapsed(v=>!v); }}
         inPlayer={view==='player'} scAuth={settings.soundcloudAuth||null}
-        track={track} hasTrack={hasTrack} isPlaying={isPlaying} onPrev={handlePrev} onNext={handleNext}
+        track={playerDisplayTrack} hasTrack={hasTrack} isPlaying={isPlaying} onPrev={handlePrev} onNext={handleNext}
         onTogglePlayback={togglePlayback}
         sourceMode={sourceMode} onToggleSource={handleToggleSource} hideSource={uiHidden.source}
         hideMiniPlayer={uiHidden.miniPlayer} partyOpen={partyOpen && view === 'player'} partyActive={partyActive} partyLocked={partyLocked}
@@ -14818,8 +15175,8 @@ function App() {
                 onLike={sourceMode === 'sc' ? handleLike : null}
                 onSelect={selectTrackStable}
                 getArtRef={getArtRef}
-                heroId={hero && !heroExiting ? hero.track.id : null}
-                reverseId={reverseHero && !reverseHeroExiting ? track.id : null}/>
+                heroId={hero && entryCoverFlightStarted && !heroExiting ? hero.track.id : null}
+                reverseId={reverseHero ? reverseHero.track.id : null}/>
             )}
           </div>
         )}
@@ -14829,7 +15186,10 @@ function App() {
             /* то же, что у главной: скрытый слой плеера не должен ловить
                клики у видимых вкладок (см. stackRoot). opacity-переход
                здесь короткий — 0.1s, как было */
-            ...stackRoot(playerVisible, 0.1),
+            ...stackRoot(playerVisible, playerVisible ? 0.22 : 0.1),
+            transition: playerVisible
+              ? 'opacity 0.22s cubic-bezier(0.23,1,0.32,1), visibility 0s'
+              : 'opacity 0.1s ease, visibility 0s linear 0.1s',
             display:'flex',
           }}>
         {/* library panel */}
@@ -15082,7 +15442,14 @@ function App() {
             sources={settings.lyricsSources}
             query={lyricsQuery} pinned={lyricsPinned}
             onPickSource={handleLyricsPickSource}
-            onFindLyrics={handleLyricsFind} onUnpin={handleLyricsUnpin}/>
+            onFindLyrics={handleLyricsFind} onUnpin={handleLyricsUnpin} track={track}
+            isPlaying={isPlaying} coverInstant={!!(hero || reverseHero)}
+            coverVisible={playerVisible && !((hero && !heroExiting) || reverseHero)}
+            onCoverReady={handleArtReady} artEntranceRef={artEntranceRef} entryHero={hero} exitHero={reverseHero} coverTrack={playerDisplayTrack}
+            partyLayoutOpen={partyOpen} partyControlsAligned={partyOpen && libCollapsed}
+            onEntryCoverFlightStart={handleEntryCoverFlightStart}
+            onEntryCoverFlightComplete={handleEntryCoverFlightComplete}
+            onExitCoverFlightComplete={handleExitCoverFlightComplete}/>
           <FxPanel open={fxOpen} inPlayer={playerVisible} settings={settings} partyActive={partyActive}
             onSettings={setSettings} onClose={() => setFxOpen(false)} onOpenCrossfade={openCrossfadeSettings}/>
           </div>
@@ -15106,6 +15473,9 @@ function App() {
                 onClose={closeParty} triggerRef={partyTriggerRef} user={settings.soundcloudAuth} locale={lang}
                 onCreate={()=>startParty('create')} onJoin={()=>startParty('join')}
                 onLeave={()=>partyClientRef.current?.leave()} onRetry={()=>partyClientRef.current?.retry()}
+                onTransferHost={memberId=>partyClientRef.current?.transferHost(memberId)}
+                onPlaySuggestion={item=>handleScTrackClick(item.track, -1)}
+                onRemoveSuggestion={id=>partyClientRef.current?.removeSuggestion(id)}
                 onLogin={()=>{ setSettingsSec('account'); handleNav('settings'); }}/>
             <div className="player-stage-media">
             <div data-party-motion="info" style={{width:'100%', minWidth:0}}>
@@ -15126,17 +15496,17 @@ function App() {
                 display:'flex', alignItems:'center', flexWrap:'wrap', justifyContent:'center',
                 fontSize:'clamp(12px, 1.5vw, 16px)', marginBottom:5,
               }}>
-                {scPlayingTrack
-                  ? splitArtists(track.artist).map(({ name, sep }, i) => {
-                      const isUploader = track.uploaderUsername
-                        ? name.toLowerCase() === track.uploaderUsername.toLowerCase()
+                {scPlayingTrack || pendingPlayerTrack
+                  ? splitArtists(playerDisplayTrack.artist).map(({ name, sep }, i) => {
+                      const isUploader = playerDisplayTrack.uploaderUsername
+                        ? name.toLowerCase() === playerDisplayTrack.uploaderUsername.toLowerCase()
                         : i === 0;
                       return (
                         <React.Fragment key={i}>
                           <span
                             onClick={() => handleOpenArtist(
                               isUploader
-                                ? { id: track.artistId, username: name, avatarUrl: track.artistAvatarUrl }
+                                ? { id: playerDisplayTrack.artistId, username: name, avatarUrl: playerDisplayTrack.artistAvatarUrl }
                                 : { username: name }
                             )}
                             onMouseEnter={e => e.currentTarget.style.color='rgba(255,255,255,0.65)'}
@@ -15147,7 +15517,7 @@ function App() {
                         </React.Fragment>
                       );
                     })
-                  : <span style={{ color:'rgba(255,255,255,0.28)' }}>{formatArtistDisplay(track.artist)}</span>
+                  : <span style={{ color:'rgba(255,255,255,0.28)' }}>{formatArtistDisplay(playerDisplayTrack.artist)}</span>
                 }
               </div>
               {/* title */}
@@ -15186,10 +15556,10 @@ function App() {
                     display:'flex', alignItems:'center', justifyContent:'center', width:'100%',
                   }}>
                     <MarqueeText
-                      text={track.title}
+                      text={playerDisplayTrack.title}
                       onClick={e => {
-                        if (e.shiftKey) { editCancelRef.current = false; setEditValue(track.title); setEditingTitle(true); }
-                        else { setLibScrollTargetId(track.id); setLibScrollTrigger(v => v + 1); }
+                        if (e.shiftKey) { editCancelRef.current = false; setEditValue(playerDisplayTrack.title); setEditingTitle(true); }
+                        else { setLibScrollTargetId(playerDisplayTrack.id); setLibScrollTrigger(v => v + 1); }
                       }}
                       style={{fontSize:'clamp(18px, 2.6vw, 28px)', fontWeight:600, letterSpacing:'-0.022em'}}
                       maxWidth={'min(clamp(280px, 38vw, 520px), 88%)'}
@@ -15209,12 +15579,9 @@ function App() {
                 {/* ambient glow blob — uses app accent (cover-derived or preset) */}
                 <AmbientGlow off={settings.accentMode==='off' || settings.ambientGlow === false}
                   visible={!((hero && !heroExiting) || reverseHero)}/>
-                <div id="player-album-art" ref={playerArtRef}
-                  style={{opacity: ((hero && !heroExiting) || reverseHero) ? 0 : 1, position:'relative', zIndex:1}}>
-                  <div ref={artEntranceRef}>
-                    <AlbumArt track={track} isPlaying={isPlaying}
-                      instant={!!(hero || reverseHero)} onReady={handleArtReady}/>
-                  </div>
+                <div style={{opacity: ((hero && !heroExiting) || reverseHero) ? 0 : 1, position:'relative', zIndex:1}}>
+                  <div id="player-album-art" ref={playerArtRef} aria-hidden="true"
+                    style={{width:'100%', aspectRatio:'1', visibility:'hidden'}}/>
                 </div>
               </div>
             <div data-party-motion="progress" style={{width:'100%'}}>
@@ -15375,7 +15742,7 @@ function App() {
           onArtistClick={handleOpenArtist}
           loadingTrackId={loadingTrackId} errorTrackId={errorTrackId}
           hideDividers={HIDE_DIVIDERS}
-          heroId={hero && !heroExiting ? hero.track.id : null}
+          heroId={hero && entryCoverFlightStarted && !heroExiting ? hero.track.id : null}
           glowOff={settings.accentMode==='off' || settings.ambientGlow === false}
           onLogin={() => { setSettingsSec('account'); handleNav('settings'); }}/>
         <ArtistView artist={artistView} visible={view==='artist'} onClose={handleCloseArtist} scAuth={settings.soundcloudAuth||null} artistCacheRef={artistCacheRef}
@@ -15408,7 +15775,6 @@ function App() {
                 translate:'-50% 0',
                 display:'flex', alignItems:'center', gap:8,
                 background:'var(--pop-bg)',
-                backdropFilter:'blur(20px)', WebkitBackdropFilter:'blur(20px)',
                 border:'1px solid rgba(255,255,255,0.055)',
                 borderRadius:11, padding:'7px 13px',
                 boxShadow:'0 16px 44px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.32)',
@@ -15462,4 +15828,3 @@ function App() {
 export default App
 
 // hmr-probe-test-1
-
