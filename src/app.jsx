@@ -18,7 +18,7 @@ import './equalizer.css'
    Контракт: loader возвращает модуль целиком, потребитель берёт .default. */
 let _hlsPromise = null;
 let _gsapPromise = null;
-const loadHls  = () => (_hlsPromise ||= import('hls.js').then(m => m.default));
+const loadHls = () => (_hlsPromise ||= import('hls.js/light').then(m => m.default));
 const loadGsap = () => (_gsapPromise ||= import('gsap').then(m => m.default));
 /* этот модуль ставит window.electronAPI surface; импорт идёт первым, чтобы
    фасад существовал до того, как App смонтируется (bridge ставит его на импорте) */
@@ -1205,12 +1205,22 @@ function onAccentChange(fn) {
 const _accentCache = new Map();
 function extractAccentColor(url) {
   if (!url) return Promise.resolve(null);
-  if (_accentCache.has(url)) return Promise.resolve(_accentCache.get(url));
+  // Встроенная обложка целиком находится в строке data URL.
+  const cacheable = !/^data:/i.test(url);
+  if (cacheable && _accentCache.has(url)) return Promise.resolve(_accentCache.get(url));
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     let done = false;
-    const finish = (val) => { if (done) return; done = true; _accentCache.set(url, val); resolve(val); };
+    const finish = val => {
+      if (done) return;
+      done = true;
+      if (cacheable) {
+        _accentCache.set(url, val);
+        if (_accentCache.size > 128) _accentCache.delete(_accentCache.keys().next().value);
+      }
+      resolve(val);
+    };
     img.onload = () => {
       try {
         const W = 32, H = 32;
@@ -2859,6 +2869,9 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
 
   useEffect(() => {
     let lastRaw = -1;
+    let lastDuration = -1;
+    let lastElapsedText;
+    let lastRemainingText;
     const draw = () => {
       /* ЦЕЛЬ БЕРЁТСЯ ИЗ САМОГО audio, а не из progressRef.
          progressRef обновляется событием timeupdate, а оно в html5-аудио
@@ -2894,15 +2907,23 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
       if (glowRef.current)  glowRef.current.style.setProperty('--pb-glow', p.toFixed(5));
       const dur = totalRef.current || 0;
       const de = Math.floor(p * dur);
-      if (elapsedSpanRef.current)   elapsedSpanRef.current.textContent   = fmt(de);
-      if (remainingSpanRef.current) remainingSpanRef.current.textContent = '-' + fmt(dur - de);
+      if (de !== lastElapsedText && elapsedSpanRef.current) {
+        elapsedSpanRef.current.textContent = fmt(de);
+        lastElapsedText = de;
+      }
+      const remaining = Math.floor(dur - de);
+      if (remaining !== lastRemainingText && remainingSpanRef.current) {
+        remainingSpanRef.current.textContent = '-' + fmt(remaining);
+        lastRemainingText = remaining;
+      }
       if (!visibleRef.current) { rafRef.current = null; return; }
       /* остановка на паузе: цель перестала меняться. сравнение с прошлым
          кадром, а не «сблизились два числа» — сглаживания больше нет */
-      if (!isPlayingRef.current && !dragging.current && raw === lastRaw) {
+      if (!isPlayingRef.current && !dragging.current && raw === lastRaw && dur === lastDuration) {
         rafRef.current = null; return;
       }
       lastRaw = raw;
+      lastDuration = dur;
       rafRef.current = requestAnimationFrame(draw);
     };
     drawRef.current = draw;
@@ -3309,6 +3330,7 @@ function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = fa
   /* загрузка → decode → отрисовка → fade-in → ready */
   useEffect(() => {
     let dead = false;
+    let retryTimer;
     const im = new Image();
     imgRef.current = im;
     im.decoding = 'async';
@@ -3348,14 +3370,21 @@ function CoverLayer({ url, onLoaded, onFailed, instant, isTop = true, ready = fa
          при чём), поэтому уходим в отказ сразу. */
       if (isData || retryRef.current >= 2) { onFailed(url); return; }
       retryRef.current++;
-      setTimeout(() => {
+      retryTimer = setTimeout(() => {
         if (dead) return;
         const sep = url.includes('?') ? '&' : '?';
         im.src = url + sep + '_r=' + Date.now();
       }, 500 * retryRef.current);
     };
     im.src = url;
-    return () => { dead = true; };
+    return () => {
+      dead = true;
+      clearTimeout(retryTimer);
+      im.onload = null;
+      im.onerror = null;
+      im.removeAttribute('src');
+      imgRef.current = null;
+    };
   }, [url, draw]);
 
   /* перерисовка при ресайзе окна/контейнера (canvas фиксированного битмапа) */
@@ -3516,8 +3545,10 @@ function AlbumArt({ track, instant, onReady, radius = 16 }) {
     setLayers(prev => {
       if (!url) return [];
       const found = prev.find(l => l.url === url && !l.failed);
-      if (found) return [...prev.filter(l => l.url !== url), found];
-      return [...prev.filter(l => l.url !== url), layer];
+      // Готовые слои сохраняют фон текущего перехода. Отменённые загрузки
+      // больше не нужны, а готовых подложек достаточно двух.
+      const backdrop = prev.filter(l => l.url !== url && l.ready).slice(-2);
+      return [...backdrop, found || layer];
     });
   }, [url, topUrl]);
 
@@ -6211,9 +6242,36 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose, onOpenCrossfad
 }
 
 /* ── HomeCard ────────────────────────────────────────────────────────────── */
-const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidden, isLiked, onLike, coverRadius = '3%' }) {
+// Загружаем обложки немного заранее с обеих сторон области прокрутки.
+// За пределами этого запаса браузер может освободить изображения.
+const homeArtworkListeners = new WeakMap();
+const homeArtworkObservers = new WeakMap();
+
+const HomeCard = React.memo(function HomeCard({ track, onSelect, artHidden, showArtwork, isLiked, onLike, coverRadius = '3%' }) {
   const handleClick = useCallback(() => onSelect(track), [onSelect, track]);
   const [popKey, setPopKey] = useState(0);
+  const [artNearViewport, setArtNearViewport] = useState(false);
+  const artworkNode = useRef(null);
+  const hasArtwork = !!track.coverUrl;
+  useEffect(() => {
+    const node = artworkNode.current;
+    const root = node?.closest('.scroll-home');
+    if (!root) return;
+    let observer = homeArtworkObservers.get(root);
+    if (!observer) {
+      observer = new IntersectionObserver(entries => {
+        for (const entry of entries) homeArtworkListeners.get(entry.target)?.(entry.isIntersecting);
+      }, { root, rootMargin: '350px 0px' });
+      homeArtworkObservers.set(root, observer);
+    }
+    homeArtworkListeners.set(node, setArtNearViewport);
+    observer.observe(node);
+    return () => {
+      observer.unobserve(node);
+      homeArtworkListeners.delete(node);
+    };
+  }, []);
+  const showDetails = showArtwork && artNearViewport;
   return (
     /* Появление — css-анимацией, а не framer: в библиотеке сотни карточек, и
        при поиске список пересобирается на каждую букву. `initial/animate/exit`
@@ -6236,20 +6294,20 @@ const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidd
         <div style={{fontSize: 'var(--fs-sm)', fontWeight:500, color:'rgba(255,255,255,0.88)',
           whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{track.title}</div>
       </div>
-      <div ref={artRef} data-sewer-art={track.id} style={{
+      <div ref={artworkNode} data-sewer-art={track.id} style={{
         opacity: artHidden ? 0 : 1,
         width:'100%', aspectRatio:'1', position:'relative',
         background:'#111116',
         borderRadius:`0 0 ${coverRadius} ${coverRadius}`, overflow:'hidden',
         display:'flex', alignItems:'center', justifyContent:'center',
       }}>
-        {track.coverUrl ? (
-          <img src={track.coverUrl} loading="lazy" decoding="async" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',clipPath:`inset(0 round 0 0 ${coverRadius} ${coverRadius})`,display:'block'}}
+        {hasArtwork ? (showDetails &&
+          <img key={track.coverUrl} src={track.coverUrl} decoding="async" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',clipPath:`inset(0 round 0 0 ${coverRadius} ${coverRadius})`,display:'block'}}
             onError={e=>{e.currentTarget.style.display='none'}}/>
-        ) : (
+        ) : showDetails && (
           <img src="../assets/note.png" style={{width:24,height:24,filter:'brightness(0) invert(1)',opacity:0.13}}/>
         )}
-        <CoverTint/>
+        {showDetails && <><CoverTint/>
         <div className="home-card-overlay" style={{
           position:'absolute', inset:0, background:'rgba(0,0,0,0.32)',
           display:'flex', alignItems:'center', justifyContent:'center',
@@ -6260,14 +6318,13 @@ const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidd
           }}>
             <svg width="26" height="26" fill="#fff" viewBox="0 0 24 24" style={{marginLeft:3}}><polygon points="6,4 20,12 6,20"/></svg>
           </div>
-        </div>
-        {onLike && (
+        </div></>}
+        {onLike && showDetails && (
           <div className="home-card-like" onClick={e=>{ e.stopPropagation(); if (!isLiked) setPopKey(k=>k+1); onLike(track); }} style={{
             position:'absolute', right:7, bottom:7, zIndex:2,
-            background:'rgba(0,0,0,0.45)', borderRadius:'50%',
+            background:'rgba(0,0,0,0.60)', borderRadius:'50%',
             width:26, height:26, display:'flex', alignItems:'center', justifyContent:'center',
             color: isLiked ? 'var(--accent)' : 'rgba(255,255,255,0.75)',
-            backdropFilter:'blur(4px)',
           }}>
             <LikeHeart key={popKey} liked={isLiked} size={13}
               className={popKey ? 'like-pop like-glow' : undefined}/>
@@ -6289,15 +6346,25 @@ const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidd
    замыканием — иначе React.memo сравнивал бы по ссылке на новый объект
    и пропускал бы всегда. Мемоизация работает только когда ВСЕ пропы
    стабильны: список, Set лайков, три коллбека и два примитива. */
-const HomeGrid = React.memo(function HomeGrid({ list, likedIds, onLike, onSelect, getArtRef, heroId, reverseId, returnKey = 0, coverRadius = '3%' }) {
+const HomeGrid = React.memo(function HomeGrid({ list, visible, likedIds, onLike, onSelect, heroId, reverseId, returnKey = 0, coverRadius = '3%' }) {
+  const [keepArtwork, setKeepArtwork] = useState(visible);
+  useEffect(() => {
+    if (visible) {
+      setKeepArtwork(true);
+      return;
+    }
+    // Обложки остаются на месте до конца затухания главной страницы.
+    const timer = setTimeout(() => setKeepArtwork(false), 320);
+    return () => clearTimeout(timer);
+  }, [visible]);
   return (
     <div className={returnKey ? `home-grid-return-${returnKey % 2 ? 'a' : 'b'}` : undefined}
       style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(128px, 1fr))', gap:18}}>
       {list.map(t => (
         <HomeCard key={t.id} track={t}
-          artRef={getArtRef(t.id)}
           onSelect={onSelect}
           coverRadius={coverRadius}
+          showArtwork={visible || keepArtwork}
           artHidden={(reverseId != null && t.id === reverseId) || (heroId != null && t.id === heroId)}
           isLiked={likedIds ? likedIds.has(t.id) : false}
           onLike={onLike}/>
@@ -11179,14 +11246,6 @@ function App() {
   const minDurationRef = useRef(30);
   minDurationRef.current = settings.minDuration ?? 30;
 
-  const artRefs       = useRef({});
-  const artRefCacheRef = useRef({});
-  const getArtRef = useCallback((id) => {
-    if (!artRefCacheRef.current[id]) {
-      artRefCacheRef.current[id] = (el) => { artRefs.current[id] = el; };
-    }
-    return artRefCacheRef.current[id];
-  }, []);
   const [libraryCoverRadius, setLibraryCoverRadius] = useState('3%');
   const playerArtRef  = useRef(null);
   useLayoutEffect(() => {
@@ -11254,6 +11313,8 @@ function App() {
   const [discordStatus, setDiscordStatus] = useState('off');
   /* null = настройки ещё не прочитаны (см. эффект включения rpc ниже) */
   const [rpcWanted, setRpcWanted] = useState(null);
+  const [startupReady, setStartupReady] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const trackSwitchingRef  = useRef(false);
   const filteredRef       = useRef([]);
   const filteredScRef     = useRef([]);
@@ -11295,20 +11356,8 @@ function App() {
   if (!shuffleStateRef.current) {
     shuffleStateRef.current = new Shuffle({ repeat: () => repeatRef.current });
   }
-  /* Узел обложки карточки в сетке — для hero (вперёд и назад). Кеш ref'ов берём
-     ТОЛЬКО если узел живой: React вешает ref в null при размонтировании, но
-     после перестановки списка (сортировка, оптимистичный лайк, догрузка
-     обложек) в кеше может остаться уже отсоединённый узел, и
-     getBoundingClientRect() у него отдаёт нули. Тогда hero стартует из (0,0) с
-     scale(0) — клон не виден вообще, а `opacity: hero ? 0 : 1` на обложке
-     плеера держит её пустой ещё 300мс. В сумме это и читается как «кликнул
-     карточку — перехода нет, ничего не происходит». Фолбэк — поиск по
-     data-sewer-art прямо в DOM (общий для selectTrack и обоих hero в
-     handleNav: раньше фолбэк был только в selectTrack, и обратный hero
-     молча пропускался) */
+  // Геометрия для полёта обложки берётся из текущей сетки при навигации.
   const findArtEl = useCallback((id) => {
-    const cached = artRefs.current[id];
-    if (cached && cached.isConnected) return cached;
     return homeScrollRef.current?.querySelector(`[data-sewer-art="${CSS.escape(String(id))}"]`) || null;
   }, []);
   scTracksRef.current = scTracks;
@@ -11371,6 +11420,23 @@ function App() {
     }
     return ACCENT_PRESETS.default;
   }, [settings.accentMode, settings.theme, accentRGB]);
+
+  useEffect(() => {
+    if (!startupReady) return;
+    const theme = cleanTheme(settings.theme);
+    const mica = settings.windowEffect === 'mica';
+    const mode = mica ? 'default' : theme.bgMode;
+    const background = mode === 'default' ? THEME_DEFAULT.bgColor : theme.bgColor;
+    const midpoint = mode === 'gradient' ? mixHex(background, theme.bgColor2) : background;
+    const { r, g, b } = hexToRgb(midpoint);
+    window.seWerStartupTheme?.({
+      background: mica ? 'rgba(10, 10, 15, 0.10)' : background,
+      image: themeBgImage({ ...theme, bgMode: mode }, `${appAccent.r}, ${appAccent.g}, ${appAccent.b}`),
+      radius: `${mica ? 8 : theme.radius}px`,
+      ink: 0.2126 * r + 0.7152 * g + 0.0722 * b > 145 ? '#19191f' : '#ededf4',
+      accent: rgbToHex(appAccent.r, appAccent.g, appAccent.b),
+    });
+  }, [startupReady, settings.theme, settings.windowEffect, appAccent]);
 
   /* Тема → css-переменные. Единственное место, где тема покидает react и
      попадает в документ: всё остальное читает `var(...)` и потому не знает,
@@ -11693,17 +11759,19 @@ function App() {
             setVolume(g);
             volumeRef.current = g;  /* до первого кадра, иначе звук рванёт на дефолте */
           }
-          if (saved.musicFolder) {
-            const local = await window.electronAPI.scanMusicFolder(saved.musicFolder);
-            if (local.length > 0) {
-              const ct = saved.customTitles || {};
-              const withCustom = local.map(t => ct[t.path] ? { ...t, title: ct[t.path] } : t);
-              setTracks(withCustom);
-              loadCovers(withCustom);
-            }
+        }
+        setSettingsLoaded(true);
+        setStartupReady(true);
+        if (saved?.musicFolder) {
+          const local = await window.electronAPI.scanMusicFolder(saved.musicFolder);
+          if (local.length > 0) {
+            const ct = saved.customTitles || {};
+            const withCustom = local.map(t => ct[t.path] ? { ...t, title: ct[t.path] } : t);
+            setTracks(withCustom);
+            loadCovers(withCustom);
           }
         }
-      } catch {}
+      } catch { setStartupReady(true); }
     })();
   }, []);
 
@@ -11736,30 +11804,36 @@ function App() {
      сброс читает всегда актуальное значение. */
   const latestSettingsRef = useRef(settings);
   latestSettingsRef.current = settings;
+  // До чтения файла settings содержит дефолты, включая пустую авторизацию.
   useEffect(() => {
-    clearTimeout(saveTimerRef.current);
+    if (!settingsLoaded) return;
     saveTimerRef.current = setTimeout(() => {
-      try { window.electronAPI.saveSettings(latestSettingsRef.current); } catch {}
+      saveTimerRef.current = 0;
+      window.electronAPI.saveSettings(latestSettingsRef.current).catch(() => {});
     }, 350);
-    /* ⛔ cleanup здесь НЕ вызывает сохранение: тема перерисовывается по
-       ходу effect'а смены фона (см. выше), и сохранение на каждом таком
-       переходе означало бы ровно то же, что и до отложки. */
-  }, [settings]);
+    return () => {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = 0;
+    };
+  }, [settings, settingsLoaded]);
   /* Сброс отложки при закрытии окна: без него последнее изменение
      съедалось бы, если закрыть плеер быстрее, чем прошло 350мс. Закрывают
      его сразу, это кнопка в тайтлбаре.
      ⚠️ В webview beforeunload срабатывает ненадёжно (окно закрывает rust,
      а не документ), поэтому это подстраховка, а не основной путь. */
   useEffect(() => {
+    if (!settingsLoaded) return;
     const flush = () => {
+      if (!saveTimerRef.current) return;
       clearTimeout(saveTimerRef.current);
-      try { window.electronAPI.saveSettings(latestSettingsRef.current); } catch {}
+      saveTimerRef.current = 0;
+      window.electronAPI.saveSettings(latestSettingsRef.current).catch(() => {});
     };
     window.addEventListener('beforeunload', flush);
     return () => window.removeEventListener('beforeunload', flush);
     /* settings в зависимостях нет намеренно: ref обновляется на каждом
      рендере, а слушатель достаточно подписать один раз */
-  }, []);
+  }, [settingsLoaded]);
 
   useEffect(() => {
     try { window.electronAPI.setLoginItem?.(settings.startWithWindows); } catch {}
@@ -11775,17 +11849,14 @@ function App() {
      фон первым: материал гаснет под уже непрозрачной панелью, а не сквозь
      прозрачную. */
   const micaFirstRef = useRef(true);
-  /* Окно проявляется целиком после монтирования. Пока стоит класс `booting`
-     (см. index.html и #app-shell.booting в styles.css) оболочка невидима:
-     она и тайтлбар статичны, рисовались до react и давали секунду пустого
-     окна с кнопками «свернуть» и «×». Снимаем на следующем кадре — к этому
-     моменту содержимое уже в dom. */
+  // Показываем собранный интерфейс под заставкой перед её затуханием.
   useEffect(() => {
+    if (!startupReady) return;
     const el = document.getElementById('app-shell');
     if (!el) return;
     const id = requestAnimationFrame(() => el.classList.remove('booting'));
     return () => cancelAnimationFrame(id);
-  }, []);
+  }, [startupReady]);
   useEffect(() => {
     const on = settings.windowEffect === 'mica';
     const setClass = v => document.body.classList.toggle('effect-mica', v);
@@ -13565,7 +13636,7 @@ function App() {
          осиротевший держал бы открытый стрим вечно. */
       if (xfadePrimeRef.current !== prime) return;
       if (Hls.isSupported()) {
-        const hls = new Hls({ maxBufferLength: 20, maxMaxBufferLength: 30,
+        const hls = new Hls({ backBufferLength: 30, maxBufferLength: 20, maxMaxBufferLength: 30,
           startPosition: crossfadeIntroPosition(config.intro, next.track.duration) });
         deckBHlsRef.current = hls;
         hls.on(Hls.Events.ERROR, (_, data) => {
@@ -14048,7 +14119,7 @@ function App() {
         setIsPlaying(true);
         return;
       }
-      const hls = new Hls();
+      const hls = new Hls({ backBufferLength: 30, maxBufferLength: 30, maxMaxBufferLength: 60 });
       hlsRef.current = hls;
       hls.loadSource(resolvedUrl);
       hls.attachMedia(audio);
@@ -14185,7 +14256,8 @@ function App() {
         const Hls = await loadHls();
         if (stale()) throw new Error('cancelled');
         if (Hls.isSupported()) {
-          const hls = new Hls({ startPosition: position() });
+          const hls = new Hls({ backBufferLength: 30, maxBufferLength: 30, maxMaxBufferLength: 60,
+            startPosition: position() });
           hlsRef.current = hls;
           hls.on(Hls.Events.ERROR, (_, data) => {
             if (data.fatal && !stale() && hlsRef.current === hls) partyClientRef.current?.failPlayback('track_unavailable');
@@ -14289,10 +14361,6 @@ function App() {
       return;
     }
 
-    /* Ищем обложку карточки (findArtEl — см. ref): кеш берём только если узел
-       живой, иначе ищем прямо в DOM по data-атрибуту. Отсоединённый узел в
-       кеше даёт нулевой rect, и hero стартует из (0,0) с scale(0) — картинка
-       телепортировалась без анимации, а обложка плеера ещё 300мс пустая. */
     const findArt = () => findArtEl(t.id);
 
     // scroll target card into view if needed (mirrors handleNav home→player)
@@ -14881,6 +14949,8 @@ function App() {
       return;
     }
     let raf = 0;
+    let lastTime = NaN;
+    let lastLine;
     const tick = () => {
       /* Время берём С ЭЛЕМЕНТА, а не через progressRef × duration. Причин
          две, и обе ощутимы:
@@ -14900,7 +14970,8 @@ function App() {
       const t   = el && el.duration > 0 ? el.currentTime
                 : dur > 0 ? progressRef.current * dur
                 : -1;
-      if (t >= 0) {
+      if (t >= 0 && t !== lastTime) {
+        lastTime = t;
         const ls = lyricsView.lines;
         /* Ищем строку с САМОЙ ПОЗДНЕЙ меткой, которая уже наступила.
            Просто «последняя, что ≤ t, до первого перелёта» — не то же
@@ -14913,7 +14984,10 @@ function App() {
           if (lt == null || lt > t) continue;     /* секция или ещё не время */
           if (lt >= best) { best = lt; idx = i; }
         }
-        setLyricsActive(prev => (prev === idx ? prev : idx));
+        if (idx !== lastLine) {
+          lastLine = idx;
+          setLyricsActive(idx);
+        }
       }
       raf = requestAnimationFrame(tick);
     };
@@ -15389,10 +15463,10 @@ function App() {
             ) : (
               <HomeGrid
                 list={activeList}
+                visible={homeVisible}
                 likedIds={sourceMode === 'sc' ? likedIds : null}
                 onLike={sourceMode === 'sc' ? handleLike : null}
                 onSelect={selectTrackStable}
-                getArtRef={getArtRef}
                 returnKey={homeReturnKey}
                 coverRadius={libraryCoverRadius}
                 heroId={hero && entryCoverFlightStarted && !heroExiting ? hero.track.id : null}

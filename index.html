@@ -4,6 +4,72 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>seWer</title>
+  <script src="/startup-theme.js"></script>
+  <!-- Стартовые стили нужны до загрузки React и основного CSS. -->
+  <style>
+    #app-shell.booting { opacity: 0; visibility: hidden; }
+    #startup-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: grid;
+      place-items: center;
+      border-radius: var(--startup-radius, 12px);
+      background-color: var(--startup-background, #07070a);
+      background-image: var(--startup-image, none);
+      color: var(--startup-ink, #ededf4);
+      font: 650 15px/1 "Segoe UI", system-ui, sans-serif;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 200ms var(--ease-out, cubic-bezier(.23,1,.32,1)), visibility 0s 200ms;
+    }
+    #app-shell.booting + #startup-splash {
+      opacity: 1;
+      visibility: visible;
+      transition: none;
+    }
+    .startup-mark {
+      display: grid;
+      justify-items: center;
+      gap: 22px;
+      letter-spacing: .19em;
+      animation: startup-in 240ms cubic-bezier(.23,1,.32,1) both;
+    }
+    .startup-disc {
+      position: relative;
+      display: grid;
+      place-items: center;
+      width: 96px;
+      height: 96px;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--startup-accent, #b2b2b2) 62%, #ededf4);
+    }
+    .startup-disc img { width: 56px; height: 25px; }
+    .startup-disc::before, .startup-disc::after {
+      content: "";
+      position: absolute;
+      inset: -9px;
+      box-sizing: border-box;
+      border: 1px solid color-mix(in srgb, var(--startup-accent, #b2b2b2) 42%, transparent);
+      border-radius: 50%;
+    }
+    .startup-disc::after {
+      border-color: transparent;
+      border-top-color: var(--startup-accent, #b2b2b2);
+      transform: rotate(-40deg);
+      animation: startup-spin 1200ms linear 2;
+    }
+    @keyframes startup-in {
+      from { opacity: .55; transform: translateY(6px) scale(.96); }
+      to { opacity: 1; transform: none; }
+    }
+    @keyframes startup-spin { to { transform: rotate(320deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .startup-mark, .startup-disc::after { animation: none; }
+      #startup-splash { transition-duration: 120ms, 0s; transition-delay: 0s, 120ms; }
+    }
+  </style>
 </head>
 <body>
 
@@ -32,6 +98,12 @@
 </div>
 
 <div id="root"></div>
+</div>
+<div id="startup-splash" aria-hidden="true">
+  <div class="startup-mark">
+    <div class="startup-disc"><img src="/assets/icon.svg" width="56" height="25" alt=""></div>
+    <span>seWer</span>
+  </div>
 </div>
 <script type="module" src="/src/main.jsx"></script>
 </body>
