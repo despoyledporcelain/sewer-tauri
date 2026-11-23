@@ -281,6 +281,33 @@
   }
   .mini-player-title { font-size:11px; line-height:13px; font-weight:700; }
   .mini-player-artist { font-size:9px; line-height:11px; color:oklch(0.73 0.008 285); }
+  .player-button-hover::after {
+    content:"";
+    position:absolute;
+    inset:9%;
+    border-radius:inherit;
+    background:conic-gradient(from -54deg,
+      transparent, currentColor 42deg, transparent 107deg 180deg,
+      currentColor 222deg, transparent 287deg);
+    mask:radial-gradient(farthest-side, transparent calc(100% - 2px),
+      currentColor calc(100% - 1px), currentColor calc(100% - 0.5px), transparent);
+    color:color-mix(in oklch, var(--accent) 72%, #f2f1f6);
+    opacity:0;
+    transform:rotate(-24deg);
+    transition:opacity 150ms var(--ease-out), transform 200ms var(--ease-out);
+    pointer-events:none;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .player-button-hover:where(:enabled:hover)::after {
+      opacity:0.9;
+      transform:rotate(0deg);
+    }
+  }
+  .player-button-hover[data-reduced-motion="true"]::after {
+    transform:none;
+    transition-property:opacity;
+  }
+
   .mini-player-transport { display:flex; align-items:center; gap:2px; flex-shrink:0; margin-left:auto; }
   .mini-player-button {
     display:flex; align-items:center; justify-content:center; width:28px; height:28px;

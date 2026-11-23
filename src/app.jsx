@@ -3689,32 +3689,12 @@ function AmbientGlow({ visible, off }) {
 
    Ореол и уезд иконки — transform/opacity, то есть композитор: ховер не
    трогает layout и не дёргается, даже когда основной поток занят. */
-const MAG_PULL = 3.2;          /* предел уезда иконки от центра, px */
 
 function MagBtn({ onClick, active, children, size=52, disabled = false, title }) {
   const reduce = useReducedMotion();
-  const [hov, setHov] = useState(false);
-  const mx = useSpring(0, { stiffness: 340, damping: 24, mass: 0.35 });
-  const my = useSpring(0, { stiffness: 340, damping: 24, mass: 0.35 });
-  useLayoutEffect(() => {
-    if (reduce || disabled) { mx.jump(0); my.jump(0); }
-  }, [reduce, disabled, mx, my]);
-
-  const move = e => {
-    if (reduce || disabled || !isFineHover(e)) return;
-    const r = e.currentTarget.getBoundingClientRect();
-    /* нормализуем по половине габарита: край кнопки = 1, центр = 0, поэтому
-       предел уезда одинаков и у 40px, и у 66px */
-    mx.set(((e.clientX - (r.left + r.width  / 2)) / (r.width  / 2)) * MAG_PULL);
-    my.set(((e.clientY - (r.top  + r.height / 2)) / (r.height / 2)) * MAG_PULL);
-  };
-  /* возвращаем на место тоже пружиной, а не мгновенно: отпускание курсора —
-     часть жеста, и «отскок» читается как инерция */
-  const leave = () => { setHov(false); mx.set(0); my.set(0); };
 
   return (
-    <motion.button data-motion-spatial="" onClick={onClick} disabled={disabled} title={title}
-      onPointerEnter={e => { if (!disabled && isFineHover(e)) setHov(true); }} onPointerMove={move} onPointerLeave={leave}
+    <motion.button className="player-button-hover" data-reduced-motion={reduce} data-motion-spatial="" onClick={onClick} disabled={disabled} title={title}
       whileTap={disabled || reduce ? undefined : { scale: 0.94 }}
       animate={reduce ? { scale: 1 } : undefined}
       transition={{ type:'spring', stiffness: 520, damping: 28, mass: 0.5 }}
@@ -3726,28 +3706,9 @@ function MagBtn({ onClick, active, children, size=52, disabled = false, title })
         cursor:disabled ? 'default' : 'pointer', opacity:disabled ? 0.4 : 1, flexShrink:0,
         transition:'color 220ms ease',
       }}>
-      {/* ореол лежит ПОД иконкой и не выходит за габарит кнопки: кнопки стоят
-          плотно, и пятно крупнее самой кнопки слипалось бы с соседним */}
-      <span aria-hidden="true" style={{
-        position:'absolute', inset:'6%', borderRadius:'50%',
-        background:'radial-gradient(circle at center,'
-          + ' rgba(var(--accent-rgb),0.28) 0%,'
-          + ' rgba(var(--accent-rgb),0.14) 44%,'
-          + ' rgba(var(--accent-rgb),0.04) 67%,'
-          + ' rgba(var(--accent-rgb),0) 78%)',
-        opacity: hov ? 1 : 0,
-        transform: reduce || hov ? 'scale(1)' : 'scale(0.58)',
-        /* появление медленнее угасания: курсор влетает быстро, а отпускает
-           кнопку глаз ещё несколько кадров */
-        transition: reduce ? 'opacity 150ms ease' : hov
-          ? 'opacity 190ms ease, transform 340ms cubic-bezier(0.23,1,0.32,1)'
-          : 'opacity 150ms ease, transform 150ms cubic-bezier(0.23,1,0.32,1)',
-        pointerEvents:'none',
-      }}/>
-      <motion.span style={{
-        position:'relative', display:'flex', alignItems:'center', justifyContent:'center',
-        x: mx, y: my,
-      }}>{children}</motion.span>
+      <span style={{position:'relative', display:'flex', alignItems:'center', justifyContent:'center'}}>
+        {children}
+      </span>
     </motion.button>
   );
 }
@@ -3768,7 +3729,6 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
      переключение не сигналит ничем: обложка меняется в соседней
      панели, а на кнопке ничего. */
   const [playPulse, setPlayPulse] = useState(0);
-  const [hov, setHov] = useState(false);
   const wasPlaying = useRef(false);
   useEffect(() => {
     if (isPlaying && !wasPlaying.current) setPlayPulse(k => k + 1);
@@ -3804,8 +3764,7 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
     pointerEvents:'none',
   });
   return (
-    <motion.button data-motion-spatial="" onClick={onToggle} disabled={disabled} title={title} aria-label={title}
-      onPointerEnter={e => { if (!disabled && isFineHover(e)) setHov(true); }} onPointerLeave={() => setHov(false)}
+    <motion.button className="player-button-hover" data-reduced-motion={reduced} data-motion-spatial="" onClick={onToggle} disabled={disabled} title={title} aria-label={title}
       whileTap={disabled || reduced ? undefined : { scale: 0.95 }}
       animate={reduced ? { scale: 1 } : undefined}
       transition={{ type:'spring', stiffness: 380, damping: 26, mass: 0.6 }}
@@ -3821,20 +3780,6 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
         display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none',
         background: isPlaying ? 'rgba(178,178,178,0.1)' : 'rgba(255,255,255,0.06)',
         transition:'background 0.3s ease'}}>
-      {/* ховер — не масштаб, а свет: вокруг кнопки проступает акцентное кольцо.
-          оно живёт за габаритом кнопки, поэтому ряд не сдвигается и ничего не
-          пересчитывается в layout; появление с лёгким расширением, угасание
-          быстрее — как у остальных кнопок транспорта */}
-      <span aria-hidden="true" style={{
-        position:'absolute', inset:-8, borderRadius:'50%',
-        border:'1.5px solid rgba(var(--accent-rgb),0.42)',
-        opacity: hov ? 1 : 0,
-        transform: reduced || hov ? 'scale(1)' : 'scale(0.88)',
-        transition: reduced ? 'opacity 140ms ease' : hov
-          ? 'opacity 200ms ease, transform 320ms cubic-bezier(0.23,1,0.32,1)'
-          : 'opacity 140ms ease, transform 140ms cubic-bezier(0.23,1,0.32,1)',
-        pointerEvents:'none',
-      }}/>
       {!reduced && isPlaying && playPulse > 0 && (
         <motion.span key={playPulse}
           initial={{ scale:0.82, opacity:0.5 }}
