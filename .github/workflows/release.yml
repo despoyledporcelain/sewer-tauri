@@ -1,0 +1,57 @@
+name: Release seWer for Windows
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate release tag
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or $env:GITHUB_REF_NAME -cne "v$version") {
+            throw "Expected the stable release tag v$version, got $env:GITHUB_REF_NAME"
+          }
+      - run: npm ci
+      - name: Build and sign Windows installer
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: seWer ${{ github.ref_name }}
+          releaseDraft: true
+          generateReleaseNotes: true
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: --target x86_64-pc-windows-msvc --config src-tauri/tauri.release.conf.json
+      - name: Verify and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download $env:GITHUB_REF_NAME --pattern latest.json --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw 'Updater manifest is missing' }
+          $manifest = Get-Content (Join-Path $env:RUNNER_TEMP 'latest.json') -Raw | ConvertFrom-Json
+          $windows = $manifest.platforms.'windows-x86_64'
+          if ($manifest.version -cnotin @($env:GITHUB_REF_NAME, $env:GITHUB_REF_NAME.Substring(1)) -or !$windows.signature -or !$windows.url) {
+            throw 'Updater manifest is missing the signed Windows x64 installer'
+          }
+          gh release edit $env:GITHUB_REF_NAME --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the release' }

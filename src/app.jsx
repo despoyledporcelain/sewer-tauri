@@ -24,6 +24,7 @@ const loadGsap = () => (_gsapPromise ||= import('gsap').then(m => m.default));
    фасад существовал до того, как App смонтируется (bridge ставит его на импорте) */
 import './bridge.js'
 import { fileSrc } from './bridge.js'
+import { useAppUpdate } from './use-app-update.js'
 /* порядок перемешивания: перестановка + курсор в одном месте (src/shuffle.js) */
 import { Shuffle } from './shuffle.js'
 import { discordSnapshot, updateDiscordPlayback } from './discord-presence.js'
@@ -1992,6 +1993,11 @@ const STRINGS = {
     min_dur:'Мин. длительность аудиофайлов', min_dur_sub:'Файлы короче этого значения пропускаются при сканировании',
     secs:'сек',
     version:'Версия', repository:'Репозиторий', stack:'Стек',
+    update_idle:'Обновления', update_check:'Проверить', update_checking:'Проверяем обновления…',
+    update_available:'Доступно обновление', update_install:'Обновить и перезапустить',
+    update_current:'Установлена последняя версия', update_checkFailed:'Не удалось проверить обновления',
+    update_downloading:'Скачиваем обновление…', update_installing:'Запускаем установку…',
+    update_installFailed:'Не удалось установить обновление',
     profile_error:'не удалось получить данные профиля',
     conn_error:'ошибка подключения',
     unknown:'неизвестно', logout:'выйти',
@@ -2192,6 +2198,11 @@ const STRINGS = {
     min_dur:'Min. audio file duration', min_dur_sub:'Files shorter than this are skipped when scanning',
     secs:'sec',
     version:'Version', repository:'Repository', stack:'Stack',
+    update_idle:'Updates', update_check:'Check for updates', update_checking:'Checking for updates…',
+    update_available:'Update available', update_install:'Update and restart',
+    update_current:'You’re on the latest version', update_checkFailed:'Could not check for updates',
+    update_downloading:'Downloading update…', update_installing:'Starting the installer…',
+    update_installFailed:'Could not install the update',
     profile_error:'could not get profile data',
     conn_error:'connection error',
     unknown:'unknown', logout:'log out',
@@ -7636,13 +7647,15 @@ const UI_HIDDEN_NONE = { source:false, miniPlayer:false, volume:false, caption:f
    `settings.uiHidden.source` — это TypeError на первом же запуске */
 const uiHiddenOf = s => ({ ...UI_HIDDEN_NONE, ...(s && s.uiHidden) });
 
-function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFolder, onClearCoversCache, onClearLikesCache, appAccent, scAuth, onScLogin, onScLogout, sec, setSec, discordStatus, winAccent, crossfadeFocus = 0 }) {
+function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFolder, onClearCoversCache, onClearLikesCache, appAccent, scAuth, onScLogin, onScLogout, sec, setSec, discordStatus, winAccent, appUpdate, crossfadeFocus = 0 }) {
   const t = useLang();
   const lang = useLangCode();
   const reduced = useReducedMotion();
   const settingsScrollRef = useRef(null);
   const [appearanceSection, setAppearanceSection] = useState('theme');
   const subsection = sec === 'appearance' ? appearanceSection : '';
+  const { status: updateStatus, availableVersion } = appUpdate;
+  const updateBusy = ['checking', 'downloading', 'installing'].includes(updateStatus);
   useLayoutEffect(() => {
     if (settingsScrollRef.current) settingsScrollRef.current.scrollTop = 0;
   }, [sec, subsection]);
@@ -8392,8 +8405,16 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     about: (
       <Card>
         <Row label={t('version')}>
-          <span style={{ fontSize: 'var(--fs-sm)', color: SN.mid, fontVariantNumeric: 'tabular-nums' }}>1.0.0</span>
+          <span style={{ fontSize: 'var(--fs-sm)', color: SN.mid, fontVariantNumeric: 'tabular-nums' }}>{appUpdate.currentVersion ?? '—'}</span>
         </Row>
+        {appUpdate.enabled && (
+          <Row wrap label={<span role="status">{t(`update_${updateStatus}`)}{updateStatus === 'available' && ` · ${availableVersion}`}</span>}>
+            <button type="button" className="settings-update-button" disabled={updateBusy}
+              onClick={availableVersion ? appUpdate.install : () => appUpdate.checkNow(true)}>
+              {t(availableVersion ? 'update_install' : 'update_check')}
+            </button>
+          </Row>
+        )}
         <Row label={t('repository')}>
           {/* ссылка: раньше это был блок текста, у которого прочерк курсора
              выдавал, что он кликабельный, — теперь это кнопка, и видно сразу */}
@@ -13412,6 +13433,19 @@ function App() {
   const toastOwnerRef = useRef(null);
   if (!toastOwnerRef.current) toastOwnerRef.current = createToastOwner(setToast, setToastExiting);
   useEffect(() => () => toastOwnerRef.current.cancel(), []);
+  const appUpdate = useAppUpdate(async () => {
+    if (!settingsLoaded) return;
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = 0;
+    await window.electronAPI.saveSettings(latestSettingsRef.current);
+  });
+  const announcedUpdate = useRef(null);
+  useEffect(() => {
+    const version = appUpdate.availableVersion;
+    if (!version || announcedUpdate.current === version) return;
+    announcedUpdate.current = version;
+    showToast(`${t('update_available')} · ${version}`);
+  }, [appUpdate.availableVersion, lang]);
   function handleSearchResultsLoaded(newTracks) {
     if (!searchQueueRef.current) return;
     searchQueueRef.current = [...searchQueueRef.current, ...newTracks];
@@ -15986,7 +16020,7 @@ function App() {
           </div>
         )}
 
-        <SettingsView settings={settings} onSettings={setSettings} visible={view==='settings'} onScanTracks={handleScanTracks} onClearFolder={handleClearFolder} onClearCoversCache={handleClearCoversCache} onClearLikesCache={handleClearLikesCache} appAccent={appAccent} winAccent={winAccent} scAuth={settings.soundcloudAuth||null} onScLogin={handleScLogin} onScLogout={handleScLogout} sec={settingsSec} setSec={setSettingsSec} discordStatus={discordStatus} crossfadeFocus={crossfadeFocus}/>
+        <SettingsView settings={settings} onSettings={setSettings} visible={view==='settings'} onScanTracks={handleScanTracks} onClearFolder={handleClearFolder} onClearCoversCache={handleClearCoversCache} onClearLikesCache={handleClearLikesCache} appAccent={appAccent} winAccent={winAccent} appUpdate={appUpdate} scAuth={settings.soundcloudAuth||null} onScLogin={handleScLogin} onScLogout={handleScLogout} sec={settingsSec} setSec={setSettingsSec} discordStatus={discordStatus} crossfadeFocus={crossfadeFocus}/>
         <ListeningHistory visible={view==='history'} entries={listeningHistory} localTracks={tracks} cloudTracks={scTracks} covers={historyCovers}
           currentKey={hasTrack ? historyTrackKey(track, scPlayingTrack ? 'sc' : 'local') : null} isPlaying={isPlaying}
           loadingId={historyLoadingId || listeningHistory.find(entry => entry.source==='sc' && String(entry.track.id)===String(loadingTrackId))?.id}
