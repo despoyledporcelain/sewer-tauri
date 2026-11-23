@@ -12,7 +12,9 @@ export function snapshotPartyPlayer(root) {
   const sidebar = root.querySelector('.party-sidebar');
   const rect = sidebar?.getBoundingClientRect();
   const opacity = sidebar && root.ownerDocument?.defaultView?.getComputedStyle(sidebar).opacity;
-  return { elements, sidebar: rect?.width && rect?.height ? {
+  const artwork = root.ownerDocument?.querySelector('[data-party-shared-art]');
+  const artworkRect = artwork?.getBoundingClientRect();
+  return { elements, artwork, artworkRect, sidebar: rect?.width && rect?.height ? {
     element: sidebar, rect, opacity: opacity == null ? 1 : Number(opacity),
   } : null };
 }
@@ -27,20 +29,24 @@ export function cancelPartyPlayerMotion(animations) {
   animations.clear();
 }
 
-// FLIP the player layout around the fixed artwork slot. The portalized artwork
-// itself follows that slot directly so it cannot drift during the reflow.
+// Measure the slot without transforms, then move the real artwork over it.
 export function animatePartyPlayer(snapshot, root, { open, instant, reduced, layoutOnly = false }, animations) {
   cancelPartyPlayerMotion(animations);
   const sharedArt = root.ownerDocument?.querySelector('[data-party-shared-art]');
   const artSlot = root.querySelector('#player-album-art');
-  if (sharedArt && artSlot) {
-    const rect = artSlot.getBoundingClientRect();
+  const artRect = artSlot?.getBoundingClientRect();
+  if (sharedArt && artRect?.width && artRect.height) {
     Object.assign(sharedArt.style, {
-      left: `${rect.left}px`, top: `${rect.top}px`,
-      width: `${rect.width}px`, height: `${rect.height}px`,
+      left: `${artRect.left}px`, top: `${artRect.top}px`,
+      width: `${artRect.width}px`, height: `${artRect.height}px`,
     });
   }
-  if (!snapshot || instant || reduced) return;
+  const libraryPanel = root.ownerDocument?.querySelector('[data-player-library-panel]');
+  const libraryMoving = libraryPanel?.getAnimations?.().some(animation =>
+    animation.transitionProperty === 'width' &&
+    (animation.pending || animation.playState === 'running'));
+  // The artwork observer already follows the changing slot during a width transition.
+  if (!snapshot || instant || reduced || libraryMoving) return;
 
   const play = (element, frames, options, cleanup = () => {}) => {
     if (!element.animate) { cleanup(); return; }
@@ -61,6 +67,18 @@ export function animatePartyPlayer(snapshot, root, { open, instant, reduced, lay
   // Read all final boxes together before starting compositor animations.
   const after = new Map([...snapshot.elements.keys()].filter(element => root.contains(element))
     .map(element => [element, element.getBoundingClientRect()]));
+  const oldArt = snapshot.artworkRect;
+  if (sharedArt && sharedArt === snapshot.artwork && oldArt?.width && oldArt.height && artRect?.width && artRect.height) {
+    const dx = oldArt.left - artRect.left;
+    const dy = oldArt.top - artRect.top;
+    const scale = oldArt.width / artRect.width;
+    if (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5 || Math.abs(scale - 1) >= 0.001) {
+      play(sharedArt, [
+        { translate: `${dx}px ${dy}px`, scale: String(scale) },
+        { translate: '0px 0px', scale: '1' },
+      ], { duration: open ? 280 : 240, fill:'backwards' });
+    }
+  }
   for (const [element, rect] of after) {
     const { rect: old } = snapshot.elements.get(element);
     if (!rect.width || !rect.height || !old.width || !old.height) continue;

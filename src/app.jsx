@@ -151,9 +151,7 @@ const THEME_DEFAULT = {
   bgColor:     '#07070a',
   bgColor2:    '#1b1030',
   bgAngle:     145,
-  glowStrength: 1,           /* множитель всех свечений, 0…2 */
   radius:      12,           /* скругление окна и карточек, px */
-  grain:       0.022,        /* сила зерна, до 0.25 */
   vignette:    0.5,          /* затемнение краёв. дефолт низкий намеренно:
                             на полной силе виньетка читалась тёмной рамкой
                             по всему краю окна и портила скругление */
@@ -176,7 +174,7 @@ const THEME_PRESETS = [
      перерисовывается вместе с ним, и при смене трека фон едет, а зерно
      остаётся на месте, и глаз это видит. */
   { id:'cover', label:'Обложка', v:{
-    accent:'#7cf7ff', bgMode:'cover', glowStrength:1.15, radius:20, grain:0 } },
+    accent:'#7cf7ff', bgMode:'cover', radius:20 } },
   /* Материал окна. Это единственный набор, который трогает не только тему,
      поэтому у карточки есть `fx`: mica — настройка ОКНА, а не theme, и
      тонировка обложек тоже живёт в своих полях. Вместе они и дают то, что
@@ -199,7 +197,7 @@ function defaultTheme() {
 
 /* Число из settings.json: мусор, строки и NaN заменяем дефолтом и зажимаем
    в диапазон. Всё, что приходит с диска, проходит через это — иначе один
-   битый grain=Nan уносил в invalid всё, что на нём висит. */
+   битое числовое значение уносил в invalid всё, что на нём висит. */
 const numOr = (v, d, a, b) => (Number.isFinite(+v) ? clampNum(+v, a, b) : d);
 
 function cleanTheme(raw) {
@@ -211,9 +209,7 @@ function cleanTheme(raw) {
   t.bgColor     = hexOr(t.bgColor, THEME_DEFAULT.bgColor);
   t.bgColor2    = hexOr(t.bgColor2, THEME_DEFAULT.bgColor2);
   t.bgAngle     = Math.round(numOr(t.bgAngle, THEME_DEFAULT.bgAngle, 0, 360));
-  t.glowStrength = numOr(t.glowStrength, 1, 0, 2);
   t.radius       = Math.round(numOr(t.radius, THEME_DEFAULT.radius, 0, 28));
-  t.grain        = numOr(t.grain, THEME_DEFAULT.grain, 0, 0.25);
   t.vignette     = numOr(t.vignette, 1, 0, 1);
   /* пресет держим только если он ещё существует — иначе в сетке не горит
      ни одна карточка, а тема вполне может быть применена */
@@ -1302,33 +1298,41 @@ function extractAccentColor(url) {
    ДВУМЯ циклами, и порог был `if (!delta)` — только на точное равенство
    нулю, то есть при delta 0.4px анимация 420мс рисовала нулевое изменение. */
 const _smoothScrolls = new WeakMap();
-function smoothScroll(el, targetTop, duration) {
+function smoothScroll(el, targetTop, duration, onComplete) {
   stopSmoothScroll(el);
-  if (reducedMotionNow()) { el.scrollTop = targetTop; return; }
+  if (reducedMotionNow()) { el.scrollTop = targetTop; onComplete?.(); return; }
   const startTop = el.scrollTop;
   const delta    = targetTop - startTop;
-  if (Math.abs(delta) < 1) return;   /* субпиксель — анимировать нечего */
+  if (Math.abs(delta) < 1) { onComplete?.(); return; }
   const t0 = performance.now();
   const unsubscribe = subscribeReducedMotion(event => {
     if (!event.matches) return;
-    stopSmoothScroll(el);
     el.scrollTop = targetTop;
+    owner.onComplete = null;
+    stopSmoothScroll(el);
+    onComplete?.();
   });
-  const owner = { frame: 0, unsubscribe, cancelled: false };
+  const owner = { frame: 0, unsubscribe, cancelled: false, onComplete };
   const ease = x => x < 0.5 ? 2*x*x : 1 - Math.pow(-2*x + 2, 2)/2;
   const tick = now => {
     if (owner.cancelled) return;
     const p = Math.min((now - t0) / duration, 1);
     el.scrollTop = startTop + delta * ease(p);
     if (p < 1) owner.frame = requestAnimationFrame(tick);
-    else { unsubscribe(); _smoothScrolls.delete(el); }
+    else { unsubscribe(); _smoothScrolls.delete(el); onComplete?.(); }
   };
   owner.frame = requestAnimationFrame(tick);
   _smoothScrolls.set(el, owner);
 }
 function stopSmoothScroll(el) {
   const h = _smoothScrolls.get(el);
-  if (h) { h.cancelled = true; cancelAnimationFrame(h.frame); h.unsubscribe(); _smoothScrolls.delete(el); }
+  if (h) {
+    h.cancelled = true;
+    cancelAnimationFrame(h.frame);
+    h.unsubscribe();
+    _smoothScrolls.delete(el);
+    h.onComplete?.();
+  }
 }
 /* пользователь перехватывает автоскролл. вешается на сам скроллер */
 function bindScrollInterrupt(el) {
@@ -2073,10 +2077,8 @@ const STRINGS = {
     bg_sub_cover:'Фон едет за обложкой трека, плавно. Нужен живой акцент — включи его одной кнопкой',
     bg_cover_turn_on:'Взять акцент тоже от обложки',
     bg_sub_mica:'Материал окна рисует свой фон — свой поверх него класть нельзя',
-    card_look:'Свечение и форма',
-    glow_strength:'Сила свечений', glow_strength_sub:'Общий множитель для пятна за обложкой, линии у края окна, подсветки лайков и ореолов тумблеров',
+    card_look:'Скругление и виньетка', appearance_interface:'Интерфейс', appearance_accent:'Акцент',
     ui_radius:'Скругление', ui_radius_sub:'Углы карточек в настройках. Углы самого окна рисует система',
-    ui_grain:'Зерно', ui_grain_sub:'Мелкая шумность поверх фона. Убирает бандинг на градиентах',
     ui_vignette:'Виньетка', ui_vignette_sub:'Затемнение по краям окна',
     card_ui:'Элементы интерфейса', ui_hide_sub:'Спрятать лишнее. Всё возвращается здесь же — ничего не пропадает насовсем',
     ui_hide_source:'Переключатель источника', ui_hide_source_sub:'Иконка папки в шапке: локальные треки ↔ облако. Переключать можно и в «Аккаунте»',
@@ -2272,10 +2274,8 @@ const STRINGS = {
     bg_sub_cover:'The background follows the track artwork, smoothly. Needs a live accent — turn it on with one button',
     bg_cover_turn_on:'Take the accent from the cover too',
     bg_sub_mica:'Window material paints its own background — nothing can be layered on top',
-    card_look:'Glow and shape',
-    glow_strength:'Glow strength', glow_strength_sub:'One global multiplier for the artwork halo, the window top line, like-button flares and switch glows',
+    card_look:'Corners and vignette', appearance_interface:'Interface', appearance_accent:'Accent',
     ui_radius:'Corner radius', ui_radius_sub:'Corners of the settings cards. The window corners are drawn by the system',
-    ui_grain:'Grain', ui_grain_sub:'Fine noise over the background. Hides banding in gradients',
     ui_vignette:'Vignette', ui_vignette_sub:'Darkens the edges of the window',
     card_ui:'Interface elements', ui_hide_sub:'Hide the extra chrome. Everything comes back from here — nothing is lost for good',
     ui_hide_source:'Source switch', ui_hide_source_sub:'Folder icon in the titlebar: local tracks ↔ cloud. You can also switch it in Account',
@@ -2337,7 +2337,7 @@ function MarqueeText({ text, style, onClick, maxWidth }) {
       position:'relative',
       ...(maxWidth != null ? { width:'fit-content', maxWidth } : { flex:1, minWidth:0 }),
     }}>
-      <div ref={outerRef} onClick={onClick}
+      <div ref={outerRef} data-marquee-text="" onClick={onClick}
         onMouseEnter={() => { if (clipped) setShowTip(true); }}
         onMouseLeave={() => setShowTip(false)}
         style={{
@@ -3460,7 +3460,7 @@ function CoverTint() {
   }}/>;
 }
 
-function AlbumArt({ track, instant, onReady }) {
+function AlbumArt({ track, instant, onReady, radius = 16 }) {
   const url = track?.coverUrl || null;
   const [layers, setLayers] = useState(() => (url ? [{ url, id: 0 }] : []));
   const nextLayerId = useRef(1);
@@ -3563,7 +3563,7 @@ function AlbumArt({ track, instant, onReady }) {
 
   return (
     <div style={{
-      position:'relative', width:'100%', aspectRatio:'1', borderRadius:16, overflow:'hidden',
+      position:'relative', width:'100%', aspectRatio:'1', borderRadius:radius, overflow:'hidden',
       background:'#111116',
       display:'flex', alignItems:'center', justifyContent:'center',
     }}>
@@ -4836,10 +4836,91 @@ function SourceMark({ busy, dead }) {
    маленькую форму «артист / название», введённая пара закрепляется за треком
    (settings.lyricsQueries) и подставляется в поиск в следующий раз. сама панель
    по-прежнему закрывается Escape и кнопкой текста в управлении плеером. */
-function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRefresh, sources,
+function lyricOpeningWordRect(line) {
+  if (!line?.isConnected) return null;
+  const doc = line.ownerDocument;
+  const walker = doc.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const word = /\S+/.exec(node.data);
+    if (!word) continue;
+    const range = doc.createRange();
+    range.setStart(node, word.index);
+    range.setEnd(node, word.index + word[0].length);
+    return range.getClientRects()[0] || null;
+  }
+  return null;
+}
+
+function AudioMeter({ audioRef, playing, reduced, trackId }) {
+  const meterRef = useRef(null);
+  useEffect(() => {
+    const audio = audioRef.current;
+    const bars = meterRef.current?.querySelectorAll('i');
+    if (!playing || reduced || !audio || !bars) return;
+
+    let source, analyser, stream, captureContext;
+    let frame = 0;
+    const dispose = () => {
+      cancelAnimationFrame(frame);
+      if (source && analyser) {
+        try { source.disconnect(analyser); } catch { /* already disconnected */ }
+      }
+      stream?.getTracks().forEach(track => track.stop());
+      captureContext?.close().catch(() => {});
+      for (const bar of bars) bar.style.transform = '';
+    };
+
+    try {
+      // Analyser branch only. Never reroute the playing media element.
+      if (_afx?.decks.has(audio) && _afx.bus) {
+        source = _afx.bus.input;
+      } else {
+        if (!audio.captureStream) return;
+        stream = audio.captureStream();
+        if (!stream.getAudioTracks().length) { dispose(); return; }
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        captureContext = new AudioCtx();
+        source = captureContext.createMediaStreamSource(stream);
+        captureContext.resume().catch(() => {});
+      }
+      analyser = source.context.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.68;
+      source.connect(analyser);
+    } catch {
+      dispose();
+      return;
+    }
+
+    const bins = new Uint8Array(analyser.frequencyBinCount);
+    const edges = [65, 150, 330, 720, 1600, 4500]
+      .map(hz => Math.max(1, Math.round(hz * analyser.fftSize / source.context.sampleRate)));
+    let last = -Infinity;
+    const draw = now => {
+      if (now - last >= 32) {
+        last = now;
+        analyser.getByteFrequencyData(bins);
+        for (let i = 0; i < bars.length; i++) {
+          let peak = 0;
+          for (let j = edges[i]; j < edges[i + 1]; j++) peak = Math.max(peak, bins[j] || 0);
+          bars[i].style.transform = `scaleY(${0.12 + 0.88 * peak / 255})`;
+        }
+      }
+      frame = requestAnimationFrame(draw);
+    };
+    frame = requestAnimationFrame(draw);
+    return dispose;
+  }, [audioRef, playing, reduced, trackId]);
+
+  return <span ref={meterRef} className="lyrics-search-meter" aria-hidden="true">
+    {[0, 1, 2, 3, 4].map(i => <i key={i}/>)}
+  </span>;
+}
+
+function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRefresh, sources, audioRef,
                        query, pinned, onFindLyrics, onUnpin, onPickSource, track,
                        coverTrack: coverTrackProp, isPlaying, coverInstant, coverVisible, onCoverReady, artEntranceRef, entryHero, exitHero,
-                       partyLayoutOpen, partyControlsAligned,
+                       partyLayoutOpen, partyControlsAligned, playerInfoRef,
                        onEntryCoverFlightStart, onEntryCoverFlightComplete, onExitCoverFlightComplete }) {
   const t = useLang();
   const reduced = useReducedMotion();
@@ -4847,7 +4928,6 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   const lineRefs = useRef([]);
   const userScrollRef = useRef(0);
   const autoUntilRef  = useRef(0);
-  const wasOpenRef    = useRef(false);
   /* форма ручного поиска (карандаш). поля живут отдельно от `query`: пока
      идёт поиск по прошлой паре, набранное в них не должно меняться под рукой */
   const [editOpen, setEditOpen] = useState(false);
@@ -4857,7 +4937,6 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   const [sharedCoverMotion, setSharedCoverMotion] = useState(null);
   const [fullscreenReturning, setFullscreenReturning] = useState(false);
   const [fullscreenFlightReady, setFullscreenFlightReady] = useState(false);
-  const fullscreenFlightStartedAtRef = useRef(0);
   const sharedCoverRef = useRef(null);
   const [sharedCoverRect, setSharedCoverRect] = useState(null);
   const [readyCoverKey, setReadyCoverKey] = useState(null);
@@ -4867,7 +4946,14 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   const lyricsTrackIdRef = useRef(track?.id);
   lyricsTrackIdRef.current = track?.id;
   const fullscreenArtRef = useRef(null);
-  const fullLineRefs = useRef([]);
+  const fullscreenMetaRef = useRef(null);
+  const fullscreenMetaFadeRef = useRef(null);
+  const fullscreenLinesSlotRef = useRef(null);
+  const compactLinesSlotRef = useRef(null);
+  const lyricsLayoutRef = useRef(null);
+  const lyricsFlightRef = useRef(null);
+  const activeLyricsLineRef = useRef(activeLine);
+  activeLyricsLineRef.current = activeLine;
   const setSharedCoverNode = useCallback(node => {
     sharedCoverRef.current = node;
     if (artEntranceRef) artEntranceRef.current = node;
@@ -4914,7 +5000,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     if (!fullScreen || fullscreenClosingRef.current) return;
     fullscreenClosingRef.current = true;
     fullscreenTransitionRef.current = true;
-    const source = fullscreenArtRef.current?.getBoundingClientRect();
+    const source = sharedCoverRef.current?.getBoundingClientRect() || fullscreenArtRef.current?.getBoundingClientRect();
     const target = document.getElementById('player-album-art')?.getBoundingClientRect();
     const trackId = track?.id;
     if (lyricsTrackIdRef.current !== trackId) {
@@ -4926,9 +5012,18 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       return;
     }
     if (!reduced && source && target) {
+      const meta = fullscreenMetaRef.current;
+      const info = playerInfoRef.current;
+      const metaRect = meta?.getBoundingClientRect();
+      const infoRect = info?.getBoundingClientRect();
+      const metaReturn = metaRect?.width && infoRect?.width ? {
+        dx:metaRect.left + metaRect.width / 2 - infoRect.left - infoRect.width / 2,
+        dy:metaRect.top - infoRect.top,
+      } : null;
       setFullscreenFlightStart({
         direction:'out', trackId,
         rect:{left:source.left, top:source.top, width:source.width, height:source.height},
+        metaReturn,
       });
     } else {
       setSharedCoverMotion(null);
@@ -4972,7 +5067,6 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       fullscreenClosingRef.current = false;
       return;
     }
-    fullscreenFlightStartedAtRef.current = 0;
     setSharedCoverMotion({
       kind:'fullscreen',
       direction:fullscreenFlightStart.direction,
@@ -4980,26 +5074,18 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       targetRect,
     });
     setFullscreenFlightReady(true);
-    let raf = 0;
-    const tick = now => {
-      const flightStartedAt = fullscreenFlightStartedAtRef.current;
-      if (flightStartedAt && now - flightStartedAt >= HERO_DUR_MS) {
-        setSharedCoverMotion(null);
-        setFullscreenFlightStart(null);
-        setFullscreenReturning(false);
-        fullscreenTransitionRef.current = false;
-        fullscreenClosingRef.current = false;
-        return;
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
   }, [fullscreenFlightStart, track?.id, reduced]);
   useLayoutEffect(() => {
     if (!sharedCoverMotion || sharedCoverMotion.kind === 'player-entry' || sharedCoverMotion.kind === 'player-exit') return;
     const el = sharedCoverRef.current;
-    if (!el) return;
+    const complete = () => {
+      setSharedCoverMotion(current => current === sharedCoverMotion ? null : current);
+      setFullscreenFlightStart(null);
+      setFullscreenReturning(false);
+      fullscreenTransitionRef.current = false;
+      fullscreenClosingRef.current = false;
+    };
+    if (!el?.animate) { complete(); return; }
     const { startRect, targetRect } = sharedCoverMotion;
     const dx = startRect.left - targetRect.left;
     const dy = startRect.top - targetRect.top;
@@ -5008,8 +5094,8 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       { transform:`translate3d(${dx}px, ${dy}px, 0) scale(${scale})` },
       { transform:'translate3d(0, 0, 0) scale(1)' },
     ], { duration:HERO_DUR_MS, easing:HERO_EASE, fill:'forwards' });
-    fullscreenFlightStartedAtRef.current = performance.now();
-    return () => animation.cancel();
+    animation.onfinish = complete;
+    return () => { animation.onfinish = null; animation.cancel(); };
   }, [sharedCoverMotion]);
   useLayoutEffect(() => {
     if (!entryHero || !inPlayer || fullScreen || fullscreenFlightStart
@@ -5060,7 +5146,9 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       return;
     }
     setSharedCoverRect({ left:targetRect.left, top:targetRect.top, size:targetRect.size });
-    setSharedCoverMotion({ kind:'player-exit', startRect, targetRect });
+    setSharedCoverMotion({ kind:'player-exit', startRect, targetRect,
+      scrollAnchor:exitHero.scrollAnchor,
+      targetRadius:16 * targetRect.size / startRect.width });
   }, [exitHero, fullscreenFlightStart, coverTrack?.id, reduced, onExitCoverFlightComplete]);
   useLayoutEffect(() => {
     if (entryHero || sharedCoverMotion?.kind !== 'player-entry') return;
@@ -5078,11 +5166,40 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       { transform:`translate3d(${dx}px, ${dy}px, 0) scale(${scale})` },
       { transform:'translate3d(0, 0, 0) scale(1)' },
     ], { duration:HERO_DUR_MS, easing:HERO_EASE, fill:'forwards' });
+    const anchor = sharedCoverMotion.scrollAnchor;
+    const originalTranslate = el.style.translate;
+    let scrollFrame = 0;
+    const followCard = progress => {
+      if (!anchor) return;
+      const offset = (anchor.top - anchor.element.scrollTop) * progress;
+      el.style.translate = offset ? `0px ${offset}px` : originalTranslate;
+    };
+    const tick = () => {
+      scrollFrame = 0;
+      followCard(animation.effect.getComputedTiming().progress ?? 0);
+      if (anchor.element.scrollTop !== anchor.top) scrollFrame = requestAnimationFrame(tick);
+    };
+    const startFollowing = () => {
+      if (!scrollFrame) scrollFrame = requestAnimationFrame(tick);
+    };
+    if (anchor) {
+      anchor.element.addEventListener('scroll', startFollowing, { passive:true });
+      if (anchor.element.scrollTop !== anchor.top) startFollowing();
+    }
     animation.onfinish = () => {
+      anchor?.element.removeEventListener('scroll', startFollowing);
+      cancelAnimationFrame(scrollFrame);
+      followCard(1);
       setSharedCoverMotion(current => current === sharedCoverMotion ? null : current);
       onExitCoverFlightComplete?.();
     };
-    return () => { animation.onfinish = null; animation.cancel(); };
+    return () => {
+      anchor?.element.removeEventListener('scroll', startFollowing);
+      cancelAnimationFrame(scrollFrame);
+      animation.onfinish = null;
+      animation.cancel();
+      if (anchor) el.style.translate = originalTranslate;
+    };
   }, [sharedCoverMotion, onExitCoverFlightComplete]);
   useLayoutEffect(() => {
     const measure = () => {
@@ -5123,41 +5240,62 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     window.addEventListener('keydown', closeOnEscape, true);
     return () => window.removeEventListener('keydown', closeOnEscape, true);
   }, [fullScreen, requestFullscreenClose]);
-  useEffect(() => {
-    if (activeLine < 0) return;
-    const el = fullLineRefs.current[activeLine];
-    const list = el?.parentElement;
-    if (el && list) {
-      const target = el.offsetTop - list.clientHeight / 2 + el.offsetHeight / 2;
-      list.scrollTo({ top:Math.max(0, target), behavior:reduced ? 'auto' : 'smooth' });
-    }
-  }, [activeLine, fullScreen, reduced]);
+  useLayoutEffect(() => {
+    if (!fullScreen) return;
+    fullscreenMetaFadeRef.current?.cancel();
+    fullscreenMetaFadeRef.current = null;
+  }, [fullScreen]);
+  useLayoutEffect(() => {
+    const source = fullscreenFlightStart?.metaSource;
+    const meta = fullscreenMetaRef.current;
+    if (!source || !meta?.animate || reduced) return;
+    const target = meta.getBoundingClientRect();
+    if (!target.width || !target.height) return;
+    const dx = source.centerX - (target.left + target.width / 2);
+    const dy = source.top - target.top;
+    const animation = meta.animate([
+      { transform:`translate3d(${dx}px, ${dy}px, 0)` },
+      { transform:'translate3d(0, 0, 0)' },
+    ], { duration:HERO_DUR_MS, easing:HERO_EASE });
+    return () => animation.cancel();
+  }, [fullscreenFlightStart, reduced]);
+  useLayoutEffect(() => {
+    const destination = fullscreenFlightStart?.metaReturn;
+    const meta = fullscreenMetaRef.current;
+    const info = playerInfoRef.current;
+    if (!destination || !meta?.animate || !info?.animate || reduced) return;
+    // Keep the outgoing labels visible while the player fades back in.
+    fullscreenMetaFadeRef.current?.cancel();
+    fullscreenMetaFadeRef.current = meta.animate([
+      { opacity:getComputedStyle(meta).opacity },
+      { opacity:0 },
+    ], { duration:120, easing:'ease-in', fill:'forwards' });
+    const flight = info.animate([
+      { transform:`translate3d(${destination.dx}px, ${destination.dy}px, 0)` },
+      { transform:'translate3d(0, 0, 0)' },
+    ], { duration:HERO_DUR_MS, easing:HERO_EASE });
+    return () => flight.cancel();
+  }, [fullscreenFlightStart, reduced]);
+  useLayoutEffect(() => {
+    if (!fullScreen || reduced) return;
+    const source = playerInfoRef.current?.querySelector('[data-marquee-text]');
+    const title = fullscreenMetaRef.current?.querySelector('[data-marquee-text]');
+    if (!source || !title?.animate || source.scrollWidth <= source.clientWidth + 1) return;
+    const from = source.clientWidth;
+    const to = title.clientWidth;
+    if (!from || to <= from + 1) return;
+    const reveal = title.animate([
+      { maxWidth:`${from}px` },
+      { maxWidth:`${to}px` },
+    ], { delay:HERO_DUR_MS, duration:180, easing:'ease-out', fill:'backwards' });
+    return () => reveal.cancel();
+  }, [fullScreen, reduced, coverTrack?.title, playerInfoRef]);
   /* Тексты, между которыми можно переключаться: источники, которые реально
      дали строки. Обычно один, но иногда оба — тогда плашки в шапке становятся
      переключателем. Set, потому что проверка идёт у каждого чипа на каждом
      рендере панели. */
   const altIds = new Set((state?.status === 'ready' ? state.alts || [] : [])
     .map(a => a.source).filter(Boolean));
-
-  /* Ключ списка строк — он же триггер волны появления. Список пересоздаётся
-     (и значит заново играет css-анимацию lyricLineIn), когда меняется сам текст
-     или панель открывают заново.
-
-     Почему не флаг «показано» + transition, как было: у волны задержка по
-     строкам до полусекунды, и гашение применилось бы только на следующем
-     кадре — дальние строки не успевали даже начать гаснуть, и «вторая волна»
-     выглядела бы как полное отсутствие анимации. Пересоздание узлов решает это
-     без гонки: свежий узел всегда играет свою анимацию с нуля.
-
-     Считается во время рендера, а не в эффекте: эффект отрабатывает уже после
-     кадра, и новый текст успевал бы мелькнуть без анимации. Сравниваем ССЫЛКУ
-     на массив строк — App отдаёт новый массив только когда текст правда другой
-     (поздний ответ второго источника alts меняет, а lines — нет). */
-  const waveRef  = useRef(0);
-  const waveSeen = useRef({ lines: null, open: false });
-  if (open && (!waveSeen.current.open || lines !== waveSeen.current.lines)) waveRef.current++;
-  waveSeen.current = { lines, open };
-  const waveKey = waveRef.current;
 
   /* панель закрыли — форма ручного поиска уезжает вместе с ней, чтобы при
      следующем открытии не всплывала поверх нового трека */
@@ -5176,58 +5314,168 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
      ResizeObserver, две проверки в обработчике скролла), убрано вместе с
      ними — иначе оно пересчитывалось на каждом кадре скролла впустую. */
 
-  const scrollToActive = useCallback((smooth) => {
-    const el   = bodyRef.current;
+  const lyricsVisible = !!lines && (fullScreen || inPlayer && open && !editOpen);
+  useLayoutEffect(() => {
+    const list = bodyRef.current;
+    const compactSlot = compactLinesSlotRef.current;
+    const slot = fullScreen ? fullscreenLinesSlotRef.current : compactSlot;
+    if (!list || !slot) return;
+    let edgeReveal;
+    const applyLayout = rect => {
+      list.classList.toggle('is-fullscreen', fullScreen);
+      Object.assign(list.style, {
+        left: rect.left + 'px', top: rect.top + 'px',
+        width: rect.width + 'px', height: rect.height + 'px',
+        zIndex: fullScreen ? '10000' : '8',
+      });
+      if (fullScreen && compactSlot?.clientWidth) {
+        const compactStyle = getComputedStyle(compactSlot);
+        const compactFont = parseFloat(compactStyle.fontSize);
+        const compactTextWidth = compactSlot.getBoundingClientRect().width
+          - parseFloat(compactStyle.paddingLeft) - parseFloat(compactStyle.paddingRight) - 10;
+        const fullStyle = getComputedStyle(list);
+        const fullTextWidth = rect.width - parseFloat(fullStyle.paddingLeft) - parseFloat(fullStyle.paddingRight);
+        if (compactFont > 0 && compactTextWidth > 0 && fullTextWidth > 0) {
+          const measure = compactTextWidth / compactFont;
+          list.style.setProperty('--lyrics-wrap-width', measure + 'em');
+          list.style.setProperty('--lyrics-fit-font', fullTextWidth / measure + 'px');
+        }
+      }
+      lyricsLayoutRef.current = { list, fullScreen, visible:lyricsVisible };
+    };
+    const rect = slot.getBoundingClientRect();
+    const previous = lyricsLayoutRef.current?.list === list ? lyricsLayoutRef.current : null;
+    const activeIndex = activeLyricsLineRef.current;
+    const line = lineRefs.current[activeIndex] || lineRefs.current.find(Boolean);
+    const switching = previous && previous.fullScreen !== fullScreen;
+    const openingCompact = lyricsVisible && !fullScreen && !previous?.visible && !switching;
+    if (switching) stopSmoothScroll(list);
+    if (switching || !previous || openingCompact) autoUntilRef.current = Date.now() + HERO_DUR_MS + 120;
+    const previousScroll = list.scrollTop;
+    const sourceWord = switching && lyricOpeningWordRect(line);
+    const sourceFont = switching && line ? parseFloat(getComputedStyle(line).fontSize) : 0;
+    const source = list.getBoundingClientRect();
+    const sourceFeather = switching ? parseFloat(getComputedStyle(list).getPropertyValue('--lyrics-edge-feather')) : 0;
+
+    applyLayout(rect);
+    if (!previous || switching || openingCompact) {
+      if (line) list.scrollTop = line.offsetTop + line.offsetHeight / 2 - list.clientHeight / 2;
+    }
+    const openingFade = openingCompact && list.animate?.(
+      [{ opacity:0 }, { opacity:1 }],
+      { duration:reduced ? 120 : 220, easing:'ease-out', fill:'backwards' },
+    );
+
+    if (switching && !reduced && list.animate && source.width && rect.width) {
+      const targetScroll = list.scrollTop;
+      const target = lyricOpeningWordRect(line);
+      const targetFont = line ? parseFloat(getComputedStyle(line).fontSize) : 0;
+      const useWord = sourceWord && target && sourceFont && targetFont &&
+        sourceWord.bottom > source.top && sourceWord.top < source.bottom;
+      const scale = sourceFont && targetFont ? targetFont / sourceFont : 1;
+      const x = useWord ? target.left - source.left - (sourceWord.left - source.left) * scale : rect.left - source.left;
+      const y = useWord ? target.top - source.top - (sourceWord.top - source.top) * scale : rect.top - source.top;
+      const flightTop = source.top + y;
+      const flightBottom = flightTop + source.height * scale;
+      const overlapTop = Math.max(flightTop, rect.top);
+      const overlapBottom = Math.min(flightBottom, rect.bottom);
+      const hasOverlap = overlapBottom > overlapTop;
+      const targetFeather = parseFloat(getComputedStyle(list).getPropertyValue('--lyrics-edge-feather'));
+      const edgeInsets = (top, bottom) => ({
+        '--lyrics-edge-top':top + 'px',
+        '--lyrics-edge-bottom':bottom + 'px',
+      });
+      const openEdges = edgeInsets(0, 0);
+      const arrivalEdges = hasOverlap
+        ? edgeInsets((overlapTop - flightTop) / scale, (flightBottom - overlapBottom) / scale)
+        : openEdges;
+
+      // Keep the source wrapping and move the soft mask edges during flight.
+      list.classList.toggle('is-fullscreen', previous.fullScreen);
+      Object.assign(list.style, {
+        left: source.left + 'px', top: source.top + 'px',
+        width: source.width + 'px', height: source.height + 'px', zIndex:'10000',
+      });
+      list.scrollTop = previousScroll;
+      const flight = list.animate([
+        { transform:'none', ...openEdges, '--lyrics-edge-feather':sourceFeather + 'px' },
+        { transform:'translate3d(' + x + 'px,' + y + 'px,0) scale(' + scale + ')',
+          ...arrivalEdges, '--lyrics-edge-feather':targetFeather / scale + 'px' },
+      ], { duration:HERO_DUR_MS, easing:HERO_EASE, fill:'forwards' });
+      lyricsFlightRef.current = flight;
+      flight.onfinish = () => {
+        flight.onfinish = null;
+        flight.cancel();
+        lyricsFlightRef.current = null;
+        applyLayout(slot.getBoundingClientRect());
+        list.scrollTop = targetScroll;
+        if (line?.isConnected && useWord) {
+          const landed = lyricOpeningWordRect(line);
+          if (landed) list.scrollTop += landed.top - target.top;
+        } else if (line?.isConnected) {
+          list.scrollTop = line.offsetTop + line.offsetHeight / 2 - list.clientHeight / 2;
+        }
+        if (hasOverlap) {
+          const top = overlapTop - rect.top;
+          const bottom = rect.bottom - overlapBottom;
+          if (top > 1 || bottom > 1) {
+            edgeReveal = list.animate([
+              edgeInsets(top, bottom),
+              openEdges,
+            ], { duration:180, easing:'cubic-bezier(0.23,1,0.32,1)' });
+          }
+        }
+        const current = lineRefs.current[activeLyricsLineRef.current];
+        if (current && current !== line) {
+          autoUntilRef.current = Date.now() + 700;
+          smoothScroll(list, Math.max(0, current.offsetTop + current.offsetHeight / 2 - list.clientHeight / 2), 520);
+        }
+      };
+    }
+
+    const sync = () => {
+      if (!lyricsFlightRef.current) applyLayout(slot.getBoundingClientRect());
+    };
+    const observer = new ResizeObserver(sync);
+    observer.observe(slot);
+    if (compactSlot && compactSlot !== slot) observer.observe(compactSlot);
+    const onSlotTransition = event => {
+      if (event.propertyName === 'transform' && event.target.contains(slot)) sync();
+    };
+    window.addEventListener('transitionend', onSlotTransition, true);
+    window.addEventListener('resize', sync);
+    return () => {
+      observer.disconnect();
+      openingFade?.cancel?.();
+      edgeReveal?.cancel();
+      window.removeEventListener('transitionend', onSlotTransition, true);
+      window.removeEventListener('resize', sync);
+      const flight = lyricsFlightRef.current;
+      if (flight) {
+        flight.onfinish = null;
+        flight.cancel();
+        lyricsFlightRef.current = null;
+      }
+    };
+  }, [fullScreen, reduced, lyricsVisible]);
+
+  useEffect(() => {
+    const list = bodyRef.current;
+    if (!lyricsVisible || !list) return;
+    const unbind = bindScrollInterrupt(list);
+    return () => { unbind(); stopSmoothScroll(list); };
+  }, [lyricsVisible]);
+
+  useEffect(() => {
+    const list = bodyRef.current;
     const line = lineRefs.current[activeLine];
-    if (!el || !line) return;
-    const top = Math.max(0, line.offsetTop - el.clientHeight / 2 + line.offsetHeight / 2);
-    autoUntilRef.current = Date.now() + (smooth ? 700 : 120);
-    if (smooth) smoothScroll(el, top, 480);
-    else el.scrollTop = top;
-  }, [activeLine]);
-
-  /* новый текст — с начала: другой трек, повторный поиск или другой источник
-     из переключателя. Иначе панель открывалась бы с середины прошлого текста,
-     а у другого источника там вообще другие строки. Заодно сразу встаём на
-     активную строку, если она уже известна: эффект подсветки ниже поедет
-     только когда строка СМЕНИТСЯ, а это может быть через полминуты.
-     `lines` — единственная зависимость намеренно: массив новый ровно тогда,
-     когда текст другой (кеш делится одним и тем же объектом между открытиями,
-     поэтому переоткрытие панели скролл не сбивает). */
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    el.scrollTop = 0;
-    if (activeLine > 0) scrollToActive(false);
-    /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [lines]);
-
-  /* Колесо прерывает автопрокрутку. Раньше этот эффект заодно пересчитывал
-     края для затенения; после её удаления от него осталась ровно эта одна
-     задача, и подписка живёт на scroll-interrupt, а не на каждый кадр. */
-  useEffect(() => {
-    if (!open) return;
-    const el = bodyRef.current;
-    if (!el) return;
-    return bindScrollInterrupt(el);
-  }, [open]);
-
-  /* при открытии — сразу к активной строке. плавно прокручивать через весь
-     текст от начала смысла нет, это зрелищно и долго */
-  useEffect(() => {
-    if (!open) { wasOpenRef.current = false; return; }
-    if (wasOpenRef.current) return;
-    wasOpenRef.current = true;
-    if (activeLine >= 0) scrollToActive(false);
-  }, [open, activeLine, scrollToActive]);
-
-  /* дальше подсветка ведёт сама. 4 секунды после ручного скролла панель
-     не дёргается — иначе она вырывает текст из-под читателя */
-  useEffect(() => {
-    if (!open || !wasOpenRef.current || activeLine < 0) return;
+    if (!lyricsVisible || !list || lyricsFlightRef.current) return;
     if (Date.now() - userScrollRef.current < 4000) return;
-    scrollToActive(true);
-  }, [activeLine, open, scrollToActive]);
+    autoUntilRef.current = Date.now() + 700;
+    const top = Math.max(0, line ? line.offsetTop + line.offsetHeight / 2 - list.clientHeight / 2 : 0);
+    if (reduced) list.scrollTop = top;
+    else smoothScroll(list, top, 520);
+  }, [activeLine, lyricsVisible, reduced, lines]);
 
   const onBodyScroll = useCallback(() => {
     if (Date.now() < autoUntilRef.current) return;  /* это наша автопрокрутка */
@@ -5294,11 +5542,16 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     fullscreenTransitionRef.current = true;
     fullscreenTrackIdRef.current = track?.id;
     const source = document.getElementById('player-album-art')?.getBoundingClientRect();
+    const infoRect = playerInfoRef.current?.getBoundingClientRect();
+    const metaSource = infoRect?.width && infoRect.height
+      ? { centerX:infoRect.left + infoRect.width / 2, top:infoRect.top }
+      : null;
     const trackId = track?.id;
     setFullscreenFlightReady(false);
     setFullscreenFlightStart(!reduced && source ? {
       direction:'in', trackId,
       rect:{ left:source.left, top:source.top, width:source.width, height:source.height },
+      metaSource,
     } : null);
     setFullscreenSurface(true);
     setFullScreen(true);
@@ -5317,10 +5570,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       /* и всё равно visibility: закрытая панель невидима, но её кнопки внутри
          ставят pointerEvents:auto и продолжали ловить клики по списку рядом */
       visibility: inPlayer && open ? 'visible' : 'hidden',
-      transform: open ? 'translateX(0)' : 'translateX(14px)',
-      transition: open
-        ? 'opacity 0.3s ease 0.08s, transform 0.44s cubic-bezier(0.22,1,0.36,1) 0.08s'
-        : 'opacity 0.16s ease, transform 0.16s ease',
+      transition: open ? 'opacity 0.22s ease-out' : 'opacity 0.16s ease',
     }}>
       {/* верхняя полоса: чипы источников + выключалка того же размера.
           большой плашки «ТЕКСТ ПЕСНИ» с иконкой больше нет — по просьбе
@@ -5455,36 +5705,48 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
         {fullScreen && synced && lines && <motion.div key="fullscreen-lyrics" className="lyrics-fullscreen" role="dialog" aria-modal="true"
           initial={{opacity:0}}
           animate={{opacity:fullscreenFlightStart?.direction === 'in' && !fullscreenFlightReady ? 0 : 1}}
-          exit={{opacity:0}}
-          transition={{duration:reduced ? 0.12 : fullscreenReturning ? HERO_FADE_MS / 1000 : 0.26, ease:[0.23,1,0.32,1]}}>
-          <button className="lyrics-fullscreen-close" onClick={requestFullscreenClose} aria-label={t('lyrics_close')} title={`${t('lyrics_close')} (Esc)`}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="m18 6-12 12M6 6l12 12"/></svg>
+          exit={{opacity:0, transition:{duration:reduced ? 0.12 : (HERO_DUR_MS + 40) / 1000, ease:'easeIn'}}}
+          transition={{duration:reduced ? 0.12 : 0.3, ease:[0.23,1,0.32,1]}}>
+          <button type="button" className="lyrics-fullscreen-back" onClick={requestFullscreenClose} aria-label={t('lyrics_close')} title={`${t('back')} (Esc)`}>
+            <img src="../assets/back.png" alt="" draggable="false"/>
           </button>
           <div className="lyrics-fullscreen-content">
             <div className="lyrics-fullscreen-artwork">
-              <div className="lyrics-fullscreen-meta" style={{
+              <div ref={fullscreenMetaRef} className="lyrics-fullscreen-meta" style={{
                 opacity:fullscreenReturning ? 0 : 1,
                 transform:fullscreenReturning && !reduced ? 'translateY(-5px)' : 'translateY(0)',
                 transition:reduced ? 'none' : 'opacity 180ms ease, transform 180ms cubic-bezier(0.23,1,0.32,1)',
               }}>
-                <div className="lyrics-fullscreen-track">{track?.title || ''}</div>
-                <div className="lyrics-fullscreen-artist">{track?.artist || ''}</div>
+                <div className="lyrics-fullscreen-artist">{formatArtistDisplay(coverTrack?.artist)}</div>
+                <div className="lyrics-fullscreen-track">
+                  <MarqueeText
+                    text={coverTrack?.title || ''}
+                    style={{fontSize:'clamp(18px, 2.6vw, 28px)', fontWeight:600, letterSpacing:'-0.022em', marginInline:'auto'}}
+                    maxWidth="100%"
+                  />
+                </div>
               </div>
               <div ref={fullscreenArtRef} className="lyrics-fullscreen-art" aria-hidden="true"/>
             </div>
-            <motion.div className="lyrics-fullscreen-lines" key={waveKey}
-              initial={{opacity:0, y:reduced ? 0 : 8}}
-              animate={{opacity:fullscreenReturning ? 0 : 1, y:fullscreenReturning && !reduced ? 6 : 0}}
-              transition={{duration:reduced ? 0.12 : 0.32, delay:reduced ? 0 : 0.12, ease:[0.23,1,0.32,1]}}>
-              {lines.map((line, i) => line.section ? null : <div key={i} ref={el => { fullLineRefs.current[i] = el; }}
-                onClick={() => line.t != null && onSeek(line.t)}
-                className={`lyrics-fullscreen-line${i === activeLine ? ' is-active' : Math.abs(i-activeLine) === 1 ? ' is-near' : ''}`}
-                style={{cursor:line.t != null ? 'pointer' : 'default'}}>{line.text}</div>)}
-            </motion.div>
+            <div ref={fullscreenLinesSlotRef} className="lyrics-fullscreen-lines-slot"/>
           </div>
         </motion.div>}
       </AnimatePresence>, document.getElementById('app-shell') || document.body)}
-      {sharedCoverRect && createPortal(<div ref={setSharedCoverNode} data-party-shared-art="true" aria-hidden="true" style={{
+      {lines && createPortal(
+        <div ref={bodyRef} className="shared-lyrics-lines scroll-none" onScroll={onBodyScroll}
+          style={{ visibility:lyricsVisible ? 'visible' : 'hidden' }}>
+          {lines.map((line, i) => line.section ? null : (
+            <div key={i} ref={el => { lineRefs.current[i] = el; }}
+              className={'lyrics-fullscreen-line' + (i === activeLine ? ' is-active' : activeLine >= 0 && i === activeLine - 1 ? ' is-previous' : activeLine >= 0 && i === activeLine + 1 ? ' is-next' : '')}
+              aria-current={i === activeLine ? 'true' : undefined}
+              title={line.t != null ? t('lyrics_tap_line') : undefined}
+              style={{cursor:line.t != null ? 'pointer' : 'default'}}
+              onClick={() => line.t != null && onSeek(line.t)}>{line.text}</div>
+          ))}
+        </div>, document.body)}
+      {sharedCoverRect && createPortal(<div ref={setSharedCoverNode}
+        data-party-shared-art={!fullScreen && !fullscreenFlightStart && !sharedCoverMotion ? 'true' : undefined}
+        aria-hidden="true" style={{
         position:'fixed', left:sharedCoverMotion?.targetRect.left ?? sharedCoverRect.left,
         top:sharedCoverMotion?.targetRect.top ?? sharedCoverRect.top,
         width:sharedCoverMotion?.targetRect.size ?? sharedCoverRect.size,
@@ -5496,11 +5758,12 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
         zIndex:fullScreen || fullscreenFlightStart ? 10001 : sharedCoverMotion?.kind === 'player-exit' ? 960 : 2,
         opacity:coverVisible || sharedCoverMotion?.kind === 'player-entry' || sharedCoverMotion?.kind === 'player-exit' ? 1 : 0,
         pointerEvents:'none',
-        overflow:'hidden', borderRadius:16,
+        overflow:'hidden', borderRadius:sharedCoverMotion?.kind === 'player-exit' ? sharedCoverMotion.targetRadius : 16,
         willChange:'transform',
-        boxShadow:fullScreen ? '0 24px 70px rgba(0,0,0,0.3)' : 'none',
       }}>
-        <AlbumArt track={coverTrack} isPlaying={isPlaying} instant={coverInstant} onReady={handleSharedCoverReady}/>
+        <AlbumArt track={coverTrack} isPlaying={isPlaying} instant={coverInstant}
+          radius={sharedCoverMotion?.kind === 'player-exit' ? sharedCoverMotion.targetRadius : 16}
+          onReady={handleSharedCoverReady}/>
       </div>, document.body)}
 
       {/* форма ручного поиска. всплывает под шапкой, а не занимает место в
@@ -5553,11 +5816,11 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
 
       {/* обёртка ради слоёв градиента по краям, скроллер внутри без маски */}
       <div style={{position:'relative', flex:1, minHeight:0, display:'flex', flexDirection:'column'}}>
-      <div className="scroll-none" ref={bodyRef} onScroll={onBodyScroll}
+      <div className="scroll-none" ref={compactLinesSlotRef}
         style={{
           flex:1, minHeight:0, overflowY:'auto',
           display:'flex', flexDirection:'column',
-          padding:'0 14px 10px', marginTop:12,
+          padding:'0 14px 10px', marginTop:12, fontSize:'var(--fs-md)',
         }}>
         {/* Раньше здесь была строка «без таймкодов — подсветки не будет».
             Убрана: она съедала 12px сверху текста на каждом треке без
@@ -5574,79 +5837,13 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
             flex:1, display:'flex', flexDirection:'column',
             alignItems:'center', justifyContent:'center', gap:16, padding:'0 20px 60px',
           }}>
-            <div className="st-eq" style={{display:'flex', alignItems:'flex-end', gap:4, height:26}}>
-              {[0, 1, 2, 3, 4].map(i => (
-                <i key={i} style={{
-                  width:3, background:'var(--accent)', opacity:0.55,
-                  /* инлайн перекрывает nth-child задержки из CSS — у нас 5
-                     полос вместо трёх, иначе последние две шевелились в такт */
-                  animationDelay: (i * 0.11) + 's',
-                }}/>
-              ))}
-            </div>
+            <AudioMeter audioRef={audioRef} playing={open && inPlayer && isPlaying} reduced={reduced} trackId={track?.id}/>
             <div style={{
               fontSize:'var(--fs-xs)', color:'rgba(255,255,255,0.26)',
               textAlign:'center', lineHeight:1.5,
             }}>{t('lyrics_loading')}</div>
           </div>
         )}
-
-        {/* подписи вида [Куплет] / [Chorus] / [Bridge] НЕ рисуем — по просьбе
-            текст должен идти сплошным. сами строки в данных остаются (индексы
-            `lines` не сдвигаются, автоскролл и подсветка считают по ним),
-            пропускаем их только на отрисовке */}
-        {lines && lines.map((l, i) => {
-          if (l.section) return null;
-          /* Тихая акцентная вуаль помогает найти текущую строку, не превращая
-             её в отдельную кнопку. Соседние строки остаются резкими: контраст
-             и вертикальный ритм дают глубину без размытия текста. */
-          const on = i === activeLine;
-          const d  = activeLine >= 0 ? Math.abs(i - activeLine) : 99;
-          return (
-            <div key={waveKey + ':' + i} className="lyric-highlight" ref={el => { if (el) lineRefs.current[i] = el; }}
-              onClick={() => l.t != null && onSeek(l.t)}
-              title={l.t != null ? t('lyrics_tap_line') : undefined}
-              style={{
-                fontSize:'var(--fs-md)', lineHeight:1.58,
-                /* правый отступ — запас под сдвиг и масштаб: без него
-                   выехавшая строка вылезает за колонку и появляется
-                   горизонтальный скролл */
-                padding:'4px 10px 4px 0', boxSizing:'border-box',
-                transform: on ? 'translateX(3px) scale(1.015)' : 'none',
-                transformOrigin:'left center',
-                color: on ? 'color-mix(in srgb, var(--text) 94%, var(--accent))'
-                     : d === 1 ? 'rgba(255,255,255,0.48)'
-                     : synced ? 'rgba(255,255,255,0.27)' : 'rgba(255,255,255,0.36)',
-                fontWeight: on ? 650 : 500,
-                /* конечное значение обязано совпадать с кадром `to` у
-                   lyricLit, иначе в конце вспышки будет рывок */
-                textShadow: on ? '0 0 20px rgba(var(--accent-rgb),0.34), 0 0 4px rgba(var(--accent-rgb),0.28)' : 'none',
-                filter: on ? 'drop-shadow(0 0 5px rgba(var(--accent-rgb),0.18))' : 'none',
-                animation: on ? 'lyricLit 0.9s cubic-bezier(0.22,1,0.36,1)' : 'none',
-                cursor: l.t != null ? 'pointer' : 'default',
-                transition:'color 0.52s ease, filter 0.52s ease, transform 0.58s cubic-bezier(0.22,1,0.36,1), text-shadow 0.52s ease, font-weight 0.52s ease',
-              }}>
-              {/* Волна появления — на внутреннем span, а не на самой строке:
-                  у строки свой transform (выезд и масштаб активной) и своя
-                  transition, и анимация на ней же спорила бы с ними за
-                  transform. Отдельный слой разводит их по разным узлам.
-                  Анимация, а не transition — потому что строки пересоздаются
-                  по key списка (см. waveKey): свежий узел играет её всегда, а
-                  transition на уже проявленном узле не играл бы вовсе.
-                  `backwards` держит строку прозрачной всю её задержку — иначе
-                  нижние успевали бы мелькнуть до старта. */}
-              <span className="lyric-wave" style={{
-                display:'block',
-                animation:'lyricLineIn 0.42s cubic-bezier(0.22,1,0.36,1) backwards',
-                /* задержка растёт с номером строки, но не бесконечно: на
-                   первом экране помещается строк 19, а в песне их бывает
-                   под сотню. Дальше идут ровно — их всё равно не видно, и
-                   волна в полминуты ради нижних строк никому не нужна */
-                animationDelay: Math.min(i, 16) * 24 + 'ms',
-              }}>{l.text}</span>
-            </div>
-          );
-        })}
 
         {/* «не нашлось» и «источник упал» — разные вещи, и раньше они
             выглядели одинаково. error показываем явно + причину в title */}
@@ -6014,7 +6211,7 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose, onOpenCrossfad
 }
 
 /* ── HomeCard ────────────────────────────────────────────────────────────── */
-const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidden, isLiked, onLike }) {
+const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidden, isLiked, onLike, coverRadius = '3%' }) {
   const handleClick = useCallback(() => onSelect(track), [onSelect, track]);
   const [popKey, setPopKey] = useState(0);
   return (
@@ -6025,7 +6222,8 @@ const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidd
        css-анимация считается один раз и не тянет js на кадр; появляются только
        реально новые карточки, оставшиеся не перезапускаются. Задержка каскада
        живёт в css по nth-child — так проп index не нужен, и memo не ломается
-       на каждом изменении фильтра. */
+       на каждом изменении фильтра. Возврат из плеера переключает отдельный
+       opacity-keyframe, чтобы сетка проявлялась волной без сдвига слота обложки. */
     <div className="home-card home-card-anim" onClick={handleClick}
       style={{ borderRadius:16, cursor:'pointer' }}>
       <div style={{
@@ -6042,11 +6240,11 @@ const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidd
         opacity: artHidden ? 0 : 1,
         width:'100%', aspectRatio:'1', position:'relative',
         background:'#111116',
-        borderRadius:'0 0 16px 16px', overflow:'hidden',
+        borderRadius:`0 0 ${coverRadius} ${coverRadius}`, overflow:'hidden',
         display:'flex', alignItems:'center', justifyContent:'center',
       }}>
         {track.coverUrl ? (
-          <img src={track.coverUrl} loading="lazy" decoding="async" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',clipPath:'inset(0 round 0 0 16px 16px)',display:'block'}}
+          <img src={track.coverUrl} loading="lazy" decoding="async" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',clipPath:`inset(0 round 0 0 ${coverRadius} ${coverRadius})`,display:'block'}}
             onError={e=>{e.currentTarget.style.display='none'}}/>
         ) : (
           <img src="../assets/note.png" style={{width:24,height:24,filter:'brightness(0) invert(1)',opacity:0.13}}/>
@@ -6091,13 +6289,15 @@ const HomeCard = React.memo(function HomeCard({ track, onSelect, artRef, artHidd
    замыканием — иначе React.memo сравнивал бы по ссылке на новый объект
    и пропускал бы всегда. Мемоизация работает только когда ВСЕ пропы
    стабильны: список, Set лайков, три коллбека и два примитива. */
-const HomeGrid = React.memo(function HomeGrid({ list, likedIds, onLike, onSelect, getArtRef, heroId, reverseId }) {
+const HomeGrid = React.memo(function HomeGrid({ list, likedIds, onLike, onSelect, getArtRef, heroId, reverseId, returnKey = 0, coverRadius = '3%' }) {
   return (
-    <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(128px, 1fr))', gap:18}}>
+    <div className={returnKey ? `home-grid-return-${returnKey % 2 ? 'a' : 'b'}` : undefined}
+      style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(128px, 1fr))', gap:18}}>
       {list.map(t => (
         <HomeCard key={t.id} track={t}
           artRef={getArtRef(t.id)}
           onSelect={onSelect}
+          coverRadius={coverRadius}
           artHidden={(reverseId != null && t.id === reverseId) || (heroId != null && t.id === heroId)}
           isLiked={likedIds ? likedIds.has(t.id) : false}
           onLike={onLike}/>
@@ -6300,6 +6500,7 @@ function HeroClone({ hero, exiting, reverse = false, portalTarget = document.bod
 function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth, sourceMode, onToggleSource, hideSource, hideMiniPlayer,
   track, hasTrack, isPlaying, onPrev, onTogglePlayback, onNext, partyOpen, partyActive, onToggleParty, partyTriggerRef, partyLocked }) {
   const t = useLang();
+  const showMiniPlayer = hasTrack && !inPlayer && !hideMiniPlayer;
   const navImg = (src, s=17) => <img src={src} style={{width:s, height:s, filter:'brightness(0) invert(1)', display:'block'}}/>;
   const NAV = [
     { id:"playlists", label:t('nav_playlists'), icon: navImg('../assets/playlists.png') },
@@ -6385,7 +6586,7 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
                 <NavIcon label={t('nav_local')} active={sourceMode==='local'} onClick={onToggleSource} size={32} icon={folderIcon}/>
               </div>
             )}
-            <MiniPlayer visible={hasTrack && !inPlayer && !hideMiniPlayer} track={track} isPlaying={isPlaying} transportLocked={partyLocked}
+            <MiniPlayer visible={showMiniPlayer} track={track} isPlaying={isPlaying} transportLocked={partyLocked}
               onPrev={onPrev} onToggle={onTogglePlayback} onNext={onNext} onOpen={()=>onNav('library')}
               labels={{ player:t('mini_player'), previous:t('playback_previous'), next:t('playback_next'),
                 play:t('playback_play'), pause:t('playback_pause'), untitled:t('track_untitled'),
@@ -7373,6 +7574,11 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
   const lang = useLangCode();
   const reduced = useReducedMotion();
   const settingsScrollRef = useRef(null);
+  const [appearanceSection, setAppearanceSection] = useState('theme');
+  const subsection = sec === 'appearance' ? appearanceSection : '';
+  useLayoutEffect(() => {
+    if (settingsScrollRef.current) settingsScrollRef.current.scrollTop = 0;
+  }, [sec, subsection]);
   const crossfadeTargetRef = useRef(null);
   const handledCrossfadeFocus = useRef(0);
   useEffect(() => {
@@ -7512,16 +7718,16 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
      покрасить в акцент. Теперь это штриховые иконки на currentColor, и
      активный пункт красится целиком: и иконка, и подпись. */
   const SECS = [
-    { id:'account',  label:t('card_account'),
-      icon:<SoundCloudIcon size={14} fill="currentColor"/> },
     { id:'playback', label:t('sec_playback'),
       icon:<SettingsIcon><path d="M4 9.5h3L11.5 6v12L7 14.5H4z"/><path d="M15 9.2a4 4 0 0 1 0 5.6"/><path d="M17.6 6.6a7.6 7.6 0 0 1 0 10.8"/></SettingsIcon> },
     { id:'lyrics',   label:t('sec_lyrics'),
       icon:<SettingsIcon><path d="M4.5 6.5h15"/><path d="M4.5 12h15"/><path d="M4.5 17.5h9"/></SettingsIcon> },
-    { id:'discord',  label:t('sec_discord'),
-      icon:<DiscordIcon size={15} fill="currentColor"/> },
     { id:'appearance', label:t('sec_appearance'),
       icon:<SettingsIcon><circle cx="12" cy="12" r="8.2"/><path d="M12 3.8a8.2 8.2 0 0 1 0 16.4z" fill="currentColor" stroke="none"/></SettingsIcon> },
+    { id:'account',  label:t('card_account'),
+      icon:<SoundCloudIcon size={14} fill="currentColor"/> },
+    { id:'discord',  label:t('sec_discord'),
+      icon:<DiscordIcon size={15} fill="currentColor"/> },
     { id:'system',   label:t('sec_system'),
       icon:<SettingsIcon><path d="M4 8.5h9"/><path d="M18.5 8.5H20"/><path d="M4 15.5h4"/><path d="M13.5 15.5H20"/><circle cx="15.2" cy="8.5" r="2.3"/><circle cx="10.2" cy="15.5" r="2.3"/></SettingsIcon> },
     { id:'about',    label:t('sec_about'),
@@ -7625,13 +7831,8 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
     lyrics: (
       <LyricsSettings settings={settings} onSettings={onSettings}/>
     ),
-appearance: (<>
-{/* ⚠️ Материал окна и тема несовместимы: DWM рисует мику ПОД окном,
-          а акцент и свой фон — это свет OUR OWN слоя над ней, и они бьют по
-          одному и тому же. Поэтому при включённом материале и акцент, и
-          редактор фона заблокированы, а не просто гаснут: иначе можно было
-          бы включить материал, потом тыкнуть «Цвет» и снова получить
-          несовместимую комбинацию. Гасит их сам тумблер материала внизу. */}
+    appearance: appearanceSection === 'theme' ? (<>
+
       <Card title={t('card_themes')}>
         {/* Сетка наборов. Превью рисует ровно то, что получится у оболочки:
             тот же фон (цвет + тот же градиент), полоска акцента внизу и
@@ -7697,9 +7898,7 @@ appearance: (<>
                 accent: randomVividHex(), accent2: randomVividHex(),
                 bgColor: randomDeepHex(), bgColor2: randomDeepHex(),
                 bgAngle: Math.round(Math.random() * 360),
-                glowStrength: 0.8 + Math.random() * 0.7,
                 radius: [0, 8, 12, 16, 20, 26][Math.floor(Math.random() * 6)],
-                grain: [0, 0.022, 0.04, 0.07][Math.floor(Math.random() * 4)],
               });
             }}>{t('theme_random')}</Btn>
             <Btn onClick={() => setTh({ ...THEME_DEFAULT })}>{t('theme_reset')}</Btn>
@@ -7707,7 +7906,7 @@ appearance: (<>
         </div>
       </Card>
 
-      <Card>
+      <Card title={t('appearance_accent')}>
         <div style={{ padding: '14px 16px 0', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
           {t('accent_sub')}
         </div>
@@ -7924,27 +8123,37 @@ appearance: (<>
         </Disclosure>
       </Card>
 
-      {/* Свечение и форма. Четыре ползунка, каждый пишет ровно одну
-          css-переменную: --glow-strength, --radius, --grain, --vignette.
-          Всё, что не читает эти переменные, под ползунки специально НЕ
-          переделывалось — иначе правка одного стиля разъехалась бы по
-          десятку мест, и «тема» перестала бы быть набором переменных. */}
+      <Card title={t('card_window')}>
+        <Row
+          /* Плашка «только Windows 11» прямо у названия. Материал окна —
+             единственная функция в настройках, которая на другой системе
+             не просто не работает, а молча ничего не делает: DWM на Windows 10
+             и на 11 ниже 22H2 принимает атрибут и не рисует его. Поэтому
+             ограничение видно до переключения, а не после. */
+          label={<>{t('mica')}<Badge>{t('mica_only_win11')}</Badge></>}
+          sub={t('mica_sub')} last>
+          <Switch on={micaOn}
+            onChange={v => onSettings(s => {
+              const next = { ...s, windowEffect: v ? 'mica' : 'off' };
+              /* материал окна несовместим с подсветкой акцента и своим фоном
+                 (см. карточку акцента) — гасим здесь, в одном месте, чтобы
+                 правило не разъехалось по коду. обратно не трогаем: выключение
+                 материала не должно само включать акцент обратно, пользователь
+                 выберет режим сам. фон при этом не восстанавливаем — у
+                 включённого материа свой */
+              if (v) {
+                if (next.accentMode !== 'off') next.accentMode = 'off';
+                next.theme = cleanTheme({ ...(next.theme || THEME_DEFAULT), bgMode: 'default' });
+              }
+              return next;
+            })}/>
+        </Row>
+      </Card>
       <Card title={t('card_look')}>
-        <MiniSlider label={t('glow_strength')} value={th.glowStrength} min={0} max={2} step={0.05}
-          display={`${Math.round(th.glowStrength * 100)}%`} disabled={settings.accentMode === 'off'}
-          onChange={v => setTh({ glowStrength: v })}/>
-        <div style={{ padding: '0 16px 11px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
-          {t('glow_strength_sub')}
-        </div>
         <MiniSlider label={t('ui_radius')} value={th.radius} min={0} max={28} step={1}
           display={`${th.radius}px`} onChange={v => setTh({ radius: v })}/>
         <div style={{ padding: '0 16px 11px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
           {t('ui_radius_sub')}
-        </div>
-        <MiniSlider label={t('ui_grain')} value={th.grain} min={0} max={0.15} step={0.002}
-          display={`${Math.round(th.grain * 1000) / 10}%`} onChange={v => setTh({ grain: v })}/>
-        <div style={{ padding: '0 16px 11px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
-          {t('ui_grain_sub')}
         </div>
         <MiniSlider label={t('ui_vignette')} value={th.vignette} min={0} max={1} step={0.02}
           display={`${Math.round(th.vignette * 100)}%`} onChange={v => setTh({ vignette: v })}/>
@@ -7953,6 +8162,7 @@ appearance: (<>
         }}>{t('ui_vignette_sub')}</div>
       </Card>
 
+    </>) : appearanceSection === 'covers' ? (<>
       {/* Обложки. Цвет ОДИН на всё приложение, поэтому оно и читается цельно:
           «От обложки» — тон текущего трека (переключил — перекрасилось всё),
           «Акцент Windows» — системный цвет, тот же, которым красится мика,
@@ -7980,15 +8190,13 @@ appearance: (<>
           onChange={v => set('coverTint', v)}/>
       </Card>
 
+    </>) : (<>
       {/* Элементы интерфейса. Не «спрятать всё», а конкретный хром, без
           которого приложение остаётся рабочим: источник переключается в
           «Аккаунте», громкость живёт в микшере Windows, подпись и чипсы —
           чистое оформление. Обратная связь мгновенная: шапка видна и отсюда,
           так что спрятанный переключатель исчезает прямо на глазах. */}
       <Card title={t('card_ui')}>
-        <div style={{ padding: '13px 16px 6px', fontSize: 'var(--fs-xs)', color: SN.dim, lineHeight: 1.45 }}>
-          {t('ui_hide_sub')}
-        </div>
         <Row label={t('ui_hide_source')} sub={t('ui_hide_source_sub')}>
           <Switch on={!!uiHidden.source} onChange={v => setHidden('source', v)}/>
         </Row>
@@ -8011,46 +8219,6 @@ appearance: (<>
         </Disclosure>
       </Card>
 
-      {/* ❌ УДАЛЕНА карточка «Код темы» (показ/копирование/вставка темы
-           текстом). Тема и так сохраняется в settings.json и в своих наборах,
-           а два способа держать одно и то же только расходились: вставка через
-           текст молча перетирала тему, которую правили ползунками. Вместе с
-           карточкой ушли themeToJson, состояние редактора и ключи theme_code_*
-           в обоих словарях. */}
-
-      {/* ❌ УДАЛЕНА карточка «Интерфейс» с тумблером «Отключить разделители».
-           Тумблер убран по просьбе, а поведение оставлено включённым: разделители
-           между пунктами и треками не рисуются. Карточка была из одного этого
-           тумблера, так что с ним ушла и она.
-           Поведение теперь задано константой HIDE_DIVIDERS, а не настройкой —
-           иначе ключ остался бы в settings.json и мог вернуть разделители
-           обратно из старого файла настроек. */}
-      <Card title={t('card_window')}>
-        <Row
-          /* Плашка «только Windows 11» прямо у названия. Материал окна —
-             единственная функция в настройках, которая на другой системе
-             не просто не работает, а молча ничего не делает: DWM на Windows 10
-             и на 11 ниже 22H2 принимает атрибут и не рисует его. Поэтому
-             ограничение видно до переключения, а не после. */
-          label={<>{t('mica')}<Badge>{t('mica_only_win11')}</Badge></>}
-          sub={t('mica_sub')} last>
-          <Switch on={micaOn}
-            onChange={v => onSettings(s => {
-              const next = { ...s, windowEffect: v ? 'mica' : 'off' };
-              /* материал окна несовместим с подсветкой акцента и своим фоном
-                 (см. карточку акцента) — гасим здесь, в одном месте, чтобы
-                 правило не разъехалось по коду. обратно не трогаем: выключение
-                 материала не должно само включать акцент обратно, пользователь
-                 выберет режим сам. фон при этом не восстанавливаем — у
-                 включённого материа свой */
-              if (v) {
-                if (next.accentMode !== 'off') next.accentMode = 'off';
-                next.theme = cleanTheme({ ...(next.theme || THEME_DEFAULT), bgMode: 'default' });
-              }
-              return next;
-            })}/>
-        </Row>
-      </Card>
     </>),
     /* секция discord вынесена из оформления: это интеграция, а не вид */
     discord: (
@@ -8123,7 +8291,6 @@ appearance: (<>
             options={[{ v:'RU', label:'RU' }, { v:'EN', label:'EN' }]}/>
         </Row>
       </Card>
-      <ClearCacheCard onClearCoversCache={onClearCoversCache} onClearLikesCache={onClearLikesCache}/>
       <Card title={t('card_startup')}>
         <Row label={t('start_windows')}>
           <Switch on={!!settings.startWithWindows} onChange={v => set('startWithWindows', v)}/>
@@ -8153,6 +8320,7 @@ appearance: (<>
             label={`${settings.minDuration ?? 30} ${t('secs')}`}/>
         </Row>
       </Card>
+      <ClearCacheCard onClearCoversCache={onClearCoversCache} onClearLikesCache={onClearLikesCache}/>
     </>),
     about: (
       <Card>
@@ -8210,9 +8378,11 @@ appearance: (<>
           {SECS.map(s => {
             const active = sec === s.id;
             return (
-              <div key={s.id} ref={el => secRefs.current[s.id] = el}
+              <button type="button" key={s.id} ref={el => { secRefs.current[s.id] = el; }}
+                className="settings-nav-button" aria-current={active ? 'page' : undefined}
                 style={{
                   display:'flex', alignItems:'center', gap:10,
+                  marginTop:s.id === 'account' || s.id === 'system' ? 8 : 0,
                   padding:'9px 11px', borderRadius:9, cursor:'pointer',
                   color: active ? 'var(--accent)' : 'rgba(255,255,255,0.38)',
                   transition:'color 0.18s ease',
@@ -8225,7 +8395,7 @@ appearance: (<>
                     выглядят так же тяжело, как выбранный */}
                 <span style={{ opacity: active ? 1 : 0.75, transition:'opacity 0.18s ease' }}>{s.icon}</span>
                 <span style={{ fontSize: 'var(--fs-md)', fontWeight: active ? 500 : 400 }}>{s.label}</span>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -8236,13 +8406,23 @@ appearance: (<>
         {/* Заголовок раздела над контентом удалён: он дублировал название
            слева в навигации, и оба менялись синхронно — при переключении
            раздела читались два одинаковых слова подряд.
-            Ширина 520 оставляет место для длинных подписей и пути к музыке. */}
-        <DisclosureLayout key={sec} reduced={reduced}
+           Содержимое держим в одной колонке, чтобы подписи легко сканировались. */}
+        {sec === 'appearance' && (
+          <div className="settings-appearance-switch">
+            <Segmented stretch label={t('sec_appearance')} value={appearanceSection} onChange={setAppearanceSection}
+              options={[
+                { v:'theme', label:t('card_themes') },
+                { v:'covers', label:t('card_covers') },
+                { v:'interface', label:t('appearance_interface') },
+              ]}/>
+          </div>
+        )}
+        <DisclosureLayout key={sec + subsection} reduced={reduced}
           motionKey={[micaOn, settings.accentMode, th.accentGrad, th.bgMode, tintMode,
             anyHidden, settings.discordRpc, crossfadeSettings(settings).seconds > 0,
             !!scAuth, !!settings.musicFolder, userThemes.length,
             cleanLyricsSources(settings.lyricsSources).join(',')].join('|')}
-          style={{ maxWidth:520, animation:reduced ? 'none' : 'setIn 0.24s ease' }}>
+          style={{ maxWidth:580, animation:reduced ? 'none' : 'setIn 0.24s ease' }}>
           {content[sec]}
         </DisclosureLayout>
       </div>
@@ -8358,7 +8538,7 @@ function SearchSkeleton() {
   );
 }
 
-function HomeGridSkeleton() {
+function HomeGridSkeleton({ coverRadius = '3%' }) {
   return (
     <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(128px, 1fr))', gap:18}}>
       {Array.from({length: 15}, (_, i) => (
@@ -8367,7 +8547,7 @@ function HomeGridSkeleton() {
             <div className="skel" style={{height:8, borderRadius:4, width:'45%', margin:'0 auto 6px', '--skel-delay':skelDelay(i)}}/>
             <div className="skel" style={{height:9, borderRadius:4, width:'70%', margin:'0 auto', '--skel-delay':skelDelay(i + 4)}}/>
           </div>
-          <div className="skel" style={{width:'100%', aspectRatio:'1', borderRadius:'0 0 16px 16px', '--skel-delay':skelDelay(i + 2)}}/>
+          <div className="skel" style={{width:'100%', aspectRatio:'1', borderRadius:`0 0 ${coverRadius} ${coverRadius}`, '--skel-delay':skelDelay(i + 2)}}/>
         </div>
       ))}
     </div>
@@ -10856,6 +11036,7 @@ function App() {
   const [hero,               setHero]               = useState(null);
   const [playerVisible,      setPlayerVisible]      = useState(false);
   const [homeVisible,        setHomeVisible]        = useState(true);
+  const [homeReturnKey,      setHomeReturnKey]      = useState(0);
   const [heroExiting,        setHeroExiting]        = useState(false);
   const [entryCoverFlightStarted, setEntryCoverFlightStarted] = useState(false);
   const [reverseHero,        setReverseHero]        = useState(null);
@@ -11006,7 +11187,27 @@ function App() {
     }
     return artRefCacheRef.current[id];
   }, []);
+  const [libraryCoverRadius, setLibraryCoverRadius] = useState('3%');
   const playerArtRef  = useRef(null);
+  useLayoutEffect(() => {
+    const slot = playerArtRef.current;
+    if (!slot) return;
+    const measure = () => {
+      const size = slot.getBoundingClientRect().width;
+      if (!Number.isFinite(size) || size <= 0) return;
+      // Match the library's radius ratio to the player's fixed 16px radius.
+      const next = `${(1600 / size).toFixed(3)}%`;
+      setLibraryCoverRadius(current => current === next ? current : next);
+    };
+    measure();
+    let timer;
+    const observer = new ResizeObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(measure, 120);
+    });
+    observer.observe(slot);
+    return () => { clearTimeout(timer); observer.disconnect(); };
+  }, []);
   const audioRef      = useRef(null);
   const hlsRef        = useRef(null);
   const handleNextRef  = useRef(null);
@@ -11212,9 +11413,7 @@ function App() {
     /* Небольшая альфа пропускает фон темы и DWM-материал под Mica, не
        добавляя второго blur-слоя поверх системного эффекта. */
     st.setProperty('--pop-bg', `color-mix(in srgb, ${popBgColor} 72%, transparent)`);
-    st.setProperty('--glow-strength', String(t.glowStrength));
     st.setProperty('--radius', `${t.radius}px`);
-    st.setProperty('--grain', String(t.grain));
     st.setProperty('--vignette', String(t.vignette));
     /* Второй цвет полоски прогресса (см. #accent-fill в styles.css) отдельного
        класса не требует: правый край градиента ссылается на --accent2-rgb с
@@ -14744,7 +14943,15 @@ function App() {
   const [settingsSec, setSettingsSec] = useState('playback');
   const [crossfadeFocus, setCrossfadeFocus] = useState(0);
   const plEditorRef = useRef(null);
+  const navRequestRef = useRef(0);
+  useEffect(() => {
+    const el = homeScrollRef.current;
+    if (!homeVisible || !el) return;
+    return bindScrollInterrupt(el);
+  }, [homeVisible]);
   const handleNav = async (id) => {
+    const request = ++navRequestRef.current;
+    if (homeScrollRef.current) stopSmoothScroll(homeScrollRef.current);
     navigationRef.current.cancel();
     /* из редактора плейлиста выходим только через его гарды — если есть
        несохранённые изменения, редактор сам покажет предупреждение */
@@ -14757,31 +14964,36 @@ function App() {
       if (view === 'player') {
         const artEl = findArtEl(playerDisplayTrack.id);
         const par = playerArtRef.current?.getBoundingClientRect();
+        const scrollEl = homeScrollRef.current;
+        let scrollTarget = null;
         if (artEl && par) {
-          const scrollEl = homeScrollRef.current;
           if (scrollEl) {
             const box     = scrollEl.getBoundingClientRect();
             const cr      = artEl.getBoundingClientRect();
             const visible = cr.top >= box.top && cr.bottom <= box.bottom;
             if (!visible) {
               const cardOffsetInScroll = cr.top - box.top + scrollEl.scrollTop;
-              const targetTop = Math.max(0, cardOffsetInScroll - box.height / 2 + cr.height / 2);
-              scrollEl.scrollTop = targetTop;
+              scrollTarget = Math.max(0, Math.min(scrollEl.scrollHeight - scrollEl.clientHeight,
+                cardOffsetInScroll - box.height / 2 + cr.height / 2));
             }
           }
-
+        }
+        if (artEl && par && scrollTarget === null) {
           const cardRect = artEl.getBoundingClientRect();
           const currentArtRect = artEntranceRef.current?.getBoundingClientRect() || par;
           setReverseHero({
             track: playerDisplayTrack,
             startRect: { left: currentArtRect.left, top: currentArtRect.top, width: currentArtRect.width, height: currentArtRect.height },
             targetRect: { left: cardRect.left, top: cardRect.top, size: cardRect.width },
+            scrollAnchor: scrollEl?.contains(artEl) ? { element:scrollEl, top:scrollEl.scrollTop } : null,
             corners: cssCorners(artEl),
           });
         }
+        setHomeReturnKey(key => key + 1);
         setPlayerVisible(false);
         setHomeVisible(true);
         setView('home');
+        if (scrollTarget !== null) smoothScroll(scrollEl, scrollTarget, 520);
       } else if (view === 'settings' || view === 'search' || view === 'history' || view === 'artist' || view === 'playlists' || view === 'playlistEditor') {
         setHomeVisible(true);
         setView('home');
@@ -14816,13 +15028,19 @@ function App() {
           const cr  = artEl.getBoundingClientRect();
           if (cr.top < box.top || cr.bottom > box.bottom) {
             const offset = cr.top - box.top + scrollEl.scrollTop;
-            scrollEl.scrollTop = Math.max(0, offset - box.height / 2 + cr.height / 2);
-            await new Promise(r => requestAnimationFrame(r));
+            const target = Math.max(0, Math.min(scrollEl.scrollHeight - scrollEl.clientHeight,
+              offset - box.height / 2 + cr.height / 2));
+            await new Promise(resolve => smoothScroll(scrollEl, target, 520, resolve));
+            if (request !== navRequestRef.current || viewRef.current !== 'home') return;
           }
         }
         const startRect = artEl.getBoundingClientRect();
-        const targetRect = { left: par.left, top: par.top, size: par.width };
-        beginHeroFlight({ track: track, startRect, targetRect, corners: cssCorners(artEl) });
+        const viewport = scrollEl?.getBoundingClientRect();
+        if (artEl.isConnected && startRect.width &&
+            (!viewport || startRect.bottom > viewport.top && startRect.top < viewport.bottom)) {
+          const targetRect = { left: par.left, top: par.top, size: par.width };
+          beginHeroFlight({ track: track, startRect, targetRect, corners: cssCorners(artEl) });
+        }
       }
       setHomeVisible(false);
       setPlayerVisible(true);
@@ -15003,7 +15221,7 @@ function App() {
             /* раньше здесь был только opacity + pointerEvents, и скрытая
                главная ловила клики у вкладок поверх неё — тот же баг, что у
                поиска. visibility из stackRoot гасит hit-test на поддереве */
-            ...stackRoot(homeVisible, 0.18),
+            ...stackRoot(homeVisible, reduced ? 0.12 : 0.32),
             top:0, left:0, right:10, bottom:0,
             overflowY:'auto', padding:'18px 4px 32px 36px',
             /* та же причина, что у списка в библиотеке: на главной поиск
@@ -15159,7 +15377,7 @@ function App() {
                 </div>
               </div>
             ) : activeList.length === 0 && (sourceMode === 'sc' || search) ? (
-              scLoading ? <HomeGridSkeleton/> : (
+              scLoading ? <HomeGridSkeleton coverRadius={libraryCoverRadius}/> : (
                 <div style={{
                   display:'flex', alignItems:'center', justifyContent:'center',
                   padding:'80px 20px', fontSize: 'var(--fs-md)', color:'rgba(255,255,255,0.32)',
@@ -15175,6 +15393,8 @@ function App() {
                 onLike={sourceMode === 'sc' ? handleLike : null}
                 onSelect={selectTrackStable}
                 getArtRef={getArtRef}
+                returnKey={homeReturnKey}
+                coverRadius={libraryCoverRadius}
                 heroId={hero && entryCoverFlightStarted && !heroExiting ? hero.track.id : null}
                 reverseId={reverseHero ? reverseHero.track.id : null}/>
             )}
@@ -15193,7 +15413,7 @@ function App() {
             display:'flex',
           }}>
         {/* library panel */}
-        <div data-motion-spatial="" style={{
+        <div data-player-library-panel="" data-motion-spatial="" style={{
           width: libCollapsed ? 0 : 260,
           flexShrink:0, height:'100%',
           background:'transparent',
@@ -15204,9 +15424,6 @@ function App() {
             ? 'opacity 0.36s ease 0.1s, transform 0.44s cubic-bezier(0.22,1,0.36,1) 0.1s, width 0.44s cubic-bezier(0.4,0,0.2,1)'
             : 'opacity 0.14s ease, transform 0.18s ease, width 0.44s cubic-bezier(0.4,0,0.2,1)',
         }}>
-          {/* оба слоя абсолютные и всегда смонтированы: список уезжает влево,
-              текст приезжает справа. ширина родителя схлопывается до 0 и
-              клипует всё лишнее, поэтому за колонку ничего не вылезает */}
           <div style={{width:260, flexShrink:0, height:'100%', position:'relative'}}>
           <div data-motion-spatial="" style={{
             position:'absolute', inset:0, display:'flex', flexDirection:'column',
@@ -15437,6 +15654,8 @@ function App() {
           />
           </div>
           <LyricsPanel open={lyricsOpen} inPlayer={playerVisible} state={lyricsView} activeLine={lyricsActive}
+            audioRef={audioRef}
+            playerInfoRef={playerInfoRef}
             onSeek={handleLyricsSeek} onRetry={handleLyricsRefresh}
             onRefresh={handleLyricsRefresh}
             sources={settings.lyricsSources}
@@ -15461,7 +15680,7 @@ function App() {
           flex:1, minWidth:0, height:'100%',
           display:'flex', alignItems:'center', justifyContent:'center',
         }}>
-          <PartyPlayerLayout open={partyOpen} controlsAligned={partyOpen && libCollapsed} instant={partyInstant}
+          <PartyPlayerLayout open={partyOpen} libraryCollapsed={libCollapsed} controlsAligned={partyOpen && libCollapsed} instant={partyInstant}
             enabled={view === 'player' && playerVisible && !hero && !reverseHero} className="player-composition" style={{
             width:'calc(100% - 48px)',
             maxWidth:partyOpen ? 'none' : 'clamp(380px, 55vw, 900px)', minWidth:220,
@@ -15622,27 +15841,11 @@ function App() {
                 ? 'opacity 0.36s ease 0.28s, transform 0.48s cubic-bezier(0.22,1,0.36,1) 0.28s, visibility 0s linear 0.28s'
                 : 'opacity 0.1s ease, transform 0.1s ease, visibility 0s linear 0.1s',
             }}>
-            {/* ❌ был `const P = { spring:0.055, damping:0.84, clamp:10 }`,
-                который шестиминутно передавался в `physics={P}` во все
-                MagBtn/PlayBtn. НИ MagBtn, НИ PlayBtn этот проп не
-                принимают — анимация там на whileTap/whileHover Motion.
-                мёртвый объект пересоздавался на каждом рендере ради
-                ничего; удалён вместе с шестью передачами. */}
             {(()=>{ const SIDE = 'clamp(40px, 5.2vw, 58px)'; return (
             <div style={{display:'flex', alignItems:'center', gap:14, justifyContent:'center', marginTop:16}}>
-              {/* Баланс ряда. Слева теперь три кнопки (текст, эффекты, shuffle),
-                  справа две (повтор, лайк). Без компенсации play уезжал бы
-                  вправо от центра обложки на ширину кнопки, поэтому в конце
-                  справа стоит невидимый спейсер того же размера, что и кнопка.
-                  Постоянный слот лайка (27px + marginLeft 14) остаётся: трек
-                  бывает локальным, и без слота ряд дёргался бы. */}
               <MagBtn onClick={handleToggleLyrics} active={lyricsOpen} size={SIDE}>
                 <img src="../assets/textt.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:lyricsOpen?1:0.38,transition:'opacity 0.2s ease'}}/>
               </MagBtn>
-              {/* эффекты — рядом с текстом, потому что открывают ровно ту же
-                  колонку слева (и взаимоисключающие с ним). иконка инлайном, а
-                  не png из assets: те приходится выбеливать фильтром, а
-                  выбранное состояние должно краситься акцентом */}
               <MagBtn onClick={handleToggleFx} active={fxOpen} size={SIDE}>
                 <div style={{
                   width:'clamp(18px, 2.2vw, 26px)', height:'clamp(18px, 2.2vw, 26px)',
@@ -15682,8 +15885,6 @@ function App() {
                 ? <PlayerLikeBtn liked={likedIds.has(scPlayingTrack.id)}
                     onLike={() => handleLike(scPlayingTrack)} style={{marginLeft:14}}/>
                 : <div style={{width:27, marginLeft:14, flexShrink:0}}/>}
-              {/* невидимый противовес третьей кнопке слева — см. комментарий
-                  в начале ряда */}
               <div style={{width:SIDE, flexShrink:0}} aria-hidden="true"/>
             </div>
             ); })()}

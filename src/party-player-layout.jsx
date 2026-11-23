@@ -9,13 +9,15 @@ export class PartyLayout extends React.Component {
   animations = new Set();
 
   getSnapshotBeforeUpdate(previous) {
-    if (previous.open === this.props.open && previous.controlsAligned === this.props.controlsAligned
+    if (previous.libraryCollapsed !== this.props.libraryCollapsed
+      || previous.open === this.props.open && previous.controlsAligned === this.props.controlsAligned
       || !previous.enabled || !this.props.enabled) return null;
     return snapshotPartyPlayer(this.root.current);
   }
 
   componentDidUpdate(previous, state, snapshot) {
-    if (previous.open !== this.props.open || previous.controlsAligned !== this.props.controlsAligned || previous.enabled !== this.props.enabled
+    if (previous.open !== this.props.open || previous.libraryCollapsed !== this.props.libraryCollapsed
+      || previous.controlsAligned !== this.props.controlsAligned || previous.enabled !== this.props.enabled
       || previous.reduced !== this.props.reduced || previous.instant !== this.props.instant) {
       if (!this.props.enabled) {
         cancelPartyPlayerMotion(this.animations);

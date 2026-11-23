@@ -61,8 +61,11 @@ export function ListeningHistory({ visible, entries, currentKey, isPlaying, loca
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
                   <path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2.5"/><ellipse cx="17" cy="16" rx="3" ry="2.5"/>
                 </svg>
-                {cover && <img key={cover} src={cover} alt="" loading="lazy" draggable={false}
-                  onError={event => { event.currentTarget.hidden = true; }}/>}
+                {cover && <>
+                  <img key={cover} src={cover} alt="" loading="lazy" draggable={false}
+                    onError={event => { event.currentTarget.hidden = true; }}/>
+                  <span className="history-cover-tint"/>
+                </>}
                 <span className="history-cover-action" data-on={loading || (active && isPlaying) ? 'true' : 'false'}>
                   {loading ? <span className="history-spinner"/> : active && isPlaying
                     ? <span className="history-playing"><i/><i/><i/></span>

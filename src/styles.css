@@ -34,7 +34,6 @@
        мику DWM рисует по прямоугольнику окна. */
     --radius:       12px;    /* скругление окна и карточек настроек */
     --glow-strength: 1;      /* множитель ВСЕХ свечений, 0…2 */
-    --grain:        0.022;   /* сила зерна поверх панели */
     --vignette:     0.5;      /* затемнение краёв */
     --bg-image:     none;    /* градиент поверх --bg */
     /* Поверхность всплывающих панелей (меню ПКМ, форма карандаша, диалоги).
@@ -146,17 +145,6 @@
      Сила — из настроек, но под материалом всегда сбивается до четверти:
      свой полный виньет поверх мики просто убивает его. */
   body.effect-mica #bg-fx::after { opacity: calc(var(--vignette, 0.5) * 0.22); }
-  /* Зерно и виньетка живут на #bg-fx, а не на #app-shell: так их порядок
-     задаётся внутри одного слоя (слои снизу вверх — градиент, зерно,
-     виньетка), и не нужно поднимать z-index у #root и #accent-top.
-     На самой оболочке они перемешались бы с содержимым: псевдоэлемент
-     ::before рисуется ДО обычных детей, и градиент накрыл бы зерно. */
-  #bg-fx::before {
-    content:''; position:absolute; inset:0; z-index:0; pointer-events:none;
-    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    opacity:var(--grain, 0.022);
-    transition:opacity 0.32s ease;
-  }
   #bg-fx::after {
     content:''; position:absolute; inset:0; z-index:0; pointer-events:none;
     /* ⚠️ Градиент намеренно слабый и начинается далеко от края.
@@ -245,7 +233,7 @@
        вместе с заливкой — верх становится просто продолжением панели, и
        отдельно он больше не читается нигде */
     border-bottom:none;
-    transition: background 0.32s ease;
+    transition: background 0.32s ease, opacity 0.3s cubic-bezier(0.23,1,0.32,1);
   }
   #topbar-slot {
     flex:1; height:100%; min-width:0;
@@ -288,7 +276,7 @@
     position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
   }
   .mini-player-cover img[hidden] { display:none; }
-  .mini-player-cover-tint {
+  .mini-player-cover-tint, .history-cover-tint {
     position:absolute; inset:0; pointer-events:none;
     background:rgb(var(--cover-tint-rgb)); mix-blend-mode:color;
     opacity:var(--cover-tint, 0);
@@ -388,11 +376,11 @@
   .history-row:focus-visible, .history-text-button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .history-cover {
     position:relative; width:44px; height:44px; display:flex; align-items:center; justify-content:center;
-    flex-shrink:0; border-radius:9px; overflow:hidden;
+    flex-shrink:0; border-radius:9px; overflow:hidden; isolation:isolate;
     background:oklch(0.78 0.008 285 / 0.07); color:oklch(0.75 0.008 285);
   }
   .history-cover img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
-  .history-cover img[hidden] { display:none; }
+  .history-cover img[hidden], .history-cover img[hidden] + .history-cover-tint { display:none; }
   .history-cover-action {
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     opacity:0; color:var(--text); background:oklch(0.15 0.008 285 / 0.65); transition:opacity 140ms ease-out;
@@ -450,6 +438,7 @@
     position:relative; z-index:1;
     width:100%; flex:1;
     display:flex;
+    transition:opacity 0.3s cubic-bezier(0.23,1,0.32,1);
     /* По вертикали НЕ режем. #root — сосед тайтлбара во flex-разметке, то
        есть начинается ровно на 46px, и пятно за обложкой (`AmbientGlow` с
        inset:-50%) уезжает выше. При `overflow:hidden` оно срезалось ровно по
@@ -569,6 +558,16 @@
   .home-card-anim:nth-child(11) { animation-delay: 0.18s; }
   .home-card-anim:nth-child(12) { animation-delay: 0.198s; }
   .home-card-anim:nth-child(n+13) { animation-delay: 0.198s; }
+  @keyframes cardReturnA { from { opacity:0; } to { opacity:1; } }
+  @keyframes cardReturnB { from { opacity:0; } to { opacity:1; } }
+  .home-grid-return-a .home-card-anim {
+    animation-name:cardReturnA; animation-duration:0.24s;
+    animation-timing-function:cubic-bezier(0.23,1,0.32,1); animation-fill-mode:both;
+  }
+  .home-grid-return-b .home-card-anim {
+    animation-name:cardReturnB; animation-duration:0.24s;
+    animation-timing-function:cubic-bezier(0.23,1,0.32,1); animation-fill-mode:both;
+  }
   @media (hover:hover) and (pointer:fine) {
     .home-card-anim:hover { transform:scale(1.03); }
   }
@@ -622,6 +621,9 @@
      вместе с transform предка. С translateY пилл перепроецируется и дёргается
      на первом кадре (тот же грабли, что описаны в SettingsView). */
   @keyframes setIn { from { opacity:0 } to { opacity:1 } }
+  .settings-nav-button { background:transparent; border:0; text-align:left; font:inherit; }
+  .settings-nav-button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .settings-appearance-switch { max-width:580px; margin-bottom:20px; }
   /* появление строки текста: снизу и с прозрачностью. Волна по строкам — не
      transition, а именно анимация: строки пересоздаются (key списка меняется
      при каждом открытии панели и при смене источника), и анимация на свежем
@@ -639,6 +641,14 @@
     to   { text-shadow: 0 0 20px rgba(var(--accent-rgb),0.34), 0 0 4px rgba(var(--accent-rgb),0.28); }
   }
 
+  .lyrics-search-meter {
+    display:flex; align-items:center; gap:4px; height:38px;
+  }
+  .lyrics-search-meter i {
+    width:3px; height:100%; border-radius:2px;
+    background:var(--accent); opacity:.65;
+    transform:scaleY(.12);
+  }
   .lyrics-fullscreen {
     position:fixed; inset:0; z-index:9999; overflow:hidden;
     display:flex; align-items:center; justify-content:center;
@@ -649,43 +659,102 @@
     display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr);
     align-items:center; gap:clamp(54px,8vw,124px);
   }
-  .lyrics-fullscreen-artwork { min-width:0; display:flex; flex-direction:column; align-items:center; transform:translateY(-18px); }
-  .lyrics-fullscreen-meta { width:min(100%,min(58vh,38vw)); margin:0 auto 22px; }
+  .lyrics-fullscreen-artwork { min-width:0; display:flex; flex-direction:column; align-items:center; }
+  .lyrics-fullscreen-meta {
+    display:flex; flex-direction:column; align-items:center; text-align:center;
+    width:min(100%,min(58vh,38vw)); margin:0 auto 14px;
+  }
+  .lyrics-fullscreen-track { display:flex; justify-content:center; width:100%; }
+  .lyrics-fullscreen-artist {
+    margin:0 0 5px; color:rgba(255,255,255,.28);
+    font-size:clamp(12px,1.5vw,16px); line-height:normal;
+  }
   .lyrics-fullscreen-art {
     position:relative; isolation:isolate; overflow:hidden;
     width:min(100%,min(58vh,38vw)); aspect-ratio:1; border-radius:16px;
     background:transparent;
   }
   .lyrics-fullscreen-art img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
-  .lyrics-fullscreen-meta .lyrics-fullscreen-track { font-size:26px; font-weight:650; letter-spacing:-.025em; line-height:1.2; }
-  .lyrics-fullscreen-artist { margin-top:7px; color:rgba(255,255,255,.54); font-size:15px; line-height:1.4; }
-  .lyrics-fullscreen-lines {
-    align-self:stretch; min-width:0; max-height:76vh; overflow:auto; padding:28px 26px 28px 0;
-    scrollbar-width:none; mask-image:linear-gradient(transparent,#000 7%,#000 93%,transparent);
+  .lyrics-fullscreen-lines-slot {
+    align-self:center; min-width:0; width:100%; height:min(76vh,100%); max-height:100%;
   }
-  .lyrics-fullscreen-lines::-webkit-scrollbar { display:none; }
+  @property --lyrics-edge-top {
+    syntax:"<length>"; inherits:false; initial-value:0px;
+  }
+  @property --lyrics-edge-bottom {
+    syntax:"<length>"; inherits:false; initial-value:0px;
+  }
+  @property --lyrics-edge-feather {
+    syntax:"<length>"; inherits:false; initial-value:10px;
+  }
+  .shared-lyrics-lines {
+    position:fixed; overflow-anchor:none; transform-origin:top left;
+    box-sizing:border-box; overflow:auto; padding:0 14px 10px;
+    scrollbar-width:none;
+    mask-image:linear-gradient(to bottom,
+      transparent var(--lyrics-edge-top),
+      #000 calc(var(--lyrics-edge-top) + var(--lyrics-edge-feather)),
+      #000 calc(100% - var(--lyrics-edge-bottom) - var(--lyrics-edge-feather)),
+      transparent calc(100% - var(--lyrics-edge-bottom)));
+  }
+  .shared-lyrics-lines.is-fullscreen {
+    padding:28px 26px;
+    --lyrics-edge-feather:24px;
+  }
+  .shared-lyrics-lines::-webkit-scrollbar { display:none; }
   .lyrics-fullscreen-line {
-    width:fit-content; max-width:100%; padding:7px 0; overflow-wrap:anywhere;
-    color:rgba(255,255,255,.3); font-size:clamp(20px,2.1vw,30px); font-weight:500; line-height:1.36;
+    width:fit-content; max-width:100%; padding:.28em 0; overflow-wrap:anywhere;
+    color:var(--text); opacity:.34;
+    font-size:clamp(20px,2.1vw,30px); font-weight:600; line-height:1.58;
     transform-origin:left center;
-    transition:color .24s ease, transform .3s cubic-bezier(.23,1,.32,1),text-shadow .24s ease;
+    text-shadow:0 0 5px rgba(var(--accent-rgb),0), 0 0 14px rgba(var(--accent-rgb),0);
+    transition:opacity .62s ease-in-out, transform .54s ease-in-out, text-shadow .62s ease-in-out;
   }
-  .lyrics-fullscreen-line.is-near { color:rgba(255,255,255,.56); }
-  .lyrics-fullscreen-line.is-active { color:var(--text); transform:translateX(4px); font-weight:700; text-shadow:0 0 20px rgba(var(--accent-rgb),.25); }
-  .lyrics-fullscreen-close {
-    position:absolute; z-index:2; top:28px; right:32px; display:grid; place-items:center;
-    width:42px; height:42px; color:rgba(255,255,255,.62); cursor:pointer;
-    background:rgba(255,255,255,.055); border:1px solid rgba(255,255,255,.09); border-radius:50%;
-    transition:background .18s ease,color .18s ease;
+  .lyrics-fullscreen-line.is-previous { opacity:.62; }
+  .lyrics-fullscreen-line.is-next { opacity:.48; }
+  .lyrics-fullscreen-line.is-active {
+    opacity:1; transform:scale(1.02);
+    text-shadow:0 0 5px rgba(var(--accent-rgb),.22), 0 0 14px rgba(var(--accent-rgb),.16);
   }
-  .lyrics-fullscreen-close:hover { color:white; background:rgba(255,255,255,.12); }
+  .shared-lyrics-lines:not(.is-fullscreen) .lyrics-fullscreen-line {
+    width:auto; padding-inline-end:10px;
+    font-size:var(--fs-md); line-height:1.58; font-weight:500;
+  }
+  .shared-lyrics-lines:not(.is-fullscreen) .lyrics-fullscreen-line.is-active {
+    font-weight:650;
+  }
+  .shared-lyrics-lines.is-fullscreen .lyrics-fullscreen-line {
+    width:var(--lyrics-wrap-width, 100%);
+    font-size:min(clamp(20px,2.1vw,30px), var(--lyrics-fit-font, 30px));
+    font-weight:500;
+  }
+  .shared-lyrics-lines.is-fullscreen .lyrics-fullscreen-line.is-active {
+    font-weight:650;
+  }
+  @media (prefers-reduced-motion:reduce) {
+    .lyrics-fullscreen-line, .lyrics-fullscreen-line.is-active {
+      transform:none; transition:opacity 120ms ease-out, text-shadow 120ms ease-out;
+    }
+  }
+  .lyrics-fullscreen-back {
+    position:absolute; z-index:2; top:calc((var(--titlebar-h) - 32px) / 2); left:10px;
+    display:grid; place-items:center; -webkit-app-region:no-drag;
+    width:32px; height:32px; padding:0; border:0; border-radius:11px;
+    background:transparent; cursor:pointer; transition:background .15s ease;
+  }
+  .lyrics-fullscreen-back img {
+    width:15px; height:15px; object-fit:contain;
+    filter:brightness(0) invert(1); opacity:.5; transition:opacity .15s ease;
+  }
+  .lyrics-fullscreen-back:is(:hover,:focus-visible) { background:rgba(255,255,255,.06); }
+  .lyrics-fullscreen-back:is(:hover,:focus-visible) img { opacity:.95; }
+  .lyrics-fullscreen-back:focus-visible { outline:2px solid var(--accent); }
   @media (max-width:760px) {
     .lyrics-fullscreen-content { width:88vw; height:88vh; grid-template-columns:1fr 1fr; gap:24px; }
     .lyrics-fullscreen-meta { width:100%; margin-bottom:14px; }
     .lyrics-fullscreen-art { width:100%; }
-    .lyrics-fullscreen-meta .lyrics-fullscreen-track { font-size:19px; }
-    .lyrics-fullscreen-artist { font-size:13px; }
-    .lyrics-fullscreen-lines { max-height:78vh; padding-right:8px; }
+    .lyrics-fullscreen-lines-slot { height:min(78vh,100%); }
+    .shared-lyrics-lines.is-fullscreen { padding-right:8px; padding-left:8px; }
   }
 
   /* редактор плейлиста: hover обложки и карандаш у названия */
@@ -901,6 +970,7 @@
 
   .artist-play-all[data-pointer-pressed="true"]:not(:disabled) { transform:scale(0.97); }
   @media (prefers-reduced-motion:reduce) {
+    #root, #titlebar { transition-duration:120ms !important; }
     /* These tags name purely spatial feedback, not actual layout/progress. */
     [data-motion-spatial] { transform:none !important; transition:opacity 120ms ease-out, color 160ms ease, background-color 160ms ease !important; }
     /* Positioning layers retain the real final offset, switch state and fraction. */
