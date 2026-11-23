@@ -31,7 +31,7 @@ test('actual PlayBtn does not pulse on mount, repeats on tracks and keeps its tr
   const begin = app.indexOf('function PlayBtn('), end = app.indexOf('/* ── NavIcon', begin);
   assert.ok(begin > 0 && end > begin);
   const harness = hookHarness(`${app.slice(begin, end)}\nexport { PlayBtn };`, {}, {
-    motion: { button: 'button', span: 'span' }, useReducedMotion: () => reduced,
+    motion: { button: 'button', path: 'path' }, useReducedMotion: () => reduced,
     createFeedbackMotion: lifecycle.createFeedbackMotion, isFineHover: event => event.pointerType === 'mouse',
   });
   let toggles = 0;
@@ -40,16 +40,26 @@ test('actual PlayBtn does not pulse on mount, repeats on tracks and keeps its tr
   let tree = render(); const layer = findNode(tree, node => node.ref && node.type === 'span').ref.current;
   assert.equal(tree.type, 'button'); assert.equal(tree.key, null); assert.equal(layer.calls.length, 0);
   assert.equal(tree.props.whileTap.scale, 0.95); tree.props.onClick(); assert.equal(toggles, 1);
+  assert.equal(tree.props['data-playing'], true);
+  const pause = findNode(tree, node => node.type === 'path');
+  assert.equal(pause.props.initial, false);
+  assert.equal(pause.props.transition.duration, 0.24);
+  props.isPlaying = false; tree = render();
+  assert.equal(tree.props['data-playing'], false);
+  const play = findNode(tree, node => node.type === 'path');
+  assert.notEqual(play.props.animate.d, pause.props.animate.d);
+  assert.deepEqual(play.props.animate.d.match(/[MLQZ]/g), pause.props.animate.d.match(/[MLQZ]/g));
+  assert.equal(layer.calls.length, 0, 'playback state uses the icon morph only');
   props.trackKey = 'two'; tree = render(); assert.equal(layer.calls.length, 1);
   props.trackKey = 'three'; tree = render(); assert.equal(layer.calls.length, 2); assert.equal(layer.calls[0].cancelled, true);
   assert.equal(tree.ref, null); assert.equal(tree.props.animate, undefined);
   reduced = true; tree = render(); assert.equal(layer.calls[1].cancelled, true); assert.equal(tree.props.whileTap, undefined);
+  assert.equal(tree.props['data-reduced-motion'], true);
+  assert.equal(findNode(tree, node => node.type === 'path').props.transition.duration, 0);
   props.trackKey = 'four'; render(); assert.equal(layer.calls.length, 2);
   reduced = false; render(); assert.equal(layer.calls.length, 2, 'preference alone does not add a pulse');
   props.disabled = true; props.trackKey = 'five'; tree = render(); assert.equal(layer.calls.length, 2); assert.equal(tree.props.disabled, true);
   props.disabled = false; props.trackKey = 'six'; render(); harness.unmount(); assert.equal(layer.calls.at(-1).cancelled, true);
-  assert.match(app.slice(begin, end), /<motion\.span key=\{playPulse\}/);
-  assert.match(app.slice(begin, end), /opacity 0\.12s ease-in, transform 0\.12s ease-in/);
 });
 
 test('opacity acknowledgment retargets only its local layer and missing WAAPI stays fully visible', () => {

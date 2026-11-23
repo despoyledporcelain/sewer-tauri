@@ -46,10 +46,7 @@ ${StrLoc}
 !define INSTALLMODE "{{install_mode}}"
 !define LICENSE "{{license}}"
 !define INSTALLERICON "{{installer_icon}}"
-!define SIDEBARIMAGE "{{sidebar_image}}"
-!define HEADERIMAGE "{{header_image}}"
 !define UNINSTALLERICON "{{uninstaller_icon}}"
-!define UNINSTALLERHEADERIMAGE "{{uninstaller_header_image}}"
 !define MAINBINARYNAME "{{main_binary_name}}"
 !define MAINBINARYSRCPATH "{{main_binary_path}}"
 !define BUNDLEID "{{bundle_id}}"
@@ -134,28 +131,6 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
   !define MUI_ICON "${INSTALLERICON}"
 !endif
 
-; Installer sidebar image
-!if "${SIDEBARIMAGE}" != ""
-  !define MUI_WELCOMEFINISHPAGE_BITMAP "${SIDEBARIMAGE}"
-!endif
-
-; Enable header images for installer and uninstaller pages when either image is configured.
-!if "${HEADERIMAGE}" != ""
-  !define MUI_HEADERIMAGE
-!else if "${UNINSTALLERHEADERIMAGE}" != ""
-  !define MUI_HEADERIMAGE
-!endif
-
-; Installer header image
-!if "${HEADERIMAGE}" != ""
-  !define MUI_HEADERIMAGE_BITMAP "${HEADERIMAGE}"
-!endif
-
-; Uninstaller header image
-!if "${UNINSTALLERHEADERIMAGE}" != ""
-  !define MUI_HEADERIMAGE_UNBITMAP "${UNINSTALLERHEADERIMAGE}"
-!endif
-
 ; Uninstaller icon
 !if "${UNINSTALLERICON}" != ""
   !define MUI_UNICON "${UNINSTALLERICON}"
@@ -167,10 +142,8 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
 
 ; Installer pages, must be ordered as they appear
-; 1. Welcome Page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW SewerWelcomeShow
-!insertmacro MUI_PAGE_WELCOME
+; 1. seWer introduction
+Page custom SewerWelcome "" "" /ENABLECANCEL
 
 ; 2. License Page (if defined)
 !if "${LICENSE}" != ""
@@ -227,38 +200,27 @@ Function PageReinstall
   ; Compare this installar version with the existing installation
   ; and modify the messages presented to the user accordingly
   compare_version:
-  StrCpy $R4 "$(older)"
   ${If} $WixMode = 1
     ReadRegStr $R0 HKLM "$R6" "DisplayVersion"
   ${Else}
     ReadRegStr $R0 SHCTX "${UNINSTKEY}" "DisplayVersion"
   ${EndIf}
-  ${IfThen} $R0 == "" ${|} StrCpy $R4 "$(unknown)" ${|}
 
   nsis_tauri_utils::SemverCompare "${VERSION}" $R0
   Pop $R0
   ; Reinstalling the same version
   ${If} $R0 = 0
-    StrCpy $R1 "$(alreadyInstalledLong)"
-    StrCpy $R2 "$(addOrReinstall)"
-    StrCpy $R3 "$(uninstallApp)"
-    !insertmacro MUI_HEADER_TEXT "$(alreadyInstalled)" "$(chooseMaintenanceOption)"
-  ; Upgrading
+    StrCpy $R1 "$(SewerInstalled)"
+    StrCpy $R2 "$(SewerReinstall)"
+    StrCpy $R3 "$(SewerUninstall)"
   ${ElseIf} $R0 = 1
-    StrCpy $R1 "$(olderOrUnknownVersionInstalled)"
-    StrCpy $R2 "$(uninstallBeforeInstalling)"
-    StrCpy $R3 "$(dontUninstall)"
-    !insertmacro MUI_HEADER_TEXT "$(alreadyInstalled)" "$(choowHowToInstall)"
-  ; Downgrading
+    StrCpy $R1 "$(SewerUpgrade)"
+    StrCpy $R2 "$(SewerReplace)"
+    StrCpy $R3 "$(SewerInPlace)"
   ${ElseIf} $R0 = -1
-    StrCpy $R1 "$(newerVersionInstalled)"
-    StrCpy $R2 "$(uninstallBeforeInstalling)"
-    !if "${ALLOWDOWNGRADES}" == "true"
-      StrCpy $R3 "$(dontUninstall)"
-    !else
-      StrCpy $R3 "$(dontUninstallDowngrade)"
-    !endif
-    !insertmacro MUI_HEADER_TEXT "$(alreadyInstalled)" "$(choowHowToInstall)"
+    StrCpy $R1 "$(SewerDowngrade)"
+    StrCpy $R2 "$(SewerReplace)"
+    StrCpy $R3 "$(SewerInPlace)"
   ${Else}
     Abort
   ${EndIf}
@@ -272,24 +234,20 @@ Function PageReinstall
   ${If} $PassiveMode = 1
     Call PageLeaveReinstall
   ${Else}
-    nsDialogs::Create 1018
-    Pop $R4
+    Call SewerCreatePage
     ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
+    !insertmacro SEWER_LABEL 26u 14u "seWer   /   v${VERSION}" "${SEWER_ACCENT}"
+    !insertmacro SEWER_LABEL 48u 36u "$R1" "${SEWER_TEXT}"
+    SendMessage $0 ${WM_SETFONT} $SewerHeadingFont 1
 
-    ${NSD_CreateLabel} 0 0 100% 24u $R1
-    Pop $R1
-
-    ${NSD_CreateRadioButton} 30u 50u -30u 8u $R2
-    Pop $R2
-    ${NSD_OnClick} $R2 PageReinstallUpdateSelection
-
-    ${NSD_CreateRadioButton} 30u 70u -30u 8u $R3
-    Pop $R3
-    ; Disable this radio button if downgrading and downgrades are disabled
+    !insertmacro SEWER_RADIO 91u $R2
+    !insertmacro SEWER_RADIO 118u $R3
     !if "${ALLOWDOWNGRADES}" == "false"
-      ${IfThen} $R0 = -1 ${|} EnableWindow $R3 0 ${|}
+      ${If} $R0 = -1
+        EnableWindow $R3 0
+        !insertmacro SEWER_LABEL 148u 28u "$(SewerRequiresRemoval)" "${SEWER_MUTED}"
+      ${EndIf}
     !endif
-    ${NSD_OnClick} $R3 PageReinstallUpdateSelection
 
     ; Check the first radio button if this the first time
     ; we enter this page or if the second button wasn't
@@ -301,8 +259,7 @@ Function PageReinstall
     ${EndIf}
 
     ${NSD_SetFocus} $R2
-    Call SewerSkinPage
-    nsDialogs::Show
+    Call SewerShowPage
   ${EndIf}
 FunctionEnd
 Function PageReinstallUpdateSelection
@@ -392,7 +349,7 @@ FunctionEnd
 
 ; 5. Choose install directory page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW SewerSkinPage
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW SewerDirectoryShow
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -407,24 +364,11 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
 
 ; 7. Installation page
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW SewerSkinPage
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW SewerProgressShow
 !insertmacro MUI_PAGE_INSTFILES
 
-; 8. Finish page
-;
-; Don't auto jump to finish page after installation page,
-; because the installation page has useful info that can be used debug any issues with the installer.
-!define MUI_FINISHPAGE_NOAUTOCLOSE
-; Use show readme button in the finish page as a button create a desktop shortcut
-!define MUI_FINISHPAGE_SHOWREADME
-!define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"
-!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
-; Show run app after installation.
-!define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW SewerFinishShow
-!insertmacro MUI_PAGE_FINISH
+; 8. seWer completion
+Page custom SewerFinish SewerFinishLeave
 
 Function RunMainBinary
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
@@ -481,6 +425,7 @@ FunctionEnd
 {{#each languages}}
 !insertmacro MUI_LANGUAGE "{{this}}"
 {{/each}}
+!insertmacro SEWER_INSTALLER_STRINGS
 !insertmacro MUI_RESERVEFILE_LANGDLL
 {{#each language_files}}
   !include "{{this}}"

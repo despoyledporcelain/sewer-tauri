@@ -26,10 +26,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
 
 const DL_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
-/// Провайдер рвёт соединение после ~16 КБ: в одном соединении успевает пройти
-/// примерно столько, дальше висит до таймаута — снаружи это «загрузка на 0%».
-/// Поэтому качаем кусками по 16 КБ, каждый в новом соединении (см. dl_http):
-/// такой кусок приходит за ~0.12 с, и ответ закрывается сам.
+/// Запасной размер Range при зависшем потоке. Основной путь — один непрерывный
+/// HTTP-поток; к диапазонам переходим только если CDN перестал отдавать данные.
 const DL_CHUNK: u64 = 16 * 1024;
 
 #[derive(Deserialize, Default)]
@@ -141,12 +139,8 @@ fn drop_file(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
-/// Клиент для самой загрузки. Отличается от общего двумя вещами:
-///   * только http/1.1: по h2 всё едет в одном соединении, а провайдер режет
-///     соединение после ~16 КБ — второй кусок уходит в мёртвый сокет;
-///   * пул выключен: каждая порция должна ехать в новом соединении, потому что
-///     старое после ответа уже мертво. Проверено на живом CDN: 13 кусков по
-///     16 КБ проходят за ~1.5 с, а через пул падает второй же.
+/// Клиент загрузки: HTTP/1.1 и без повторного использования idle-соединений,
+/// поскольку CDN SoundCloud иногда зависает на длинном ответе.
 fn dl_http() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
@@ -192,7 +186,8 @@ impl<'a> Progress<'a> {
     }
 }
 
-/// Прогрессивная загрузка: один url, но всё равно кусками (см. append_url).
+/// Прогрессивная загрузка: один непрерывный поток с возобновлением через Range
+/// только при сетевой паузе или преждевременном EOF.
 async fn download_to_file(
     url: &str,
     dest: &Path,
@@ -345,15 +340,8 @@ fn content_range_total(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     v.rsplit('/').next()?.trim().parse::<u64>().ok()
 }
 
-/// Скачать один url и дописать в файл. Возвращает число байт и полный размер,
-/// если сервер его сообщил.
-///
-/// Почему кусками: см. DL_CHUNK и dl_http. Обычный поток на этой сети встаёт
-/// на 15 КБ и висит до read-timeout'а, а через пул падает уже второй кусок.
-/// Range-запросы по 16 КБ в новом соединении идут по 0.12 с каждый.
-///
-/// Повторы обязательны: кусков на трек сотни, и один капризный ответ CDN не
-/// должен убивать всю загрузку.
+/// Скачать один url потоком; если сервер перестал отвечать, продолжить с
+/// текущего смещения через Range, не перекачивая уже записанные байты.
 async fn append_url(
     client: &reqwest::Client,
     url: &str,
@@ -363,97 +351,73 @@ async fn append_url(
 ) -> Result<(u64, Option<u64>), String> {
     use tokio::io::AsyncWriteExt;
 
-    const TRIES: u32 = 4;
-    const CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+    const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    const MAX_RANGE_RETRIES: u32 = 4;
 
+    let mut req = client.get(url)
+        .header("User-Agent", DL_UA)
+        .header("Accept", "audio/*,*/*;q=0.8");
+    if let Some(t) = token { req = req.header("Authorization", format!("OAuth {t}")); }
+    let response = req.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() { return Err(format!("HTTP {}", response.status())); }
+    let mut total = response.content_length();
     let mut got = 0u64;
-    let mut total: Option<u64> = None;
-    let mut tries = 0u32;
+    let mut stream = response.bytes_stream();
+    let mut stalled = false;
 
-    while total.map_or(true, |t| got < t) {
+    loop {
+        match tokio::time::timeout(STALL_TIMEOUT, stream.next()).await {
+            Ok(Some(Ok(bytes))) => {
+                file.write_all(&bytes).await.map_err(|e| e.to_string())?;
+                got += bytes.len() as u64;
+                prog.report(got, total.unwrap_or(0));
+            }
+            Ok(Some(Err(e))) => { dlog(format!("поток оборвался после {got} байт: {e}")); stalled = true; break; }
+            Ok(None) => break,
+            Err(_) => { dlog(format!("поток завис после {got} байт; продолжаю по Range")); stalled = true; break; }
+        }
+    }
+    if !stalled && total.map_or(true, |size| got >= size) { return Ok((got, total)); }
+    if !stalled && total.is_none() { return Ok((got, None)); }
+
+    let mut retries = 0;
+    while total.map_or(true, |size| got < size) {
         let range = format!("bytes={got}-{}", got + DL_CHUNK - 1);
-        let mut req = client
-            .get(url)
+        let mut range_req = client.get(url)
             .header("User-Agent", DL_UA)
             .header("Accept", "audio/*,*/*;q=0.8")
             .header(reqwest::header::RANGE, &range);
-        if let Some(t) = token {
-            req = req.header("Authorization", format!("OAuth {t}"));
-        }
-        let res = req.send().await;
-
-        let res = match res {
-            Ok(r) => r,
+        if let Some(t) = token { range_req = range_req.header("Authorization", format!("OAuth {t}")); }
+        let response = match range_req.send().await {
+            Ok(response) if response.status().as_u16() == 206 => response,
+            Ok(response) if response.status().as_u16() == 416 => break,
+            Ok(response) => {
+                retries += 1;
+                if retries >= MAX_RANGE_RETRIES { return Err(format!("Range {range}: HTTP {}", response.status())); }
+                tokio::time::sleep(std::time::Duration::from_millis(250 * retries as u64)).await;
+                continue;
+            }
             Err(e) => {
-                tries += 1;
-                dlog(format!("{range}: {e} (попытка {tries})"));
-                if tries >= TRIES {
-                    return Err(e.to_string());
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(300 * tries as u64)).await;
+                retries += 1;
+                if retries >= MAX_RANGE_RETRIES { return Err(format!("Range {range}: {e}")); }
+                tokio::time::sleep(std::time::Duration::from_millis(250 * retries as u64)).await;
                 continue;
             }
         };
-        let status = res.status().as_u16();
-
-        /* сервер не понял Range и отдал файл целиком — забираем как раньше */
-        if status == 200 && got == 0 {
-            let len = res.content_length().unwrap_or(0);
-            let mut stream = res.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(|e| e.to_string())?;
-                file.write_all(&chunk).await.map_err(|e| e.to_string())?;
-                got += chunk.len() as u64;
-                prog.report(got, len);
-            }
-            return Ok((got, None));
-        }
-        /* 416 — запросили за концом: значит уже всё скачано */
-        if status == 416 {
-            break;
-        }
-        if status != 206 {
-            tries += 1;
-            dlog(format!("{range}: HTTP {status} (попытка {tries})"));
-            if tries >= TRIES {
-                return Err(format!("HTTP {status}"));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(400 * tries as u64)).await;
-            continue;
-        }
-
-        if total.is_none() {
-            total = content_range_total(res.headers());
-        }
-        let chunk = match tokio::time::timeout(CHUNK_TIMEOUT, res.bytes()).await {
-            Ok(Ok(b)) => b,
-            Ok(Err(e)) => {
-                tries += 1;
-                dlog(format!("{range}: тело: {e} (попытка {tries})"));
-                if tries >= TRIES {
-                    return Err(e.to_string());
-                }
-                continue;
-            }
-            Err(_) => {
-                tries += 1;
-                dlog(format!("{range}: тело не пришло (попытка {tries})"));
-                if tries >= TRIES {
-                    return Err("chunk timeout".into());
-                }
-                continue;
-            }
-        };
-        if chunk.is_empty() {
-            break;
-        }
-        tries = 0;
-        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
-        got += chunk.len() as u64;
+        total = total.or_else(|| content_range_total(response.headers()));
+        let bytes = tokio::time::timeout(STALL_TIMEOUT, response.bytes())
+            .await.map_err(|_| format!("Range {range}: timeout"))?
+            .map_err(|e| format!("Range {range}: {e}"))?;
+        if bytes.is_empty() { break; }
+        let count = bytes.len() as u64;
+        file.write_all(&bytes).await.map_err(|e| e.to_string())?;
+        got += count;
         prog.report(got, total.unwrap_or(0));
-        if total.is_none() && (chunk.len() as u64) < DL_CHUNK {
-            break;
-        }
+        retries = 0;
+        if total.is_none() && count < DL_CHUNK { break; }
+    }
+    if total.is_some_and(|size| got < size) {
+        return Err(format!("неполное скачивание: {got} из {} байт", total.unwrap()));
     }
     Ok((got, total))
 }
@@ -530,7 +494,7 @@ async fn download_hls(
     /* прогноз размера — необязательное украшение: если сеть отвечает вяло,
        не держим из-за него начало загрузки */
     let total = tokio::time::timeout(
-        std::time::Duration::from_secs(6),
+        std::time::Duration::from_millis(900),
         segment_sizes(&dl, pl.init.as_ref(), &pl.segments),
     )
     .await

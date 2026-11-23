@@ -101,6 +101,7 @@ window.electronAPI = {
   onMediaPlayPause: cb => on('media-play-pause', cb),
   onMediaNext: cb => on('media-next', cb),
   onMediaPrev: cb => on('media-prev', cb),
+  setTaskbarPlayback: state => invoke('set_taskbar_playback', { state }),
 
   /* ── soundcloud ───────────────────────────────────────────────────────── */
   /* Логин и первый запрос к api залогированы: это единственное место, где
@@ -160,6 +161,7 @@ window.electronAPI = {
     return res
   },
   netFetch: (url, headers) => invoke('net-fetch', { url, headers: headers || {} }),
+  scWaveform: url => invoke('sc_waveform', { url }),
 
   scCheckCovers: async ids => {
     const found = await invoke('sc-check-covers', { ids })

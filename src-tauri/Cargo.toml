@@ -39,6 +39,7 @@ base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 url = "2"
 rayon = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 # discord-каналы: std-обёртка NamedPipeClientConn за фичей `named_pipe`,
 # которую из крейта включить нельзя, поэтому Win32 напрямую.
 # Версия 0.61 — та же, что тянет tauri: в дереве и так пять версий
@@ -50,6 +51,12 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Threading",
   # материал окна (Mica): DwmSetWindowAttribute живёт здесь (см. backdrop.rs)
   "Win32_Graphics_Dwm",
+] }
+
+windows = { version = "0.62", features = [
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 # Release: символы пользователю не нужны, lto — потому что tauri и webview2

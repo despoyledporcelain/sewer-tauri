@@ -15,6 +15,8 @@ mod library;
 mod netcmd;
 mod settings;
 mod soundcloud;
+mod sc_waveform;
+mod taskbar;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -186,6 +188,7 @@ pub fn run() {
                непрозрачным: настройка читается фронтендом асинхронно, а
                полупрозрачной оболочку он делает уже после первого рендера */
             if let Some(w) = handle.get_webview_window("main") {
+                taskbar::install(&w);
                 /* Рамку окна снимаем всегда и до всего остального: она
                    рисуется DWM поверх окна и никуда не девается, даже если
                    панель скруглена своим радиусом. Именно её видно по углам
@@ -238,6 +241,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            taskbar::set_taskbar_playback,
+            sc_waveform::sc_waveform,
             win_minimize,
             win_close,
             dialog_select_folder,

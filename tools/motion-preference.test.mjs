@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { reducedMotionNow, subscribeReducedMotion, animateHeroFlight, heroMayReveal } from '../src/motion-preference.js';
 import { isFineHover } from '../src/motion-lifecycle.js';
 import { sliderFraction } from '../src/slider.js';
+import { makeSoundCloudWaveformPath } from '../src/use-soundcloud-waveform.js';
 import { hookHarness, animationElement, fakeClock, findNode } from './motion-harness.mjs';
 
 const app = readFileSync(new URL('../src/app.jsx', import.meta.url), 'utf8');
@@ -26,15 +27,17 @@ test('preference subscriptions react live and release modern/legacy listeners, u
   assert.equal(reducedMotionNow(), false);
 });
 
-test('magnetic and imperative hover require a real fine mouse, not emulated pen/touch hover', () => {
+test('imperative hover requires a real fine mouse and transport hover uses gated CSS', () => {
   const fine = () => ({ matches: true }), coarse = () => ({ matches: false });
   assert.equal(isFineHover({ pointerType: 'mouse' }, fine), true);
   assert.equal(isFineHover({ pointerType: 'mouse' }, coarse), false);
   assert.equal(isFineHover({ pointerType: 'touch' }, fine), false);
   assert.equal(isFineHover({ pointerType: 'pen' }, fine), false);
   assert.equal(isFineHover({}, fine), false);
-  assert.match(app, /reduce \|\| disabled \|\| !isFineHover\(e\)/);
-  assert.match(app, /if \(reduce \|\| disabled\) \{ mx\.jump\(0\); my\.jump\(0\); \}/);
+  const transport = app.slice(app.indexOf('function TransportButton('), app.indexOf('function PlayBtn('));
+  assert.doesNotMatch(transport, /onPointerMove|useSpring/);
+  assert.match(css, /@media \(hover: hover\) and \(pointer: fine\) \{\s*\.player-transport-button:where\(:enabled:hover\)/);
+  assert.match(css, /\.player-transport-button\[data-reduced-motion="true"\] \.player-transport-icon \{\s*transform:none/);
 });
 
 test('the actual preference hook observes live snapshots and releases its subscription', () => {
@@ -239,7 +242,57 @@ test('settings focus cancels native smooth movement on live reduction while reta
   assert.equal(highlight.calls[0].cancelled, true); harness.unmount(); assert.equal(clock.timers.size, 0);
 });
 
-test('reduced progress keeps decoder fractions and thumb centering while hover/press retain only color and opacity', () => {
+test('SoundCloud waveform distinguishes dense sections with identical peaks', () => {
+  const bars = [
+    ...Array(10).fill(Array(8).fill(0)),
+    ...Array(55).fill([255, ...Array(7).fill(230)]),
+    ...Array(55).fill([255, ...Array(7).fill(248)]),
+  ];
+  const path = makeSoundCloudWaveformPath(Uint8Array.from(bars.flat()));
+  const heights = Array.from(path.matchAll(/M[\d.]+ ([\d.]+)V([\d.]+)/g),
+    ([, top, bottom]) => Number(bottom) - Number(top));
+  assert.equal(heights.length, 120);
+  assert.equal(heights[0], 2);
+  assert.ok(heights[80] - heights[20] > 6);
+  assert.equal(new Set(heights.slice(65)).size, 1, 'equal levels stay equal');
+});
+
+test('track waveform entrance follows the player reveal and both color layers restart together', () => {
+  const begin = app.indexOf('function ProgressBar('), end = app.indexOf('const MENU_VARIANTS', begin);
+  const clock = fakeClock();
+  let reduced = false;
+  const harness = hookHarness(`${app.slice(begin, end)}\nexport { ProgressBar };`, {}, {
+    useReducedMotion: () => reduced, fmt: String,
+    setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+    requestAnimationFrame: fn => clock.setTimeout(fn, 16), cancelAnimationFrame: clock.clearTimeout,
+    document: { addEventListener() {}, removeEventListener() {} },
+    ResizeObserver: class { observe() {} disconnect() {} },
+  });
+  const props = { progressRef: { current: 0.5 }, audioRef: { current: null }, total: 100,
+    visible: true, waveformPath: 'M2 4V20M6 3V21', trackId: 'first', entranceDelay: 280 };
+  const render = () => harness.render(harness.exports.ProgressBar, props);
+  const isWave = node => node.props?.className === 'player-wave-pattern';
+  const wave = tree => findNode(tree, isWave);
+  assert.equal(wave(render()).props['data-entrance'], 'wait');
+  clock.advance(280);
+  const tree = render();
+  const base = wave(tree);
+  const played = findNode(tree, node => node.props?.className === 'player-wave-played');
+  assert.equal(base.props['data-entrance'], 'play');
+  assert.deepEqual(Array.from(base.props.children, path => path.props.style.animationDelay), ['0ms', '18ms']);
+  assert.equal(wave(played), base);
+  props.trackId = 'next';
+  assert.notEqual(wave(render()).key, base.key);
+  reduced = true;
+  assert.equal(wave(render()).props['data-entrance'], undefined);
+  props.visible = false; render();
+  props.visible = true; reduced = false;
+  assert.equal(wave(render()).props['data-entrance'], 'wait');
+  harness.unmount();
+  assert.equal(clock.timers.size, 0);
+});
+
+test('progress clips the track waveform at the decoder position and keeps seeking available', () => {
   const begin = app.indexOf('function ProgressBar('), end = app.indexOf('const MENU_VARIANTS', begin);
   assert.ok(begin > 0 && end > begin);
   const clock = fakeClock(), seeks = [];
@@ -250,22 +303,115 @@ test('reduced progress keeps decoder fractions and thumb centering while hover/p
     ResizeObserver: class { constructor(callback) { this.callback = callback; } observe(el) { el.offsetWidth = 100; this.callback(); } disconnect() {} },
   });
   const props = { progressRef: { current: 0.75 }, audioRef: { current: { duration: 100, currentTime: 75 } },
-    total: 100, visible: true, isPlaying: false, onSeek: fraction => seeks.push(fraction) };
+    total: 100, visible: true, isPlaying: false, waveformPath: 'M2 4V20', onSeek: fraction => seeks.push(fraction) };
   let tree = harness.render(harness.exports.ProgressBar, props);
-  const fill = findNode(tree, node => node.props?.style?.transformOrigin === 'left center');
+  const fill = findNode(tree, node => node.props?.className === 'player-wave-played');
   const thumb = findNode(tree, node => node.ref && node.props?.style?.transform === 'translate(0, -50%)');
-  clock.advance(16); assert.equal(fill.ref.current.style.transform, 'scaleX(0.75000)');
+  clock.advance(16); assert.equal(fill.ref.current.style.clipPath, 'inset(0 25.000% 0 0)');
   assert.equal(thumb.ref.current.style.transform, 'translate(calc(75.00px - 50%), -50%)');
+  props.isPlaying = true; tree = harness.render(harness.exports.ProgressBar, props);
+  assert.equal(findNode(tree, node => node.type === 'path').props.d, props.waveformPath);
   const hit = findNode(tree, node => node.props?.onPointerEnter && node.props?.onMouseDown);
   hit.props.onPointerEnter({ pointerType: 'mouse' }); tree = harness.render(harness.exports.ProgressBar, props);
-  const rail = findNode(tree, node => node.ref && node.props?.style?.overflow === 'hidden');
-  assert.equal(rail.props.style.height, 10);
+  const rail = findNode(tree, node => node.props?.className === 'player-wave-track');
   rail.ref.current.getBoundingClientRect = () => ({ left: 0, width: 100 });
   hit.props.onMouseDown({ clientX: 25 }); tree = harness.render(harness.exports.ProgressBar, props);
   assert.deepEqual(seeks, [0.25]); assert.equal(rail.props['data-motion-position'], '');
-  assert.equal(findNode(tree, node => node.ref && node.props?.style?.overflow === 'hidden').props.style.height, 10);
-  assert.equal(findNode(tree, node => node.ref === thumb.ref).props.style.width, 14);
+  assert.equal(findNode(tree, node => node.props?.className === 'player-wave').props['data-engaged'], true);
+  props.classic = true; props.isPlaying = false;
+  tree = harness.render(harness.exports.ProgressBar, props);
+  clock.advance(16);
+  assert.equal(findNode(tree, node => node.props?.className === 'player-wave').props['data-classic'], true);
+  assert.equal(fill.ref.current.style.transform, 'scaleX(0.75000)');
+  assert.equal(findNode(tree, node => node.props?.className === 'player-classic-glow').ref.current.style['--pb-glow'], '0.75000');
+  assert.equal(findNode(tree, node => node.props?.className === 'player-wave-track').ref, rail.ref);
   harness.unmount(); assert.equal(clock.timers.size, 0);
+});
+
+test('uncached lyrics can mount their loading meter during playback and release it after loading', () => {
+  const begin = app.indexOf('function AudioMeter('), end = app.indexOf('function LyricsPanel(', begin);
+  const bars = Array.from({ length: 5 }, () => ({ style: {} }));
+  const clock = fakeClock();
+  let disposed = false;
+  const harness = hookHarness(`${app.slice(begin, end)}\nexport { AudioMeter };`, {}, {
+    useRef: () => ({ current: { querySelectorAll: () => bars } }),
+    connectPlaybackAnalyser: () => ({
+      analyser: { fftSize: 1024, frequencyBinCount: 512, context: { sampleRate: 48000 },
+        getByteFrequencyData: bins => bins.fill(255) },
+      dispose: () => { disposed = true; },
+    }),
+    requestAnimationFrame: fn => clock.setTimeout(() => fn(clock.now), 16), cancelAnimationFrame: clock.clearTimeout,
+  });
+  harness.render(harness.exports.AudioMeter, { audioRef: { current: {} }, playing: true });
+  clock.advance(16);
+  assert.ok(bars.every(bar => bar.style.transform === 'scaleY(1)'));
+  harness.unmount();
+  assert.equal(disposed, true);
+  assert.equal(clock.timers.size, 0);
+});
+
+test('filmstrip keeps the played overlay and marker aligned when seeking with reduced motion', () => {
+  const begin = app.indexOf('function ProgressBar('), end = app.indexOf('const MENU_VARIANTS', begin);
+  const clock = fakeClock();
+  const harness = hookHarness(`${app.slice(begin, end)}\nexport { ProgressBar };`, {}, {
+    useReducedMotion: () => true, fmt: String,
+    requestAnimationFrame: fn => clock.setTimeout(() => fn(clock.now), 16), cancelAnimationFrame: clock.clearTimeout,
+    document: { addEventListener() {}, removeEventListener() {} },
+    ResizeObserver: class {
+      constructor(callback) { this.callback = callback; }
+      observe(el) { el.offsetWidth = 200; this.callback(); }
+      disconnect() {}
+    },
+  });
+  const audio = { currentTime: 1, duration: 10 };
+  const props = { progressRef: { current: 0.1 }, audioRef: { current: audio }, total: 10,
+    visible: true, isPlaying: false, film: true, positionVersion: 0 };
+  const render = () => harness.render(harness.exports.ProgressBar, props);
+  const tree = render();
+  assert.equal(findNode(tree, node => node.props['data-film']).props['data-film'], true);
+  const fill = findNode(tree, node => node.props.className === 'player-wave-played').ref.current;
+  const cursor = findNode(tree, node => node.props.className === 'player-wave-cursor').ref.current;
+  clock.advance(48);
+  assert.equal(fill.style.clipPath, 'inset(0 90.000% 0 0)');
+  assert.equal(cursor.style.transform, 'translate(calc(20.00px - 50%), -50%)');
+  assert.equal(clock.timers.size, 0);
+
+  audio.currentTime = 7.5;
+  props.positionVersion++;
+  render();
+  clock.advance(48);
+  assert.equal(fill.style.clipPath, 'inset(0 25.000% 0 0)');
+  assert.equal(cursor.style.transform, 'translate(calc(150.00px - 50%), -50%)');
+  harness.unmount();
+  assert.equal(clock.timers.size, 0);
+});
+
+test('shared artwork follows the sidebar even when its slot changes position only', () => {
+  const start = app.lastIndexOf('  useLayoutEffect(() => {', app.indexOf('const libraryPanel = document.getElementById'));
+  const end = app.indexOf('partyLayoutOpen, partyControlsAligned]);', start) + 'partyLayoutOpen, partyControlsAligned]);'.length;
+  const slot = { left: 350, getBoundingClientRect() { return { left: this.left, top: 50, width: 300, height: 300 }; } };
+  const sidebar = {};
+  const cover = { style: {} };
+  const observed = new Map();
+  const harness = hookHarness(`export function Setup() { ${app.slice(start, end)} }`, {}, {
+    sharedCoverMotion: null, sharedCoverRef: { current: cover }, fullscreenArtRef: { current: null },
+    fullScreen: false, fullscreenSurface: false, track: { id: 1 }, inPlayer: true,
+    partyLayoutOpen: false, partyControlsAligned: false,
+    document: { getElementById: id => id === 'player-album-art' ? slot : sidebar },
+    window: { addEventListener() {}, removeEventListener() {} },
+    ResizeObserver: class {
+      constructor(callback) { this.callback = callback; }
+      observe(element) { observed.set(element, this.callback); }
+      disconnect() { observed.clear(); }
+    },
+  });
+  harness.render(harness.exports.Setup);
+  assert.equal(cover.style.left, '350px');
+  slot.left = 310; observed.get(sidebar)();
+  assert.equal(cover.style.left, '310px');
+  assert.equal(cover.style.width, '300px');
+  harness.unmount();
+  assert.equal(observed.size, 0);
 });
 
 test('AlbumArt reports only the requested drawn cover, and failed new artwork cannot uncover the old layer', () => {

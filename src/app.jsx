@@ -34,6 +34,7 @@ import { CROSSFADE_MAX, CROSSFADE_PRESETS, crossfadeSettings, cleanCrossfadeSett
 import { sliderFraction, sliderValue, pointerFraction } from './slider.js'
 import { Disclosure, DisclosureLayout } from './disclosure.jsx'
 import { MiniPlayer } from './mini-player.jsx'
+import { useSoundCloudWaveform } from './use-soundcloud-waveform.js'
 import { addListeningHistory, cleanListeningHistory, historyTrackKey } from './listening-history.js'
 import { useListeningHistory } from './use-listening-history.js'
 import { useHistoryCovers } from './use-history-covers.js'
@@ -384,28 +385,14 @@ function cleanLyricsQueries(raw) {
 }
 
 /* ── lyrics fetching ──────────────────────────────────────────────────────── */
-/* Название без мусорного хвоста. Genius ищет по строке целиком и на любом
-   лишнем хвосте выдаёт 0 хитов — проверено на реальном треке:
-     «Поиск Врачей В Переулках Осенних 🍂 + voidvoice»  → 0 результатов
-     «Поиск Врачей В Переулках Осенних»                 → 1 результат
-   Поэтому режем:
-     «(feat. …)» / «[Live]»  — скобки
-     «- Remastered 2011»     — тире + хвост
-     «+ voidvoice»           — плюс-хвост (в SC это кредит: продюсер/фит)
-     «carnival * prod. @x»   — звёздочка-хвост, ТОТ ЖЕ кредит (проверено:
-                               Genius «carnival» / «@sedmoenebo», а с
-                               «* prod. …» в запросе — 0 хитов)
-     эмодзи                  — в поиске только мешают, Genius их не ищет */
-function cleanTrackName(s) {
-  return String(s || '')
-    .replace(/\s*[\(\[][^\)\]]*[\)\]]/g, ' ')
-    .replace(/\s*[-–—]\s.*$/, ' ')
-    .replace(/\s+\+\s*.*$/, ' ')
-    /* « * » требует пробелов с двух сторон, иначе «2*3» и «AC*DC» разъедутся */
-    .replace(/\s+\*\s+.*$/, ' ')
-    /* эмодзи и прочая пиктографика: \p{So} символ, \p{Cf} невидимые */
-    .replace(/[\p{So}\p{Cf}\p{No}]/gu, ' ')
+function cleanTrackName(value) {
+  return String(value || '').normalize('NFKC')
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0F]/gu, '')
+    .replace(/\p{Cf}/gu, '')
+    .replace(/\s+(?:#[\p{L}\p{N}_]+)+(?=\s|$)/gu, ' ')
+    .replace(/_/g, ' ')
     .replace(/\s+/g, ' ')
+    .replace(/^[^\p{L}\p{N}@([]+|[^\p{L}\p{N}\p{M})\]!?'’]+$/gu, '')
     .trim();
 }
 
@@ -454,154 +441,97 @@ function parsePlainLyrics(text) {
     .map(l => ({ t: null, text: l, section: /^\[.+\]$/.test(l) }));
 }
 
-/* ── разбор названия SC ─────────────────────────────────────────────────────
-   На SC трек называют «Название + кредит», и формат всё время разный:
-     «carnival * prod. @lungsinfection»  (звёздочка)
-     «Королевский XVII — Charles de Gaulle» (тире, причём тут наоборот:
-        на Genius «Название» — это правая часть, а левая became артистом)
-     «Song + voidvoice», «Track (feat. X)», «Song - Remastered 2011»
-   Добавлять условие на каждый новый случай — путь в никуда, поэтому разбор
-   общий: хвост режется по СЛОВАМ-кредитам, а части — по ЗНАКАМ-разделителям.
-   Пробелы вокруг знака обязательны, иначе «AC*DC» и «2*3» разъедутся. */
+const LYRICS_TRACK_SEPARATOR = /\s+[-–—]\s+/;
+const LYRICS_CREDIT = /\s+(?:[([]\s*@|[([]?\s*(?:feat(?:uring)?|ft|prod(?:uced)?(?:\s+by)?|prodby|pr)(?:[.\s]+)|w\/\s*|\+\s*@?|\*\s+)/i;
+const LYRICS_VERSION = /(?:\b(?:remix|rmx|rework|edit|vip|bootleg|mash[\s-]?up|nightcore|cover|mix)\s*$|^(?:sped[\s-]*up|slowed|nightcore|live(?:\s+(?:at|in|from)\b|$)|acoustic|instrumental|karaoke|demo|radio edit|extended(?: mix)?|remaster(?:ed)?)\b)/i;
 
-/* Слова-кредиты: после первого такого слова начинается не название.
-   Ищем ПЕРВОЕ вхождение, а не жадное «до любого»: «Song feat. Bob (Remix)»
-   должен обрезаться до «Song», а не до «Song feat. Bob». */
-const CREDIT_WORDS = /\b(prod\.?|prodby|feat\.?|ft\.?|featuring|remix|rmx|mix(?:ed)?|edits?|bootleg|rework|rewrk|vip|mash(?:ed)?[\s-]?up|sped[\s-]*up|slowed(?:ed)?|reverb|nightcore|8d|flip|original\s+mix)\b/gi;
-
-/* знаки, которыми SC отделяет название от кредита.
-   ПРОБЕЛЫ с двух сторон обязательны: иначе «AC*DC» и «2*3» разъедутся */
-const TITLE_SPLIT = /\s+[-–—*+|·/]\s+|\s+[x×]\s+/i;
-
-function stripCreditTail(title) {
-  const s = String(title || '');
-  CREDIT_WORDS.lastIndex = 0;
-  const m = CREDIT_WORDS.exec(s);
-  if (!m) return s;
-  /* срез до слова-кредита + снос хвостовых разделителей/открытых скобок */
-  return s.slice(0, m.index).replace(/[\s([|+*\-–—/·x×]+$/i, '').trim();
+function lyricsVersionTail(title) {
+  const suffix = title.match(/\s*[([][^\])]*[)\]]$/)?.[0]
+    || title.match(/\s+[-–—]\s+[^-–—]+$/)?.[0] || '';
+  const label = suffix.replace(/^[\s[(–—-]+|[\s)\]]+$/g, '');
+  return LYRICS_VERSION.test(label) ? suffix : '';
 }
 
-/* Отсев мусорных кандидатов. Кандидаты АДДИТИВНЫ: полное название всегда идёт
-   первым, поэтому лишний/грязный кандидат лишь добавляет бесполезный запрос и
-   ничего не ломает. Ошибка опасна только в одну сторону — пропуск настоящего
-   названия, поэтому фильтр мягкий. */
-function plausibleTitle(s) {
-  const t = String(s || '').trim();
-  if (!t) return false;
-  /* нечётные скобки: «Track (Slowed» и «Reverb)» — обломки после split */
-  const open = (t.match(/[([{]/g) || []).length, close = (t.match(/[)\]}]/g) || []).length;
-  if (open !== close) return false;
-  /* сама часть состоит только из слова-кредита: «Remix», «feat» */
-  CREDIT_WORDS.lastIndex = 0;
-  if (CREDIT_WORDS.test(t)) { CREDIT_WORDS.lastIndex = 0; if (t.replace(CREDIT_WORDS, '').trim().length < 3) return false }
-  return /\p{L}/u.test(t);
-}
-
-/* Кандидаты в «настоящее» название, по убыванию правдоподобия.
-   Ограничен CAP: каждый кандидат — это запрос к источнику. */
-const TITLE_CAND_CAP = 6;
-function titleCandidates(rawTitle) {
-  const T = String(rawTitle || '').trim();
-  const out = [];
-  const add = v => {
-    const s = cleanTrackName(v);
-    if (s && plausibleTitle(s) && !out.includes(s)) out.push(s);
-  };
-  add(T);                                  // целиком, почищенное — всегда первым
-  add(stripCreditTail(T));                 // без хвоста «prod. …»
-  for (const p of T.split(TITLE_SPLIT)) {
-    const s = p.trim();
-    if (!s) continue;
-    add(s);
-    add(stripCreditTail(s));
+function lyricsTitleWithoutCredits(title) {
+  for (const credit of title.matchAll(new RegExp(LYRICS_CREDIT, 'gi'))) {
+    const prefix = title.slice(0, credit.index).trim();
+    if (!/[([][^)\]]*$/.test(prefix)) return prefix;
   }
-  /* префикс до первого разделителя/слова-кредита: «carnival * prod. @x» →
-     «carnival». Раньше брались первые 3 слова подряд, и получалось
-     «Королевский XVII —» с висящим тире */
-  const head = T.split(TITLE_SPLIT)[0] || '';
-  if (head && head !== T) add(head);
-  add(stripCreditTail(head));
-  return out.slice(0, TITLE_CAND_CAP);
+  return title;
 }
 
-/* Трактовки пары «артист / название». На Genius те же слова часто лежат с
-   полями НАОБОРОТ (SC «Королевский XVII — Charles de Gaulle» → Genius
-   artist «королевский XVII», title «charles de gaulle»), поэтому для каждого
-   кандидата пробуем и нормальную, и перевёрнутую расстановку.
-   ВАЖНО: аргумент СЫРОЙ — разбор идёт по нему, чистка применяется после. */
-function trackQueries(artist, rawTitle) {
-  const A = cleanTrackName(artist);
-  const seen = new Set();
+function lyricsBaseTitle(title) {
+  const base = lyricsTitleWithoutCredits(title);
+  return base.slice(0, base.length - lyricsVersionTail(base).length).trim();
+}
+
+function lyricsVersion(title) {
+  return geniusNorm(lyricsVersionTail(lyricsTitleWithoutCredits(title)));
+}
+
+function lyricsArtists(value) {
+  const name = cleanTrackName(value);
+  return [...new Set([
+    name,
+    name.replace(/\s*\((?:unofficial(?: \d+)?|archive)\)$/i, ''),
+    ...name.split(/\s+(?:[&+×x]|feat\.?|ft\.?|with)\s+|\s*,\s*/i),
+  ].filter(Boolean))];
+}
+
+function trackQueries(artist, rawTitle, allowTitleArtist, allowUploaderFallback = allowTitleArtist) {
+  const title = cleanTrackName(rawTitle);
+  const artists = lyricsArtists(artist);
   const pairs = [];
-  for (const c of titleCandidates(rawTitle)) {
-    for (const p of [[A, c], [c, A]]) {
-      const [a, t] = p;
-      /* вырожденная пара «артист + то же имя» бесполезна: запрос вышел бы
-         «Королевский XVII Королевский XVII» и вернул 0 хитов */
-      if (!a || !t || a === t) continue;
-      const k = a + '/' + t;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      pairs.push(p);
+  const seen = new Set();
+  const add = (name, trackTitle, allowOtherArtist = false) => {
+    const t = cleanTrackName(trackTitle);
+    const key = JSON.stringify([geniusNorm(name), geniusNorm(t)]);
+    if (!geniusNorm(t) || seen.has(key)) return;
+    seen.add(key);
+    pairs.push({ artist: name, title: t, version: lyricsVersion(t), allowOtherArtist });
+  };
+
+  const [prefix, ...rest] = title.split(LYRICS_TRACK_SEPARATOR);
+  const suffix = rest.join(' - ');
+  const base = lyricsBaseTitle(title);
+  if (allowTitleArtist && suffix && base !== prefix && prefix.length <= 60 && LYRICS_CREDIT.exec(' ' + suffix)?.index !== 0) {
+    const artistIsSuffix = artists.some(name => geniusNorm(name) === geniusNorm(suffix));
+    const [titleArtist, embeddedTitle] = artistIsSuffix ? [suffix, prefix] : [prefix, suffix];
+    for (const name of lyricsArtists(titleArtist)) {
+      add(name, embeddedTitle);
+      add(name, lyricsBaseTitle(embeddedTitle));
     }
   }
-  return pairs.length ? pairs : [[A, cleanTrackName(rawTitle)]].filter(([a, t]) => a && t);
-}
-/* Строки запроса, по приоритету: первым самый вероятный.
-   Кроме пар «артист + название» идёт ПОИСК ТОЛЬКО ПО НАЗВАНИЮ — на SC в
-   название часто кладут и артиста, и трек, и запрос с артистом мешает
-   (проверено: «Королевский XVII — Charles de Gaulle» без артиста → 2 хита).
-   Список ОГРАНИЧЕН: каждый вариант — это запрос к источнику, и без потолка
-   при длинном названии с кредитами их уходит слишком много. */
-const TITLE_QUERY_CAP = 7;
-function titleVariants(artist, rawTitle) {
-  const out = [];
-  const add = s => {
-    const v = String(s || '').replace(/\s+/g, ' ').trim();
-    if (v && !out.includes(v) && out.length < TITLE_QUERY_CAP) out.push(v);
-  };
-  for (const [a, t] of trackQueries(artist, rawTitle)) add(a ? `${a} ${t}` : t);
-  for (const c of titleCandidates(rawTitle)) add(c);
-  add(String(rawTitle || '').trim());   /* СЫРОЕ: с тире и эмодзи — иногда матчится лучше */
 
-  /* 🚨 ЛАТИНСКИЕ ТРАКТОВКИ идут ПОСЛЕ кириллических и со СВОИМ потолком.
-     Если сайт записал трек по-кириллице, первые запросы уже ответят и до
-     этих дело не дойдёт. А если по-латинице — до кириллических очередь
-     не дойдёт никогда, и без этого блока запросов трек не находится
-     вовсе. Свой потолок, а не общий TITLE_QUERY_CAP: иначе транскрипции
-     вытесняли бы собой исходные варианты, которые могут сработать лучше,
-     и мы бы теряли качество ради случая, который иначе не ловился бы
-     вообще. */
-  const LATIN_QUERY_CAP = 4;
-  const base = out.slice();
-  let latin = 0;
-  const addLatin = s => {
-    if (latin >= LATIN_QUERY_CAP) return;
-    const v = String(s || '').replace(/\s+/g, ' ').trim();
-    if (!v || base.includes(v) || out.includes(v)) return;
-    /* защита от бессмыслицы: строка без гласных — не название */
-    if (!/[aeiouy]/i.test(v.replace(/\P{L}/gu, ''))) return;
-    out.push(v); latin++;
-  };
-  for (const [a, t] of pairVariants(trackQueries(artist, rawTitle))) {
-    if (a) addLatin(`${a} ${t}`); else addLatin(t);
+  for (const name of artists.length ? artists : ['']) {
+    add(name, title, allowUploaderFallback);
+    add(name, base, allowUploaderFallback);
+    if (allowTitleArtist && suffix && geniusNorm(name) === geniusNorm(prefix) + ' archive') {
+      add(name, prefix);
+    }
   }
-  for (const c of titleCandidates(rawTitle)) for (const l of latinVariants(c)) addLatin(l);
-  return out;
+  return pairs;
 }
 
-/* ── Кириллица → латиница для поиска текста ────────────────────────────────
-   Проблема: в треке артист «@седьмоенебо», а на сайте он записан как
-   «@sedmoenebo». Ни один из трёх подходов по отдельности это не чинит:
-     • послать как есть — сайт не находит;
-     • транслитерировать только запрос — сайт найдёт, но `trackScore`
-       сравнивает результат с КИРИЛЛИЧЕСКИМ названием, `geniusNorm` оставляет
-       `\p{L}`, получается 0, и гейт `s > 0` отбрасывает ПРАВИЛЬНЫЙ трек;
-     • заменить кириллицу в самом треке — портит название, показываемое
-       пользователю, и ломает поиск по сайту, где кириллица есть.
-   Поэтому латиница добавляется как ЕЩЁ ОДНА ТРАКТОВКА трека — ровно так же,
-   как уже сделано с перевёрнутой расстановкой «артист/название». */
+function lyricsSearchPairs(pairs) {
+  const variants = [];
+  const seen = new Set();
+  for (const { artist, title } of pairs) {
+    const [artistLatin = artist, alternateArtist = artistLatin] = latinVariants(artist);
+    const [titleLatin = title, alternateTitle = titleLatin] = latinVariants(title);
+    for (const pair of [
+      [artist, title], [artistLatin, titleLatin], [alternateArtist, alternateTitle],
+      [artistLatin, title], [artist, titleLatin],
+    ]) {
+      const query = pair.join(' ').trim();
+      if (seen.has(query)) continue;
+      seen.add(query);
+      variants.push(pair);
+    }
+  }
+  return variants;
+}
+
 const CYR_LATIN = {
   'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z',
   'и':'i','й':'i','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r',
@@ -644,34 +574,6 @@ function latinVariants(s) {
   }
   return out;
 }
-/* Пара «артист / название» вместе с латинскими трактовками.
-   ⚠️ ПОРЯДОК: СНАЧАЛА ВСЕ исходные пары, и только потом латинские.
-   Порядок тут не косметика — `fetchLrclib` берёт первые N пар, и при
-   чередовании (базовая, её перевод, её перевод, следующая базовая…) в этот
-   срез попали бы три варианта ОДНОЙ пары, а выпала бы перевёрнутая
-   расстановка «название/артист» — ровно та, ради которой список и строится.
-   Знак @ и прочая пунктуация НЕ трогаются: на сайте артист именно
-   «@sedmoenebo», а для /api/get у LRCLib совпадение по имени точное. */
-function pairVariants(pairs) {
-  const out = [];
-  const seen = new Set();
-  const add = (a, t) => {
-    if (!a || !t) return;
-    const k = a + '/' + t;
-    if (seen.has(k)) return;
-    seen.add(k); out.push([a, t]);
-  };
-  for (const [a, t] of pairs) add(a, t);
-  for (const [a, t] of pairs) {
-    for (const ta of latinVariants(a)) for (const tt of latinVariants(t)) add(ta, tt);
-    /* случай «артист кириллицей, название латиницей» (и наоборот) — самый
-       частый на практике: переводят только одно из двух */
-    for (const ta of latinVariants(a)) add(ta, t);
-    for (const tt of latinVariants(t)) add(a, tt);
-  }
-  return out;
-}
-
 /* числовые сущности: genius отдаёт `&#x27;` (hex), не только `&#39;` */
 const safeChar = n => (Number.isFinite(n) && n > 0 && n < 0x110000) ? String.fromCodePoint(n) : '';
 function decodeEntities(s) {
@@ -732,254 +634,169 @@ function stripExcluded(html) {
   return out;
 }
 
-async function netGet(url, headers) {
-  const res = await window.electronAPI.netFetch(url, headers);
-  if (!res || res.error) throw new Error(res?.error || 'net_error');
-  return res;
+function geniusNorm(value) {
+  return String(value || '').normalize('NFKD').toLowerCase()
+    .replace(/ё/g, 'е').replace(/[\u0300-\u036f]/g, '').replace(/['’]/g, '')
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ').trim();
 }
 
-/* ── LRCLib ───────────────────────────────────────────────────────────────── */
-/* открытый, без ключа. /api/get — точное совпадение: artist+track+duration,
-   длительность решает (без неё берётся первая строка и можно попасть в
-   ремикс). если точного нет — /api/search, из выдачи берём ближайшую по
-   длительности версию. внутри источника синхронный текст приоритетнее
-   обычного даже если оба пришли */
-async function fetchLrclib(artist, title, duration) {
-  let hit = null;
-  /* Те же варианты, что и для Genius, но ТОЛЬКО ПЕРВЫЕ ДВА. /api/search у
-     lrclib и так нечёткий, третий и четвёртый вариант почти ничего не дают,
-     а стоят 2 запроса каждый: на висящем lrclib это до 96с ожидания. */
-  /* Сначала 3 исходные трактовки (как было), затем до 2 латинских.
-     Порядок в pairVariants гарантирует, что в срез попадают именно
-     исходные, а не три варианта одной пары. Общий потолок вырос с 3 до 5:
-     это 10 запросов в худшем случае вместо 6, но идёт под общим дедлайном
-     fetchLyrics (9с), поэтому висящий источник всё равно не съест панель.
-     Без латинских пар трек вида «@седьмоенебо» не находится здесь вообще:
-     /api/get у LRCLib требует ТОЧНОГО имени, а не нечёткого совпадения. */
-  const lrPairs = pairVariants(trackQueries(artist, title));
-  const LRC_BASE = 3, LRC_LATIN = 2;
-  const lrcList = [
-    ...lrPairs.slice(0, LRC_BASE),
-    ...lrPairs.slice(LRC_BASE).filter(([a, t]) => CYR_RE.test(a + t)).slice(0, LRC_LATIN),
-  ];
-  for (const [qa, qt] of lrcList) {
-    const params = new URLSearchParams({
-      track_name: qt,
-      artist_name: qa,
-      ...(duration > 0 ? { duration: String(Math.round(duration)) } : {}),
-    }).toString();
-
-    if (duration > 0 && !hit) {
-      const r = await netGet(`https://lrclib.net/api/get?${params}`);
-      if (r.status === 200) { try { hit = JSON.parse(r.body) } catch {} }
-    }
-    if (!hit) {
-      const r = await netGet(`https://lrclib.net/api/search?${params}`);
-      if (r.status === 200) {
-        try {
-          const list = JSON.parse(r.body);
-          if (Array.isArray(list) && list.length) {
-            hit = duration > 0
-              ? list.reduce((a, b) => Math.abs((b.duration || 0) - duration) < Math.abs((a.duration || 0) - duration) ? b : a)
-              : list[0];
-          }
-        } catch {}
-      }
-    }
-    if (hit) {
-      /* Для нечёткого /search не принимаем просто ближайший трек: если его
-         длительность сильно отличается, почти наверняка это другая версия
-         или одноимённая песня. Небольшой допуск оставляет место для тишины
-         в начале/конце и расхождения метаданных у разных релизов. */
-      if (duration > 0 && Number(hit.duration) > 0
-        && Math.abs(Number(hit.duration) - duration) > Math.max(8, duration * 0.08)) {
-        hit = null;
-        continue;
-      }
-      /* та же страховка, что в fetchGenius: однословное название не
-         различает трек. у LRCLib она почти не срабатывает — /api/get
-         требует точного имени, — но /api/search нечёткий и проверка
-         бесплатна: `hit.artistName` источник уже отдал */
-      if (titleIsAmbiguous(title) && cleanTrackName(artist)) {
-        if (!artistMatches(hit.artistName, artist)) { hit = null; continue; }
-      }
-      break;
-    }
-  }
-  if (!hit) return null;
-
-  if (hit.syncedLyrics && hit.syncedLyrics.trim()) {
-    const lines = parseLrc(hit.syncedLyrics);
-    if (lines.length) return { lines, synced: true };
-  }
-  if (hit.plainLyrics && hit.plainLyrics.trim())
-    return { lines: parsePlainLyrics(hit.plainLyrics), synced: false };
-  return null;
+function lyricsNameForms(value) {
+  return new Set([value, ...latinVariants(value)].map(geniusNorm).filter(Boolean));
 }
 
-/* ── Genius ───────────────────────────────────────────────────────────────── */
-/* официальный API требует OAuth-токена, поэтому идём через внутренние
-   эндпоинты сайта (те же, что genius.com дёргает из браузера).
-   Схема неофициальная и может отвалиться, поэтому у обоих шагов есть
-   запасной путь. Проверено на живой странице: /api/songs/{id} отдаёт 200,
-   но без поля lyrics (без токена), а текст лежит в HTML — поэтому HTML идёт
-   ПЕРВЫМ, json только как фолбэк. Genius синхронизации не даёт, только plain */
-function geniusNorm(s) {
-  return String(s || '').toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
-}
-/* Доля слов нашего названия, найденных в кандидате, в процентах.
-   Нужна как страховка к includes(): у Genius в заголовке трека часто стоит
-   хвост, которого нет в названии на SC («…(SFDITAA)»), или наоборот. Раньше
-   из-за одного лишнего слова includes() давал false → score 0 → гейт `s > 0`
-   закрывал дверь, хотя трек был найден. */
-function geniusWordOverlap(a, b) {
-  const A = new Set(a.split(' ').filter(w => w.length > 1));
-  if (!A.size) return 0;
-  let hit = 0;
-  for (const w of A) if (b.includes(w)) hit++;
-  return Math.round((hit / A.size) * 100);
-}
-/* 🚨 Название НЕ различает трек, если это одно короткое слово.
-   `carnival`, `skeleton`, `halo`, `fade` — их тысячи, и поиск отдаёт
-   первую попавшуюся одноимённую песню. порог 12 символов: «Soul»,
-   «Scream» и «Breathe» — короткие, но встречаются с артистом в
-   уникальном сочетании; а вот короткая абракадавра (`kkk`, `mvt`)
-   у нас и не появится, потому что `plausibleTitle` требует буквы, а
-   чистка съедает цифры. длинное название — с пробелом — само по себе
-   достаточно различающее, и требование артиста там только мешало бы. */
-const GENERIC_TITLE_MAX_LEN = 12;
-function titleTooGeneric(t) {
-  const s = String(t || '').trim();
-  if (!s) return false;
-  if (/\s/.test(s)) return false;      /* несколько слов — не generic */
-  return s.length <= GENERIC_TITLE_MAX_LEN;
-}
-
-/* 🚨 Название НЕОДНОЗНАЧНО, только если ОДНОСЛОВНЫЕ ВСЕ кандидаты.
-   Первый вариант считал признак по `cleanTrackName(rawTitle)` — и это была
-   ошибка: чистка обрезает название ПО ТИРЕ, так что у
-   «skeleton - im not Alex G, and ur not Sarah» остаётся `skeleton`, одно
-   слово, и страховка резала честную находку (настоящий перезалив с чужим
-   uploader). поймано тестом на живом треке.
-   правильно — спрашивать у разбора: если хоть один кандидат длинный,
-   название различает трек достаточно, и артист не обязателен. */
-function titleIsAmbiguous(rawTitle) {
-  const cands = titleCandidates(rawTitle);
-  if (!cands.length) return false;
-  return cands.every(titleTooGeneric);
-}
-
-/* 🚨 Совпадает ли артист источника с нашим — С УЧЁТОМ КИРИЛЛИЦЫ.
-   сравнивать «как есть» нельзя: на сайте артист «@sedmoenebo», а у нас
-   «@седьмоенебо» — они не равны и не вложены друг в друга, и страховка
-   для однословных названий сама собой убивала бы всю транскрипцию,
-   то есть ломала бы ровно тот случай, ради которого она и писалась.
-   (это поймал тест, а не размышление: без неё однословное название
-   переставало находиться ВООБЩЕ) */
-function artistMatches(candArtist, artist) {
-  const ca = geniusNorm(candArtist || '');
-  if (!ca) return false;
-  const base = cleanTrackName(artist);
-  for (const form of [base, ...latinVariants(base)]) {
-    const oa = geniusNorm(form);
-    if (!oa) continue;
-    if (ca === oa || ca.includes(oa) || oa.includes(ca)) return true;
-  }
-  return false;
-}
-
-/* Лучший score кандидата по ВСЕМ трактовкам трека. При развороте
-   «Артист — Название» роли меняются местами, и сравнивать кандидата только с
-   исходными полями бессмысленно — он получит 0 вопреки точному совпадению.
-   🚨 сюда обязаны входить и ЛАТИНСКИЕ транскрипции (pairVariants): сайт
-   записал артиста как «@sedmoenebo», а у нас он «@седьмоенебо». Без них
-   geniusScore честно возвращает 0 (строки не равны, слов нет), и гейт
-   `s > 0` в fetchGenius отбрасывает именно тот трек, который мы нашли. */
-function trackScore(cand, artist, title) {
-  if (!cand) return 0;
-  let pairs = pairVariants(trackQueries(artist, title));
-  /* ⚠️ трек БЕЗ артиста раньше вообще не мог найтись на Genius, и это не
-     поломка страховки, а давний баг: `trackQueries` отдаёт пустой список
-     (пары отбрасываются по `a && t`, а артиста нет), цикл не делал ни
-     одной итерации, score был 0 для ЛЮБОГО кандидата. запрос-то
-     отправлялся — `titleVariants` умеет искать по одному названию, — но
-     гейт его тут же отбрасывал. */
-  if (!pairs.length) pairs = [['', cleanTrackName(title)]];
-  let best = 0;
-  for (const [a, t] of pairs) {
-    const s = geniusScore(cand, geniusNorm(a), geniusNorm(t));
-    if (s > best) best = s;
+function lyricsMatch(pairs, title, artist) {
+  const candidateTitle = cleanTrackName(title);
+  const candidateBase = lyricsBaseTitle(candidateTitle);
+  const candidateForms = lyricsNameForms(candidateTitle);
+  const candidateBaseForms = lyricsNameForms(candidateBase);
+  const candidateArtists = new Set(lyricsArtists(artist).flatMap(name => [...lyricsNameForms(name)]));
+  const version = lyricsVersion(candidateTitle);
+  let best = null;
+  for (const [index, pair] of pairs.entries()) {
+    const titleForms = [...lyricsNameForms(pair.title)];
+    const exactTitle = titleForms.some(form => candidateForms.has(form));
+    const artistMatch = [...lyricsNameForms(pair.artist)].some(form => candidateArtists.has(form));
+    if (!exactTitle && !(artistMatch && titleForms.some(form => candidateBaseForms.has(form)))) continue;
+    if (pair.artist && !artistMatch &&
+        (!pair.allowOtherArtist || !exactTitle || !geniusNorm(pair.title).includes(' '))) continue;
+    const score = (artistMatch ? 60 : 0) + (exactTitle ? 35 : 20) - Math.min(index, 14);
+    const sameVersion = pair.version === version;
+    if (!best || score > best.score) best = { score, artistMatch, sameVersion, version };
   }
   return best;
 }
-function geniusScore(cand, artist, title) {
-  if (!cand) return 0;
-  const ct = geniusNorm(cand.title);
-  const ca = geniusNorm(cand.primary_artist_names || cand.primary_artist?.name);
-  const t = geniusNorm(title);
-  if (!t) return 0;
-  let s = ct === t ? 100 : (ct.includes(t) || t.includes(ct)) ? 70 : 0;
-  if (!s) {
-    const ov = geniusWordOverlap(t, ct);
-    /* 60% порог: у Genius к названию почти всегда приписан хвост, иначе
-       не проходил бы ни один трек */
-    if (ov >= 60) s = 40 + Math.round(ov / 5);
+
+const LYRICS_BUDGET_MS = 9000;
+
+async function netGet(url, headers, deadline) {
+  if (Date.now() >= deadline) throw new Error('budget');
+  let timer;
+  try {
+    const res = await Promise.race([
+      window.electronAPI.netFetch(url, headers),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('budget')), Math.max(0, deadline - Date.now()));
+      }),
+    ]);
+    if (!res || res.error) throw new Error(res?.error || 'net_error');
+    return res;
+  } finally {
+    clearTimeout(timer);
   }
-  /* Без совпадения по названию трек не найден. Артиста знать не обязательно
-     (перезаливы бывают с чужим uploader), но «совпал только артист» — это
-     чужая песня: раньше такое давало 40 и проходило гейт `s > 0`. */
-  if (!s) return 0;
-  if (artist && ca) s += ca === artist ? 40 : (ca.includes(artist) || artist.includes(ca)) ? 20 : 0;
-  return s;
 }
 
-async function fetchGenius(artist, rawTitle) {
-  /* 1. поиск. Пробуем НЕСКОЛЬКО вариантов запроса: на SC трек называют
-        «Артист — Название», а на Genius те же слова лежат с полями
-        НАОБОРОТ (проверено: SC «Королевский XVII — Charles de Gaulle» →
-        Genius artist «королевский XVII», title «charles de gaulle»).
-        Здесь title — СЫРОЕ, разбор внутри trackQueries. */
-  let id = null;
-  for (const v of titleVariants(artist, rawTitle)) {
-    try {
-      const r = await netGet(`https://genius.com/api/search/multi?q=${encodeURIComponent(v)}`);
-      if (r.status !== 200) continue;
-      const sections = JSON.parse(r.body)?.response?.sections || [];
-      const hits = sections.find(s => s.type === 'song')?.hits || [];
-      const scored = hits
-        .map(h => ({ h, s: trackScore(h.result, artist, rawTitle) }))
-        .sort((a, b) => b.s - a.s);
-      if (scored[0]?.s > 0) {
-        const top = scored[0];
-        const res = top.h.result || {};
-        const candArtist = res.primary_artist_names || res.primary_artist?.name;
-        /* 🚨 ОДНОСЛОВНОЕ название + чужой артист = это другая песня.
-           гейт `s > 0` засчитывает 100 баллов за одно только совпадение
-           названия (артист сверху лишь бонус +40), и для названий вроде
-           `carnival` или `skeleton` это находит первую попавшуюся
-           одноимённую песню чужого артиста. проверено на живой жалобе:
-           «carnival» от @седьмоенебо отдал Playboi Carti.
+async function fetchLrclib(pairs, duration, deadline) {
+  const headers = { 'Lrclib-Client': 'seWer Tauri (https://github.com/despoyledporcelain/sewer-tauri)' };
+  const variants = lyricsSearchPairs(pairs);
+  const [artist, title] = variants[0];
+  const searches = variants.filter(([name]) => name)
+    .map(([name, trackTitle]) => ({ track_name: trackTitle, artist_name: name }));
+  for (const trackTitle of new Set(pairs.flatMap(pair => [pair.title, ...latinVariants(pair.title)]))) {
+    searches.push({ track_name: trackTitle });
+  }
+  // Keep a title-only search in reach when the SoundCloud artist is an uploader.
+  const broad = searches.findIndex(params => !params.artist_name);
+  if (broad > 3) searches.splice(3, 0, ...searches.splice(broad, 2));
+  const requests = searches.slice(0, 7)
+    .map(params => 'search?' + new URLSearchParams(params));
+  if (artist && duration >= 1 && duration <= 3600) {
+    requests.unshift('get?' + new URLSearchParams({
+      artist_name: artist, track_name: title, duration: String(Math.round(duration)),
+    }));
+  }
 
-           артист поэтому обязателен РОВНО для коротких однословных
-           названий, и только когда он у нас вообще есть:
-           • длинное название само по себе различает достаточно — там
-             требование сломало бы честные находки;
-           • перезаливы с чужим uploader бывают (об этом написано выше в
-             geniusScore), но у однословного названия без артиста нет ни
-             одного различающего признака.
-           не отвергаем насовсем, а ПРОБУЕМ СЛЕДУЮЩИЙ ВАРИАНТ запроса —
-           следующий обычно уже с артистом и отсеется правильно. */
-        if (titleIsAmbiguous(rawTitle) && cleanTrackName(artist)) {
-          if (!artistMatches(candArtist, artist)) continue;
-        }
-        id = res.id;
+  const expectedVersion = pairs[0].version;
+  let best = null;
+  let failure = null;
+  let replied = false;
+  for (const request of requests) {
+    if (Date.now() >= deadline) break;
+    let records;
+    try {
+      const response = await netGet('https://lrclib.net/api/' + request, headers, Math.min(deadline, Date.now() + 2200));
+      if (response.status === 429 || response.status === 503) {
+        failure = new Error('HTTP ' + response.status);
         break;
       }
-    } catch {}
-  }
-  if (!id) return null;
+      if (response.status === 404) { replied = true; continue; }
+      if (response.status !== 200) throw new Error('HTTP ' + response.status);
+      records = JSON.parse(response.body);
+      replied = true;
+    } catch (error) {
+      failure = error;
+      continue;
+    }
 
+    for (const record of Array.isArray(records) ? records : [records]) {
+      if (!record || record.instrumental) continue;
+      const match = lyricsMatch(pairs, record.trackName || record.name, record.artistName);
+      if (!match) continue;
+      const delta = duration > 0 && Number(record.duration) > 0
+        ? Math.abs(Number(record.duration) - duration) : Infinity;
+      if (artist && !match.artistMatch && delta > Math.max(8, duration * 0.08)) continue;
+      const timed = parseLrc(record.syncedLyrics);
+      const synced = match.sameVersion && expectedVersion === match.version &&
+        (match.artistMatch || !artist) && delta <= 2.5 && timed.some(line => line.t !== null);
+      const lines = synced ? timed : typeof record.plainLyrics === 'string' && record.plainLyrics.trim() ? parsePlainLyrics(record.plainLyrics)
+        : timed.filter(line => line.t !== null || /^\[.+\]$/.test(line.text))
+          .map(line => ({ ...line, t: null }));
+      if (!lines.length) continue;
+      const rank = match.score + (synced ? 18 : 0) + Math.max(0, 5 - delta);
+      if (!best || rank > best.rank) best = { rank, result: { lines, synced } };
+    }
+    if (best?.result.synced && best.rank >= 107) break;
+  }
+  if (best) return best.result;
+  if (failure && !replied) throw failure;
+  return null;
+}
+
+async function fetchGenius(pairs, deadline) {
+  const queries = [...new Set(lyricsSearchPairs(pairs).map(pair => pair.join(' ').trim()))];
+  const titleOnly = [...new Set(pairs.flatMap(({ title }) => [title, ...latinVariants(title)]))];
+  queries.splice(3, 0, ...titleOnly.slice(0, 2));
+  const candidates = new Map();
+  const tried = new Set();
+  let replied = false;
+  let failure = null;
+  const readCandidate = async (id) => {
+    tried.add(id);
+    return fetchGeniusLyrics(id, deadline);
+  };
+  for (const query of [...new Set([...queries, ...titleOnly])].slice(0, 9)) {
+    if (Date.now() >= deadline - 2000) break;
+    try {
+      const response = await netGet('https://genius.com/api/search/multi?q=' + encodeURIComponent(query), undefined, deadline - 2000);
+      if (response.status !== 200) throw new Error('HTTP ' + response.status);
+      const sections = JSON.parse(response.body)?.response?.sections || [];
+      replied = true;
+      for (const hit of sections.find(section => section.type === 'song')?.hits || []) {
+        const song = hit.result;
+        if (!song?.id || tried.has(song.id)) continue;
+        const match = lyricsMatch(pairs, song.title, song.primary_artist_names || song.primary_artist?.name);
+        if (match) candidates.set(song.id, match.score);
+      }
+      const top = [...candidates].sort((a, b) => b[1] - a[1])[0];
+      if (top && top[1] >= 90) {
+        candidates.delete(top[0]);
+        const result = await readCandidate(top[0]);
+        if (result) return result;
+      }
+    } catch (error) {
+      failure = error;
+      break;
+    }
+  }
+  for (const [id] of [...candidates].sort((a, b) => b[1] - a[1]).slice(0, 3)) {
+    if (Date.now() >= deadline) break;
+    const result = await readCandidate(id);
+    if (result) return result;
+  }
+  if (failure && !replied) throw failure;
+  return null;
+}
+
+async function fetchGeniusLyrics(id, deadline) {
   /* 2. страница трека — рабочий путь. genius режет текст на НЕСКОЛЬКО
      контейнеров (по секциям: [Verse] / [Chorus] / [Bridge]), между ними
      лежат пустые плейсхолдеры для мобильной вёрстки. поэтому склеиваем
@@ -988,7 +805,7 @@ async function fetchGenius(artist, rawTitle) {
      границы контейнеров — по счётчику вложенности (divInnerAt), ленивый
      /<\/div>/ тут обрезал песню до последнего припева */
   try {
-    const r = await netGet(`https://genius.com/songs/${id}`, { 'Accept': 'text/html,application/xhtml+xml' });
+    const r = await netGet(`https://genius.com/songs/${id}`, { Accept: 'text/html,application/xhtml+xml' }, deadline);
     if (r.status === 200) {
       let txt = '';
       for (const inner of geniusLyricChunks(r.body)) {
@@ -1003,7 +820,7 @@ async function fetchGenius(artist, rawTitle) {
 
   /* 3. json — на случай если Genius вернёт lyrics в api без токена */
   try {
-    const r = await netGet(`https://genius.com/api/songs/${id}`);
+    const r = await netGet(`https://genius.com/api/songs/${id}`, undefined, deadline);
     if (r.status === 200) {
       const txt = JSON.parse(r.body)?.response?.song?.lyrics;
       if (txt?.trim()) return { lines: parsePlainLyrics(txt), synced: false };
@@ -1012,53 +829,18 @@ async function fetchGenius(artist, rawTitle) {
   return null;
 }
 
-/* Обходит включённые источники по порядку и берёт первый ответивший.
-   Порядок из настроек — это приоритет, а не «кто первый ответил»: гонка
-   между источниками не устраивает смысла пользователю.
+const LYRICS_MISS = 'miss';
 
-   Раньше здесь стоял голый `catch {}` на источник, и из-за этого «текст не
-   нашёлся» и «сеть / IPC отвалились» выглядели в панели одинаково — а это
-   совершенно разные вещи. Теперь tried собирает исход по каждому
-   источнику, и панель показывает, кто именно не сработал. */
-const LYRICS_MISS = 'miss';   /* источник жив, но трека у него нет */
-/* `q` — необязательная пара {artist, title}, которую человек ввёл карандашом
-   в панели текста (см. lyricsQueryFor). Тогда метаданные трека не участвуют
-   вовсе: ищем ровно то, что попросили. Пустой артист допустим — трек
-   отыщется по одному названию.
-
-   `onTried({id, result, why})` — необязательный отчёт по каждому источнику
-   в момент его ответа (см. ниже, зачем не в конце).
-   `onFound({source, lines, synced})` — текст, как только его принёс любой
-   источник, даже если он не первый по приоритету и панель уже показывает
-   чужой: из этих находок собирается переключатель под шапкой. */
-async function fetchLyrics(track, order, q, onTried, onFound) {
-  const artist = q ? String(q.artist || '').trim()
-    : cleanTrackName(splitArtists(track.artist || '')[0]?.name || '');
-  /* СЫРОЕ название, НЕ чищеное: разбор «Артист — Название» делает
-     trackQueries, и если почистить заранее, тире уже исчезнет и ветка
-     разбора не сработает. Из-за этого весь разворот был мёртвым кодом:
-     «Королевский XVII — Charles de Gaulle» превращался в «Королевский XVII»
-     (то же самое, что и артист), и поиск шёл «Королевский XVII
-     Королевский XVII» → 0 хитов. */
-  const rawTitle = q ? String(q.title || '').trim() : String(track.title || '').trim();
-  const dur = track.duration || 0;
+async function fetchLyrics(track, order, query, allowTitleArtist, onTried, onFound) {
+  const pairs = trackQueries(query.artist, query.title, allowTitleArtist, allowTitleArtist && !track.artistReal);
   const tried = [];
-  if (!cleanTrackName(rawTitle)) return { status: 'empty', tried };
+  if (!pairs.length || !order.length) return { status: 'empty', tried };
 
-  /* Порядок из настроек — это ПРИОРИТЕТ, а не «кто быстрее ответил».
-     Но строго последовательный обход означал, что первый источник блокирует
-     остальные на своём таймауте: если LRCLib первым и не отвечает, Genius
-     стартовал только через 12с×2 запроса, и панель всё это время молчала.
-
-     Решение — все источники в полёте одновременно + ЖЕСТКИЙ БЮДЖЕТ времени:
-     ждём либо разрешения источника №1, либо истечения бюджета. Уложились —
-     берём лучшее по приоритету; не уложились — берём то, что уже есть, и
-     не ждём оставшиеся. Итог: порядок по-прежнему выбирает победителя среди
-     доступных, но мёртвый источник больше не может съесть всё время. */
-  const BUDGET_MS = 9000;
-  if (!order.length) return { status: 'empty', tried };
-  const one = (id) => id === 'lrclib' ? fetchLrclib(artist, rawTitle, dur)
-                    : id === 'genius' ? fetchGenius(artist, rawTitle)
+  // Start both sources together, while keeping the configured display priority.
+  const deadline = Date.now() + LYRICS_BUDGET_MS;
+  const sourceDeadline = deadline - 100;
+  const one = (id) => id === 'lrclib' ? fetchLrclib(pairs, track.duration, sourceDeadline)
+                    : id === 'genius' ? fetchGenius(pairs, sourceDeadline)
                     : Promise.resolve(null);
 
   const box = order.map(() => null);   /* null = ещё в полёте */
@@ -1097,7 +879,6 @@ async function fetchLyrics(track, order, q, onTried, onFound) {
 
   /* deadline считаем ДО гонки: если посчитать после, к бюджету прибавится
      весь срок ожидания и он удвоится */
-  const deadline = Date.now() + BUDGET_MS;
   const left = () => Math.max(0, deadline - Date.now());
   /* ОЖИДАНИЕ ТОЖЕ ОГРАНИЧЕНО бюджетом. Раньше проверка «вышли ли за бюджет»
      стояла ПЕРЕД await, а сам await был без ограничения — а это и есть
@@ -1148,8 +929,7 @@ async function fetchLyrics(track, order, q, onTried, onFound) {
    «ищем текст…». Кеш живёт в settings.json, то есть переживает перезапуск.
 
    Ключа два, и они разные намеренно:
-   · lyricsQueryKey — по САМОМУ ЗАПРОСУ (артист + название). У двух треков с
-     одинаковыми метаданными текст один и тот же, делить запись можно.
+   · Ключ кеша включает запрос и длительность записи для синхронизации.
    · lyricsTrackKey — по ТРЕКУ, для ручной пары из карандаша. У локального
      трека id — это индекс скана, он съезжает при удалении любого файла,
      поэтому в ключ идёт пара artist+title, а не id. */
@@ -1161,8 +941,7 @@ function lyricsTrackKey(track) {
   return lyricsQueryKey(track?.artist, track?.title);
 }
 /* Что реально уходит в источники: ручная пара, если она закреплена за
-   треком, иначе метаданные (артист — первый из списка, ровно как в
-   fetchLyrics). Отсюда же берётся предзаполнение полей в карандаше. */
+   треком, иначе метаданные. Эти же поля предзаполняют форму поиска. */
 function lyricsQueryFor(track, pinned) {
   if (pinned && normKeyPart(pinned.title)) {
     return {
@@ -1171,7 +950,7 @@ function lyricsQueryFor(track, pinned) {
     };
   }
   return {
-    artist: cleanTrackName(splitArtists(track?.artist || '')[0]?.name || ''),
+    artist: String(track?.artistReal || track?.artist || track?.uploaderUsername || '').trim(),
     title:  String(track?.title || '').trim(),
   };
 }
@@ -1517,6 +1296,7 @@ function mapScTrack(t, noTitle) {
     streamUrl: progressive?.url || null,
     hlsUrl: hls?.url || null,
     permalinkUrl: t.permalink_url || null,
+    waveformUrl: t.waveform_url || null,
   };
 }
 
@@ -1915,6 +1695,7 @@ const STRINGS = {
     minimize:'Свернуть', close:'Закрыть',
     nav_tracks:'Треки', nav_search:'Поиск', nav_player:'Плеер', nav_playlists:'Плейлисты',
     nav_local:'Локальная библиотека', nav_settings:'Настройки', nav_party:'слушать вместе',
+    show_player_sidebar:'Показать боковую панель', hide_player_sidebar:'Скрыть боковую панель',
     player_pick:'Выбери трек',
     mini_player:'Миниплеер', playback_previous:'Предыдущий трек', playback_next:'Следующий трек',
     mini_player_open:'Открыть плеер',
@@ -2097,6 +1878,7 @@ const STRINGS = {
     ui_radius:'Скругление', ui_radius_sub:'Углы карточек в настройках. Углы самого окна рисует система',
     ui_vignette:'Виньетка', ui_vignette_sub:'Затемнение по краям окна',
     card_ui:'Элементы интерфейса', ui_hide_sub:'Спрятать лишнее. Всё возвращается здесь же — ничего не пропадает насовсем',
+    progress_bar_style:'Стиль полосы прогресса', progress_bar_waveform:'Волна SoundCloud', progress_bar_classic:'Классическая', progress_bar_film:'Кинолента',
     ui_hide_source:'Переключатель источника', ui_hide_source_sub:'Иконка папки в шапке: локальные треки ↔ облако. Переключать можно и в «Аккаунте»',
     ui_hide_mini_player:'Миниплеер в шапке', ui_hide_mini_player_sub:'Обложка и управление треком вне плеера',
     ui_hide_volume:'Громкость в плеере', ui_hide_volume_sub:'Тонкий ползунок справа. Громкость остаётся в микшере Windows',
@@ -2131,6 +1913,7 @@ const STRINGS = {
     minimize:'Minimize', close:'Close',
     nav_tracks:'Tracks', nav_search:'Search', nav_player:'Player', nav_playlists:'Playlists',
     nav_local:'Local library', nav_settings:'Settings', nav_party:'listen together',
+    show_player_sidebar:'Show sidebar', hide_player_sidebar:'Hide sidebar',
     player_pick:'Pick a track',
     mini_player:'Mini player', playback_previous:'Previous track', playback_next:'Next track',
     mini_player_open:'Open player',
@@ -2299,6 +2082,7 @@ const STRINGS = {
     ui_radius:'Corner radius', ui_radius_sub:'Corners of the settings cards. The window corners are drawn by the system',
     ui_vignette:'Vignette', ui_vignette_sub:'Darkens the edges of the window',
     card_ui:'Interface elements', ui_hide_sub:'Hide the extra chrome. Everything comes back from here — nothing is lost for good',
+    progress_bar_style:'Progress bar style', progress_bar_waveform:'SoundCloud waveform', progress_bar_classic:'Classic', progress_bar_film:'Filmstrip',
     ui_hide_source:'Source switch', ui_hide_source_sub:'Folder icon in the titlebar: local tracks ↔ cloud. You can also switch it in Account',
     ui_hide_mini_player:'Titlebar mini player', ui_hide_mini_player_sub:'Artwork and playback controls outside the player',
     ui_hide_volume:'Player volume', ui_hide_volume_sub:'Thin slider on the right. Volume stays available in the Windows mixer',
@@ -2824,14 +2608,17 @@ function afxTransport(patch) {
 }
 
 /* ── Progress Bar ────────────────────────────────────────────────────────── */
-function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible, disabled = false, positionVersion }) {
+const PLAYER_PROGRESS_ENTRANCE_MS = 280;
+
+function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible, disabled = false, positionVersion, waveformPath, classic = false, film = false, trackId, entranceDelay = 0 }) {
   const reduced = useReducedMotion();
   const trackRef         = useRef(null);
   const fillRef          = useRef(null);
   const thumbRef         = useRef(null);
   const glowRef          = useRef(null);
+  const classicRef       = useRef(classic);
+  classicRef.current = classic;
   const rafRef           = useRef(null);
-  const progRef          = useRef(progressRef.current);
   const dragging         = useRef(false);
   const visibleRef       = useRef(visible);
   const elapsedSpanRef   = useRef(null);
@@ -2843,18 +2630,9 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
   const [hover, setHover]   = useState(false);
   const [active, setActive] = useState(false);
   const [tip, setTip] = useState({ x: 0, t: 0, show: false });
+  const [waveReady, setWaveReady] = useState(false);
 
-  /* стартовое значение прогресса для jsx. дальше transform перезаписывает
-     rAF каждый кадр, а константа в style нужна, чтобы react не «восстановил»
-     своё значение при ререндере: react пишет в стиль только если значение
-     ИЗМЕНИЛОСЬ, поэтому неизменная константа переживает любой ререндер App */
   const initP = useRef(progressRef.current).current;
-
-  /* альфы свечения — ровно те, что раньше были зашиты прямо в три строки
-     box-shadow. насыщенность на ховере даёт transition по box-shadow, а
-     прогресс едет через opacity: если бы rAF писал ещё и силу свечения,
-     переход при наведении перестал бы работать */
-  const GLOW_A = { idle: 0.18, soft: 0.2, hover: 0.30, active: 0.42 };
 
   /* ширина дорожки в css-px. кэшируется, потому что читать offsetWidth
      в rAF — это принудительный layout каждый кадр. меняется только на
@@ -2875,8 +2653,22 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
   }, [visible]);
 
   useEffect(() => { kick(); }, [isPlaying]);
-  useEffect(() => { kick(); }, [positionVersion]);
+  useEffect(() => { kick(); }, [positionVersion, classic, film]);
   useEffect(() => { if (disabled) { dragging.current = false; setActive(false); } }, [disabled]);
+
+  useEffect(() => {
+    if (!visible) {
+      setWaveReady(false);
+      return;
+    }
+    if (!entranceDelay) {
+      setWaveReady(true);
+      return;
+    }
+    // Wait for the player stage to start fading in, including for cached tracks.
+    const timer = setTimeout(() => setWaveReady(true), entranceDelay);
+    return () => clearTimeout(timer);
+  }, [visible, entranceDelay]);
 
   useEffect(() => {
     let lastRaw = -1;
@@ -2894,28 +2686,18 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
          сглаживать больше нечего и не нужно — плавность получается сама. */
       const audio = audioRef?.current;
       const raw = (audio && audio.duration) ? audio.currentTime / audio.duration : progressRef.current;
-      progRef.current = raw;
       const p = Math.max(0, Math.min(1, raw));
-      /* ТОЛЬКО transform/opacity. Раньше здесь стояло
-         `fill.style.width = p%` и `thumb.style.left = p%` — оба layout-свойства,
-         то есть layout+paint на каждом кадре вместо композиции.
-         thumb позиционируется через translate в пикселях от кэшированной
-         ширины дорожки, потому что translateX в процентах считается от
-         ШИРИНЫ САМОГО THUMB'а, а не дорожки. */
-      if (fillRef.current)  fillRef.current.style.transform = `scaleX(${p.toFixed(5)})`;
-      /* ⚠️ `- 50%` по X обязателен: без него ЛЕВЫЙ край шарика встаёт на
-         точку прогресса и он уезжает на половину своей ширины вправо.
-         раньше это делало css-свойство `translate: -50% -50%`, отдельное от
-         transform, — при переезде позиции в transform оно потерялось */
+      if (fillRef.current) {
+        if (classicRef.current) {
+          fillRef.current.style.transform = `scaleX(${p.toFixed(5)})`;
+          glowRef.current?.style.setProperty('--pb-glow', p.toFixed(5));
+        } else {
+          // Keep the waveform fixed in place and clip only the accent overlay.
+          fillRef.current.style.clipPath = `inset(0 ${((1 - p) * 100).toFixed(3)}% 0 0)`;
+        }
+      }
       if (thumbRef.current) thumbRef.current.style.transform =
         `translate(calc(${(p * trackWRef.current).toFixed(2)}px - 50%), -50%)`;
-      /* глоу едет через CSS-переменную, а не через opacity: у слоя есть
-         гейт выключенных свечений (--glow-opacity) в calc, и прямое
-         присваивание opacity его бы перекрыло.
-         раньше ширина глоу бралась из progressRef.current НА РЕНДЕРЕ,
-         то есть в rAF не попадала никогда: без ререндера App шкала не
-         едет, а у глоу остаётся светящееся пятно у левого края */
-      if (glowRef.current)  glowRef.current.style.setProperty('--pb-glow', p.toFixed(5));
       const dur = totalRef.current || 0;
       const de = Math.floor(p * dur);
       if (de !== lastElapsedText && elapsedSpanRef.current) {
@@ -2942,12 +2724,13 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
        в rAF НЕ меряем: offsetWidth там = принудительный layout каждый кадр */
     const measure = () => { trackWRef.current = trackRef.current?.offsetWidth || 0; };
     measure();
-    const ro = new ResizeObserver(measure);
+    const ro = new ResizeObserver(() => { measure(); kick(); });
     if (trackRef.current) ro.observe(trackRef.current);
-    if (visibleRef.current) rafRef.current = requestAnimationFrame(draw);
+    kick();
     return () => {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
+      drawRef.current = null;
       ro.disconnect();
     };
   }, []);
@@ -2971,9 +2754,18 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
     userSelect: 'none', flexShrink: 0,
     transition: 'color 0.2s ease',
   };
-  const thick = !reduced && (hover || active);
-  const TRACK_H = thick ? 14 : 10;
-  const THUMB_SZ = reduced ? 14 : active ? 16 : (hover ? 14 : 0);
+  const strokes = !classic && !film && waveformPath ? waveformPath.match(/M[^M]+/g) : null;
+  const groupSize = strokes ? Math.ceil(strokes.length / 8) : 1;
+  const waveform = strokes
+    ? <svg key={trackId} className="player-wave-pattern" viewBox="0 0 576 24" preserveAspectRatio="none"
+        data-entrance={visible && !reduced ? (waveReady ? 'play' : 'wait') : undefined}
+        fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        {Array.from({ length: Math.ceil(strokes.length / groupSize) }, (_, group) => (
+          <path key={group} d={strokes.slice(group * groupSize, (group + 1) * groupSize).join('')}
+            style={{ animationDelay: `${group * 18}ms` }}/>
+        ))}
+      </svg>
+    : <span className="player-wave-rail"/>;
   return (
     <div style={{width:'100%', display:'flex', alignItems:'center', gap:11}}>
       <span ref={elapsedSpanRef} style={timeStyle}>{fmt(Math.floor(progressRef.current * (total||0)))}</span>
@@ -3013,57 +2805,24 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
             zIndex: 5,
           }}>{fmt(tip.t)}</div>
         )}
-        <div style={{ width:'100%', position:'relative' }}>
-          {/* track with overflow-hidden so fill scaleX clips cleanly */}
-          <div ref={trackRef} data-motion-position=""
-            style={{
-              width:'100%', position:'relative',
-              height: TRACK_H,
-              borderRadius: 999, overflow:'hidden',
-              background:'rgba(255,255,255,0.085)',
-              boxShadow: thick ? 'inset 0 1px 1px rgba(0,0,0,0.18)' : 'none',
-              transition: 'height 0.22s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.2s ease',
-            }}
-          >
-            {/* fill: полная ширина + scaleX. почему — в index.md */}
-            <div ref={fillRef} style={{
-              position:'absolute', left:0, top:0,
-              height:'100%', width:'100%',
-              transformOrigin:'left center',
-              transform: 'scaleX(' + initP.toFixed(5) + ')',
-              borderRadius: '0 999px 999px 0',
-              background: 'linear-gradient(90deg, rgba(var(--accent-rgb),0.88), color-mix(in srgb, rgb(var(--accent-rgb)) 86%, white))',
-              pointerEvents:'none',
-            }}/>
+        <div className="player-wave" aria-hidden="true"
+          data-film={film}
+          data-classic={classic}
+          data-reduced-motion={reduced}
+          data-hover={hover}
+          data-active={active}
+          data-empty={!(total > 0)}
+          data-engaged={hover || active}>
+          <div ref={trackRef} className="player-wave-track" data-motion-position="">
+            {!classic && !film && waveform}
+            <div ref={fillRef} className="player-wave-played"
+              style={classic ? {transform: `scaleX(${initP})`} : {clipPath: `inset(0 ${(1 - initP) * 100}% 0 0)`}}>
+              {!classic && !film && waveform}
+            </div>
           </div>
-          {/* glow: полной ширины, едет opacity. почему — в index.md */}
-          <div ref={glowRef} data-motion-position="" style={{
-            position:'absolute', left:0, right:0, top:'50%', translate:'0 -50%',
-            height: TRACK_H,
-            borderRadius: 999,
-            /* гейт «свечения выключены» живёт в calc: opacity теперь
-               перезаписывает rAF, простое значение перекрыло бы его */
-            opacity: 'calc(var(--pb-glow, 0) * var(--glow-opacity, 1))',
-            boxShadow: (() => {
-              if (active) return '0 0 20px rgba(var(--accent-rgb),' + GLOW_A.active + '), 0 0 7px rgba(var(--accent-rgb),' + GLOW_A.hover + ')';
-              if (hover)  return '0 0 16px rgba(var(--accent-rgb),' + GLOW_A.hover + '), 0 0 5px rgba(var(--accent-rgb),' + GLOW_A.soft + ')';
-              return '0 0 10px rgba(var(--accent-rgb),' + GLOW_A.idle + ')';
-            })(),
-            pointerEvents:'none',
-            transition: 'box-shadow 0.18s linear, height 0.22s cubic-bezier(0.34,1.56,0.64,1)',
-          }}/>
-          {/* thumb: left 0, позиция приходит translate'ом в px (см. draw) */}
-          <div ref={thumbRef} data-motion-position="" style={{
-            position:'absolute', top:'50%', left:0,
-            transform: 'translate(0, -50%)',
-            width: THUMB_SZ, height: THUMB_SZ,
-            borderRadius: '50%',
-            background: '#fff',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.08)',
-            opacity: (hover || active) ? 1 : 0,
-            transition: 'width 0.18s cubic-bezier(0.34,1.56,0.64,1), height 0.18s cubic-bezier(0.34,1.56,0.64,1), opacity 0.18s ease',
-            pointerEvents:'none',
-          }}/>
+          {classic && <div key="classic-glow" ref={glowRef} className="player-classic-glow"/>}
+          <div key="position" ref={thumbRef} className="player-wave-cursor" data-motion-position=""
+            style={{transform: 'translate(0, -50%)'}}/>
         </div>
       </div>
       <span ref={remainingSpanRef} style={timeStyle}>-{fmt((total||0) - Math.floor(progressRef.current * (total||0)))}</span>
@@ -3669,47 +3428,14 @@ function AmbientGlow({ visible, off }) {
   );
 }
 
-/* ── MagBtn ──────────────────────────────────────────────────────────────── */
-/* Кнопка транспорта.
-
-   Раньше на ховере была одна `scale(1.1)` на жёсткой пружине: кнопка целиком
-   «щёлкала» размером, а иконка и подложка оставались на месте. Отсюда и
-   ощущение дешёвки — движение одно, мгновенное, и оно про габарит, а не про
-   саму кнопку.
-
-   Теперь масштаба на ховере нет вовсе:
-   • под иконкой расцветает ореол в акцентном цвете (radial-gradient, а не
-     box-shadow: тень повторяет силуэт кнопки и на тёмном фоне даёт грязное
-     пятно вместо свечения);
-   • иконка едет за курсором на пару пикселей — отсюда и «магнит». Движение на
-     пружине: pointermove приходит на 100 Гц, и без интерполяции иконка прыгала
-     бы пиксельными ступеньками;
-   • масштаб остался только у нажатия (0.94) — это единственное движение,
-     которое обязано читаться как отклик.
-
-   Ореол и уезд иконки — transform/opacity, то есть композитор: ховер не
-   трогает layout и не дёргается, даже когда основной поток занят. */
-
-function MagBtn({ onClick, active, children, size=52, disabled = false, title }) {
-  const reduce = useReducedMotion();
-
+function TransportButton({ onClick, active, children, size = 52, disabled = false, title }) {
+  const reduced = useReducedMotion();
   return (
-    <motion.button className="player-button-hover" data-reduced-motion={reduce} data-motion-spatial="" onClick={onClick} disabled={disabled} title={title}
-      whileTap={disabled || reduce ? undefined : { scale: 0.94 }}
-      animate={reduce ? { scale: 1 } : undefined}
-      transition={{ type:'spring', stiffness: 520, damping: 28, mass: 0.5 }}
-      style={{
-        position:'relative',
-        width:size, height:size, borderRadius:'50%', border:'none', background:'none',
-        color: active ? 'var(--accent)' : 'rgba(255,255,255,0.38)',
-        display:'flex', alignItems:'center', justifyContent:'center',
-        cursor:disabled ? 'default' : 'pointer', opacity:disabled ? 0.4 : 1, flexShrink:0,
-        transition:'color 220ms ease',
-      }}>
-      <span style={{position:'relative', display:'flex', alignItems:'center', justifyContent:'center'}}>
-        {children}
-      </span>
-    </motion.button>
+    <button type="button" className="player-transport-button"
+      onClick={onClick} disabled={disabled} title={title} aria-pressed={active}
+      data-reduced-motion={reduced} style={{ width:size, height:size }}>
+      <span className="player-transport-icon">{children}</span>
+    </button>
   );
 }
 
@@ -3718,27 +3444,17 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
   const reduced = useReducedMotion();
   const pulseRef = useRef(null);
   const pulseMotionRef = useRef(null);
-  const BTN = 'clamp(58px, 7.2vw, 86px)';
-  const ICO = 'clamp(32px, 4.2vw, 50px)';
-  /* Два разных импульса, потому что это разные события.
-     playPulse — нажатие play: широкая волна наружу.
-     trackPulse — смена трека: короткий сжатый удар по самой кнопке.
-     Раньше смена трека была видна только тем, что иконка на секунду
-     прыгала на «паузу» — а это был побочный эффект того, что состояние
-     сбрасывали на время переключения. Сброс убрали, и оказалось, что
-     переключение не сигналит ничем: обложка меняется в соседней
-     панели, а на кнопке ничего. */
-  const [playPulse, setPlayPulse] = useState(0);
-  const wasPlaying = useRef(false);
-  useEffect(() => {
-    if (isPlaying && !wasPlaying.current) setPlayPulse(k => k + 1);
-    wasPlaying.current = isPlaying;
-  }, [isPlaying]);
   const lastTrack = useRef(trackKey);
+  // Both silhouettes use the same curve sequence so a second click can reverse the morph in place.
+  const playShape = 'M 12 6.8 Q 9 5 9 8.4 L 9 23.6 Q 9 27 12 25.2 L 17.5 22 Q 17.5 22 17.5 21.5 L 17.5 10.5 Q 17.5 10 17.5 10 Z M 16.5 9.4 Q 16.5 9.4 16.5 10 L 16.5 22 Q 16.5 22.6 16.5 22.6 L 25.3 17.5 Q 28 16 25.3 14.5 L 17 9.7 Q 16.5 9.4 16.5 9.4 Z';
+  const pauseShape = 'M 10.5 6.5 Q 8.5 6.5 8.5 8.5 L 8.5 23.5 Q 8.5 25.5 10.5 25.5 L 12.5 25.5 Q 14.5 25.5 14.5 23.5 L 14.5 8.5 Q 14.5 6.5 12.5 6.5 Z M 19.5 6.5 Q 17.5 6.5 17.5 8.5 L 17.5 23.5 Q 17.5 25.5 19.5 25.5 L 21.5 25.5 Q 23.5 25.5 23.5 23.5 L 23.5 8.5 Q 23.5 6.5 21.5 6.5 Z';
+  const shape = isPlaying ? pauseShape : playShape;
+
   useLayoutEffect(() => {
     pulseMotionRef.current = createFeedbackMotion(pulseRef.current);
     return () => pulseMotionRef.current.cancel();
   }, []);
+
   useLayoutEffect(() => {
     if (reduced || disabled) pulseMotionRef.current.cancel();
     if (lastTrack.current === trackKey) return;
@@ -3746,54 +3462,29 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
     if (trackKey != null && !disabled) pulseMotionRef.current.pulse(reduced);
   }, [trackKey, reduced, disabled]);
 
-  /* Раньше обе иконки анимировались одновременно и навстречу: уходящая
-     крутилась на −90° и сжималась до 0.45, приходящая крутилась на +90°
-     и расползалась, а кривая с перелётом (0.34,1.56,0.64,1) перескакивала
-     через 100%. Три движения разом — и кнопка дёргалась. Теперь вращения
-     нет, иконки просто меняются местами через кроссфейд с лёгким масштабом,
-     причём уходящая гаснет быстрее, чем появляется новая: наложения двух
-     полусоветлых картинок не видно. */
-  const ico = visible => ({
-    position:'absolute', top:0, left:0, width:ICO, height:ICO,
-    filter:'brightness(0) invert(1)',
-    opacity: visible ? 1 : 0,
-    transform: reduced || visible ? 'scale(1)' : 'scale(0.78)',
-    transition: reduced ? 'opacity 0.12s ease-out' : visible
-      ? 'opacity 0.22s ease-out, transform 0.34s cubic-bezier(0.2,0.9,0.2,1)'
-      : 'opacity 0.12s ease-in, transform 0.12s ease-in',
-    pointerEvents:'none',
-  });
   return (
-    <motion.button className="player-button-hover" data-reduced-motion={reduced} data-motion-spatial="" onClick={onToggle} disabled={disabled} title={title} aria-label={title}
+    <motion.button
+      type="button"
+      className="player-play-button"
+      data-playing={isPlaying}
+      data-reduced-motion={reduced}
+      data-motion-spatial=""
+      aria-label={title}
+      title={title}
+      disabled={disabled}
+      onClick={onToggle}
       whileTap={disabled || reduced ? undefined : { scale: 0.95 }}
       animate={reduced ? { scale: 1 } : undefined}
-      transition={{ type:'spring', stiffness: 380, damping: 26, mass: 0.6 }}
-      style={{
-        width:BTN, height:BTN, borderRadius:'50%', border:'none',
-        background:'none',
-        color:'var(--text)',
-        display:'flex', alignItems:'center', justifyContent:'center',
-        cursor:disabled ? 'default' : 'pointer', opacity:disabled ? 0.6 : 1, flexShrink:0, position:'relative',
-        transition:'background 0.3s ease',
-      }}>
-      <span ref={pulseRef} style={{position:'absolute', inset:0, borderRadius:'inherit',
-        display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none',
-        background: isPlaying ? 'rgba(178,178,178,0.1)' : 'rgba(255,255,255,0.06)',
-        transition:'background 0.3s ease'}}>
-      {!reduced && isPlaying && playPulse > 0 && (
-        <motion.span key={playPulse}
-          initial={{ scale:0.82, opacity:0.5 }}
-          animate={{ scale:1.45, opacity:0 }}
-          transition={{ duration:0.62, ease:'easeOut' }}
-          style={{
-            position:'absolute', inset:0, borderRadius:'50%',
-            border:'1.5px solid rgba(255,255,255,0.55)', pointerEvents:'none',
-          }}/>
-      )}
-      <div style={{position:'relative', width:ICO, height:ICO}}>
-        <img src="../assets/play.png"  style={ico(!isPlaying)}/>
-        <img src="../assets/pause.png" style={ico( isPlaying)}/>
-      </div>
+      transition={{ duration: 0.15, ease: [0.23, 1, 0.32, 1] }}
+    >
+      <span ref={pulseRef} className="player-play-surface" aria-hidden="true">
+        <svg className="player-play-icon" viewBox="0 0 32 32" fill="currentColor" focusable="false">
+          <motion.path
+            initial={false}
+            animate={{ d: shape }}
+            transition={{ duration: reduced ? 0 : 0.24, ease: [0.23, 1, 0.32, 1] }}
+          />
+        </svg>
       </span>
     </motion.button>
   );
@@ -4838,6 +4529,40 @@ function lyricOpeningWordRect(line) {
   return null;
 }
 
+function connectPlaybackAnalyser(audio) {
+  let source, analyser, stream, captureContext;
+  const dispose = () => {
+    if (source && analyser) {
+      try { source.disconnect(analyser); } catch { /* already disconnected */ }
+    }
+    stream?.getTracks().forEach(track => track.stop());
+    captureContext?.close().catch(() => {});
+  };
+
+  try {
+    // Read a parallel branch of the output. Leave all playback connections intact.
+    if (_afx?.decks.has(audio) && _afx.bus) {
+      source = _afx.bus.input;
+    } else {
+      if (!audio.captureStream) return null;
+      stream = audio.captureStream();
+      if (!stream.getAudioTracks().length) { dispose(); return null; }
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      captureContext = new AudioCtx();
+      source = captureContext.createMediaStreamSource(stream);
+      captureContext.resume().catch(() => {});
+    }
+    analyser = source.context.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.68;
+    source.connect(analyser);
+    return { analyser, dispose };
+  } catch {
+    dispose();
+    return null;
+  }
+}
+
 function AudioMeter({ audioRef, playing, reduced, trackId }) {
   const meterRef = useRef(null);
   useEffect(() => {
@@ -4845,43 +4570,14 @@ function AudioMeter({ audioRef, playing, reduced, trackId }) {
     const bars = meterRef.current?.querySelectorAll('i');
     if (!playing || reduced || !audio || !bars) return;
 
-    let source, analyser, stream, captureContext;
+    const tap = connectPlaybackAnalyser(audio);
+    if (!tap) return;
+    const { analyser } = tap;
     let frame = 0;
-    const dispose = () => {
-      cancelAnimationFrame(frame);
-      if (source && analyser) {
-        try { source.disconnect(analyser); } catch { /* already disconnected */ }
-      }
-      stream?.getTracks().forEach(track => track.stop());
-      captureContext?.close().catch(() => {});
-      for (const bar of bars) bar.style.transform = '';
-    };
-
-    try {
-      // Analyser branch only. Never reroute the playing media element.
-      if (_afx?.decks.has(audio) && _afx.bus) {
-        source = _afx.bus.input;
-      } else {
-        if (!audio.captureStream) return;
-        stream = audio.captureStream();
-        if (!stream.getAudioTracks().length) { dispose(); return; }
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        captureContext = new AudioCtx();
-        source = captureContext.createMediaStreamSource(stream);
-        captureContext.resume().catch(() => {});
-      }
-      analyser = source.context.createAnalyser();
-      analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.68;
-      source.connect(analyser);
-    } catch {
-      dispose();
-      return;
-    }
 
     const bins = new Uint8Array(analyser.frequencyBinCount);
     const edges = [65, 150, 330, 720, 1600, 4500]
-      .map(hz => Math.max(1, Math.round(hz * analyser.fftSize / source.context.sampleRate)));
+      .map(hz => Math.max(1, Math.round(hz * analyser.fftSize / analyser.context.sampleRate)));
     let last = -Infinity;
     const draw = now => {
       if (now - last >= 32) {
@@ -4896,7 +4592,11 @@ function AudioMeter({ audioRef, playing, reduced, trackId }) {
       frame = requestAnimationFrame(draw);
     };
     frame = requestAnimationFrame(draw);
-    return dispose;
+    return () => {
+      cancelAnimationFrame(frame);
+      tap.dispose();
+      for (const bar of bars) bar.style.transform = '';
+    };
   }, [audioRef, playing, reduced, trackId]);
 
   return <span ref={meterRef} className="lyrics-search-meter" aria-hidden="true">
@@ -5210,6 +4910,9 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     const observer = new ResizeObserver(measure);
     const playerArt = document.getElementById('player-album-art');
     if (playerArt) observer.observe(playerArt);
+    // The sidebar moves the artwork slot even when the slot keeps its size.
+    const libraryPanel = document.getElementById('player-library-panel');
+    if (libraryPanel) observer.observe(libraryPanel);
     if (fullscreenArtRef.current) observer.observe(fullscreenArtRef.current);
     window.addEventListener('resize', measure);
     return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
@@ -6623,20 +6326,13 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
               aria-controls="listening-party-stage" data-room={partyActive ? 'true' : 'false'}>
               <span className="party-icon" aria-hidden="true"/>
             </button>
-            <div style={{display:'flex', alignItems:'center',
-              opacity: inPlayer ? 1 : 0, pointerEvents: inPlayer ? 'auto' : 'none', visibility: inPlayer ? 'visible' : 'hidden', transition:'opacity 0.2s ease'}}>
-              <div style={{WebkitAppRegion:'no-drag', width:30, height:30, borderRadius:9, cursor:'pointer',
-                display:'flex', alignItems:'center', justifyContent:'center',
-                color:'rgba(255,255,255,0.35)', transition:'color 0.18s ease'}}
-                onClick={onToggleLib}
-                onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.7)'}
-                onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.35)'}>
-                <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
-                  data-motion-position="" style={{transition:'transform 0.26s cubic-bezier(0.4,0,0.2,1)', transform: libCollapsed ? 'rotate(180deg)' : 'rotate(0deg)'}}>
-                  <polyline points="15 18 9 12 15 6"/>
-                </svg>
-              </div>
-            </div>
+            <button type="button" className="topbar-sidebar-toggle" data-visible={inPlayer}
+              onClick={onToggleLib} disabled={!inPlayer}
+              title={t(libCollapsed ? 'show_player_sidebar' : 'hide_player_sidebar')}
+              aria-label={t(libCollapsed ? 'show_player_sidebar' : 'hide_player_sidebar')}
+              aria-controls="player-library-panel" aria-expanded={!libCollapsed}>
+              <img src="../assets/back.png" alt="" draggable="false"/>
+            </button>
           </div>
         </div>, slot)}
       {createPortal(nav, bar)}
@@ -8222,6 +7918,15 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
           чистое оформление. Обратная связь мгновенная: шапка видна и отсюда,
           так что спрятанный переключатель исчезает прямо на глазах. */}
       <Card title={t('card_ui')}>
+        <Row label={t('progress_bar_style')} wrap>
+          <Segmented label={t('progress_bar_style')} value={settings.progressBarStyle}
+            onChange={value => set('progressBarStyle', value)}
+            options={[
+              { v: 'classic', label: t('progress_bar_classic') },
+              { v: 'waveform', label: t('progress_bar_waveform') },
+              { v: 'live', label: t('progress_bar_film') },
+            ]}/>
+        </Row>
         <Row label={t('ui_hide_source')} sub={t('ui_hide_source_sub')}>
           <Switch on={!!uiHidden.source} onChange={v => setHidden('source', v)}/>
         </Row>
@@ -11141,6 +10846,7 @@ function App() {
        «покрасить в синий»). */
     coverTint: 0.45, coverTintMode: 'cover', coverTintColor: '#000000',
     uiHidden: { ...UI_HIDDEN_NONE },   /* спрятанные куски интерфейса, см. выше */
+    progressBarStyle: 'classic',
     windowEffect: 'off',   /* 'off' | 'mica' — применяется эффектом ниже */
     lyricsSources: LYRICS_SOURCE_IDS.slice(),  /* включённые источники, сверху вниз */
     volume: 0.7,   /* gain 0..1 (не позиция ползунка) — переживает перезапуск */
@@ -11346,6 +11052,9 @@ function App() {
      ⚠️ `|| tracks[0]` из старого выражения убран СОЗНАТЕЛЬНО: именно он
      молча подставлял первый трек, даже когда индекс пуст. */
   const track = scPlayingTrack || (trackIdx >= 0 ? tracks[trackIdx] : null) || BLANK_TRACK;
+  const progressBarStyle = settings.progressBarStyle;
+  const classicProgressBar = progressBarStyle === 'classic';
+  const soundCloudWaveform = useSoundCloudWaveform(scPlayingTrack, settings.soundcloudAuth, playerVisible && progressBarStyle === 'waveform');
   const playerDisplayTrack = pendingPlayerTrack || track;
   /* есть ли что показывать в плеере. Имя и мысль совпадают с локальной
      проверкой в обработчике перетаскивания (строка ниже по файлу): она
@@ -11644,6 +11353,7 @@ function App() {
         if (saved && Object.keys(saved).length) {
           setSettings(s => {
             const m = { ...s, ...saved };
+            if (!['classic', 'waveform', 'live'].includes(m.progressBarStyle)) m.progressBarStyle = 'classic';
             /* миграция старого accentMode ('default'|'lavender'|...|'cover')
                на новую пару accentMode ('off'|'color'|'cover') + accentPreset */
             if (!['off','color','cover'].includes(m.accentMode)) {
@@ -12079,6 +11789,20 @@ function App() {
     api.onMediaNext(() => handleNextRef.current?.());
     api.onMediaPrev(() => handlePrevRef.current?.());
   }, []);
+
+  const taskbarEnabled = !partyLocked && Boolean(scPlayingTrack || track.path);
+  useEffect(() => {
+    const labels = STRINGS[lang] ?? STRINGS.ru;
+    window.electronAPI?.setTaskbarPlayback?.({
+      enabled: taskbarEnabled,
+      playing: isPlaying,
+      labels: [
+        labels.playback_previous,
+        labels[isPlaying ? 'playback_pause' : 'playback_play'],
+        labels.playback_next,
+      ],
+    })?.catch(console.error);
+  }, [taskbarEnabled, isPlaying, lang]);
 
   /* Карточка-источник остаётся скрыта, пока единственный AlbumArt не долетит
      до слота плеера. Ошибка или медленная загрузка не должны блокировать
@@ -14764,6 +14488,7 @@ function App() {
      решает, показывать ли в форме «сбросить». */
   const lyricsPinned = settings.lyricsQueries?.[lyricsTrackKey(track)];
   const lyricsQuery  = lyricsQueryFor(track, lyricsPinned);
+  const lyricsAllowTitleArtist = !lyricsPinned && !!scPlayingTrack;
 
   /* тянем текст только пока панель открыта — незачем грузить то, чего не видно.
      lyricsReqRef защищает от гонки: сменился трек/порядок, старый ответ
@@ -14791,7 +14516,8 @@ function App() {
        поиска (lyricsBypassRef). */
     const skipCache = lyricsBypassRef.current;
     lyricsBypassRef.current = false;
-    const key = lyricsQueryKey(lyricsQuery.artist, lyricsQuery.title);
+    const queryKey = lyricsQueryKey(lyricsQuery.artist, lyricsQuery.title);
+    const key = JSON.stringify([2, queryKey, Math.round(track.duration || 0), lyricsAllowTitleArtist, !!track.artistReal]);
     const hit = skipCache ? null : settingsRef.current?.lyricsCache?.[key];
     if (hit?.alts?.length) {
       /* вариантов может быть два — оба кладём в состояние, чтобы
@@ -14840,14 +14566,16 @@ function App() {
         }};
       });
     };
-    fetchLyrics(track, order, lyricsQuery, onTried, onFound).then(r => {
+    fetchLyrics(track, order, lyricsQuery, lyricsAllowTitleArtist, onTried, onFound).then(r => {
       if (req !== lyricsReqRef.current) return;
+      const legacy = !skipCache && r.status === 'error' && settingsRef.current?.lyricsCache?.[queryKey];
+      if (legacy?.alts?.length) {
+        setLyrics({ ...r, ...legacy.alts[0], status: 'ready', alts: legacy.alts });
+        return;
+      }
       setLyrics(r);
       if (r.status !== 'ready' || !r.lines?.length) return;
-      /* нашли — сразу в кеш: в состояние (панель уже показывает текст) и в
-         файл настроек отложенной записью (см. saveTimerRef). ключ — по
-         запросу, а не по треку: у двух треков с одинаковыми метаданными
-         текст один и тот же */
+      /* Найденный текст сохраняется в настройках вместе с вариантами источников. */
       setSettings(s => ({ ...s, lyricsCache: putLyricsCache(s.lyricsCache, key, {
         alts: r.alts || [{ source: r.source, lines: r.lines, synced: !!r.synced }],
         at: Date.now(),
@@ -14857,7 +14585,7 @@ function App() {
       console.warn('[lyrics] fetch failed', e);
       setLyrics({ status: 'error', tried: [], why: String(e?.message || e) });
     });
-  }, [lyricsOpen, track.id, track.title, lyricsNonce, lyricsQuery.artist, lyricsQuery.title]);
+  }, [lyricsOpen, track.id, track.title, track.duration, lyricsNonce, lyricsQuery.artist, lyricsQuery.title, lyricsAllowTitleArtist, track.artistReal]);
 
   /* Перечитать текст. Тот же `lyricsNonce`, что у кнопки «попробовать
      снова»: побочный эффект ровно тот же — эффект выше видит новое значение
@@ -15466,7 +15194,8 @@ function App() {
             display:'flex',
           }}>
         {/* library panel */}
-        <div data-player-library-panel="" data-motion-spatial="" style={{
+        <div id="player-library-panel" data-player-library-panel="" data-motion-spatial=""
+          inert={libCollapsed ? '' : undefined} style={{
           width: libCollapsed ? 0 : 260,
           flexShrink:0, height:'100%',
           background:'transparent',
@@ -15860,7 +15589,10 @@ function App() {
             <div className="player-stage-progress" data-motion-spatial="" style={{
               width:partyOpen
                 ? 'min(100%, clamp(320px, 54vw, 760px), clamp(240px, 58vh, 760px))'
-                : 'min(100%, clamp(260px, 34vw, 520px))', margin:'0 auto 0',
+                : classicProgressBar
+                  ? 'min(100%, clamp(260px, 34vw, 520px))'
+                  : 'min(100%, clamp(300px, 40vw, 620px))', margin:'0 auto 0',
+              '--progress-entrance-delay': `${PLAYER_PROGRESS_ENTRANCE_MS}ms`,
               opacity: playerVisible ? 1 : 0,
               /* visibility, а не только opacity: скрытый слайдер всё равно
                  ловит клики (WebView2 не исключает невидимое из hit-test), а
@@ -15872,10 +15604,12 @@ function App() {
               pointerEvents: playerVisible ? 'auto' : 'none',
               transform: playerVisible ? 'translateY(0)' : 'translateY(10px)',
               transition: playerVisible
-                ? 'opacity 0.36s ease 0.28s, transform 0.48s cubic-bezier(0.22,1,0.36,1) 0.28s, visibility 0s linear 0.28s'
+                ? 'opacity 0.36s ease var(--progress-entrance-delay), transform 0.48s cubic-bezier(0.22,1,0.36,1) var(--progress-entrance-delay), visibility 0s linear var(--progress-entrance-delay)'
                 : 'opacity 0.1s ease, transform 0.1s ease, visibility 0s linear 0.1s',
             }}>
               <ProgressBar progressRef={progressRef} audioRef={audioRef} total={track.duration || 0}
+                waveformPath={soundCloudWaveform} classic={classicProgressBar} entranceDelay={PLAYER_PROGRESS_ENTRANCE_MS}
+                film={progressBarStyle === 'live'} trackId={track.id}
                 onSeek={handleSeek} isPlaying={isPlaying} visible={playerVisible} disabled={partyLocked} positionVersion={partyState.room?.revision}
                 />
             </div>
@@ -15894,15 +15628,18 @@ function App() {
                 ? 'opacity 0.36s ease 0.28s, transform 0.48s cubic-bezier(0.22,1,0.36,1) 0.28s, visibility 0s linear 0.28s'
                 : 'opacity 0.1s ease, transform 0.1s ease, visibility 0s linear 0.1s',
             }}>
-            {(()=>{ const SIDE = 'clamp(40px, 5.2vw, 58px)'; return (
+            {(()=>{
+              const SIDE = 'clamp(40px, 5.2vw, 58px)';
+              const SKIP = 'clamp(52px, 6.6vw, 76px)';
+              const SKIP_ICON = 'clamp(25px, 3.2vw, 36px)';
+              return (
             <div style={{display:'flex', alignItems:'center', gap:14, justifyContent:'center', marginTop:16}}>
-              <MagBtn onClick={handleToggleLyrics} active={lyricsOpen} size={SIDE}>
-                <img src="../assets/textt.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:lyricsOpen?1:0.38,transition:'opacity 0.2s ease'}}/>
-              </MagBtn>
-              <MagBtn onClick={handleToggleFx} active={fxOpen} size={SIDE}>
+              <TransportButton onClick={handleToggleLyrics} active={lyricsOpen} size={SIDE}>
+                <span aria-hidden="true" className="player-toggle-icon player-lyrics-icon"/>
+              </TransportButton>
+              <TransportButton onClick={handleToggleFx} active={fxOpen} size={SIDE}>
                 <div style={{
                   width:'clamp(18px, 2.2vw, 26px)', height:'clamp(18px, 2.2vw, 26px)',
-                  opacity: fxOpen ? 1 : 0.38, transition:'opacity 0.2s ease',
                 }}>
                   <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none"
                     stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
@@ -15914,26 +15651,26 @@ function App() {
                     <line x1="14.6" y1="13" x2="21.4" y2="13" strokeWidth="2.4"/>
                   </svg>
                 </div>
-              </MagBtn>
-              <MagBtn onClick={()=>{ if (partyCanControl()) setShuffle(s=>!s); }} disabled={partyLocked} active={shuffle} size={SIDE}>
-                <img src="../assets/shuffle.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:shuffle?1:0.38,transition:'opacity 0.2s ease'}}/>
-              </MagBtn>
-              <MagBtn onClick={handlePrev} disabled={partyLocked} size={'clamp(46px, 6vw, 66px)'}>
-                <img src="../assets/rewind.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:0.38}}/>
-              </MagBtn>
+              </TransportButton>
+              <TransportButton onClick={()=>{ if (partyCanControl()) setShuffle(s=>!s); }} disabled={partyLocked} active={shuffle} size={SIDE}>
+                <span aria-hidden="true" className="player-toggle-icon player-shuffle-icon"/>
+              </TransportButton>
+              <TransportButton onClick={handlePrev} disabled={partyLocked} size={SKIP} title={t('playback_previous')}>
+                <img src="../assets/rewind.png" alt="" style={{width:SKIP_ICON,height:SKIP_ICON,filter:'brightness(0) invert(1)',opacity:0.38}}/>
+              </TransportButton>
               <PlayBtn isPlaying={isPlaying} onToggle={togglePlayback} disabled={partyLocked}
                 title={partyLocked ? partyLabels(lang).followsHost : t(isPlaying ? 'playback_pause' : 'playback_play')}
                 trackKey={scPlayingTrack ? 'sc:'+scPlayingTrack.id
                         : (track ? 'loc:'+track.id : null)}/>
-              <MagBtn onClick={handleNext} disabled={partyLocked} size={'clamp(46px, 6vw, 66px)'}>
-                <img src="../assets/forward.png" style={{width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)',filter:'brightness(0) invert(1)',opacity:0.38}}/>
-              </MagBtn>
-              <MagBtn onClick={()=>{ if (partyCanControl()) setRepeat(r=>r==='off'?'all':r==='all'?'one':'off'); }} disabled={partyLocked} active={repeat!=='off'} size={SIDE}>
-                <div style={{position:'relative',width:'clamp(18px, 2.2vw, 26px)',height:'clamp(18px, 2.2vw, 26px)'}}>
-                  <img src="../assets/repeat.png"  style={{position:'absolute',top:0,left:0,width:'100%',height:'100%',filter:'brightness(0) invert(1)',opacity:repeat==='off'?0.38:repeat==='all'?1:0,transition:'opacity 0.2s ease'}}/>
-                  <img src="../assets/repeat1.png" style={{position:'absolute',top:0,left:0,width:'100%',height:'100%',filter:'brightness(0) invert(1)',opacity:repeat==='one'?1:0,transition:'opacity 0.2s ease'}}/>
+              <TransportButton onClick={handleNext} disabled={partyLocked} size={SKIP} title={t('playback_next')}>
+                <img src="../assets/forward.png" alt="" style={{width:SKIP_ICON,height:SKIP_ICON,filter:'brightness(0) invert(1)',opacity:0.38}}/>
+              </TransportButton>
+              <TransportButton onClick={()=>{ if (partyCanControl()) setRepeat(r=>r==='off'?'all':r==='all'?'one':'off'); }} disabled={partyLocked} active={repeat!=='off'} size={SIDE}>
+                <div aria-hidden="true" className="player-repeat-icons">
+                  <span className="player-toggle-icon player-repeat-icon" style={{opacity:repeat === 'one' ? 0 : 1}}/>
+                  <span className="player-toggle-icon player-repeat-one-icon" style={{opacity:repeat === 'one' ? 1 : 0}}/>
                 </div>
-              </MagBtn>
+              </TransportButton>
               {scPlayingTrack
                 ? <PlayerLikeBtn liked={likedIds.has(scPlayingTrack.id)}
                     onLike={() => handleLike(scPlayingTrack)} style={{marginLeft:14}}/>
