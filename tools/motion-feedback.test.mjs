@@ -117,7 +117,7 @@ test('artist play-all press is pointer-only, disabled is real and transport exec
   assert.ok(begin > 0 && end > begin);
   const tracks = [{ id: 1 }, { id: 2 }], calls = [];
   const harness = hookHarness(`export function Button({ canPlay }) { return (${app.slice(begin, end)}); }`, {}, {
-    artistTracks: tracks, onPlayTrack: (...args) => calls.push(args), t: key => key, isFineHover: event => event.pointerType === 'mouse',
+    artistTracks: tracks, onPlayTrack: (...args) => calls.push(args), t: key => key,
   });
   let tree = harness.render(harness.exports.Button, { canPlay: false });
   const target = { dataset: {}, style: {} }, event = { currentTarget: target, button: 0, pointerType: 'mouse' };
@@ -131,8 +131,8 @@ test('artist play-all press is pointer-only, disabled is real and transport exec
   for (const cleanup of ['onPointerCancel', 'onPointerLeave', 'onBlur']) {
     tree.props.onPointerDown(event); tree.props[cleanup](event); assert.deepEqual(target.dataset, {});
   }
-  assert.equal(tree.props.style.transition, 'background 0.18s, color 0.18s, transform 120ms var(--ease-out)');
   const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.artist-play-all, \.artist-follow \{[^}]*transition:[^;]*transform 120ms var\(--ease-out\);/);
   assert.match(css, /\.artist-play-all\[data-pointer-pressed="true"\]:not\(:disabled\) \{ transform:scale\(0\.97\); \}/);
   assert.doesNotMatch(css, /\.artist-play-all:active/);
 });

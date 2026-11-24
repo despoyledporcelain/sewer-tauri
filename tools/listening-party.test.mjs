@@ -102,42 +102,52 @@ function motionScene() {
   const rect = (left, top, width, height) => ({ left, top, width, height });
   const root = new MotionElement(rect(100, 40, 760, 580));
   const info = new MotionElement(rect(100, 60, 760, 40), 'info', root);
-  const art = new MotionElement(rect(280, 110, 400, 400), 'art', root);
+  const art = new MotionElement(rect(280, 110, 400, 400));
+  const artSlot = new MotionElement({ ...art.rect }, 'art', root);
   const progress = new MotionElement(rect(100, 530, 760, 30), 'progress', root);
   const controls = new MotionElement(rect(100, 580, 760, 60), 'controls', root);
   const sidebar = new MotionElement(rect(110, 60, 224, 490), null, root);
   sidebar.hidden = true;
-  root.targets = [info, art, progress, controls];
+  root.targets = [info, artSlot, progress, controls];
   root.querySelectorAll = selector => { assert.equal(selector, '[data-party-motion]'); return root.targets; };
-  root.querySelector = selector => { assert.equal(selector, '.party-sidebar'); return sidebar; };
+  root.querySelector = selector => {
+    if (selector === '#player-album-art') return artSlot;
+    assert.equal(selector, '.party-sidebar'); return sidebar;
+  };
   root.contains = element => root.targets.includes(element) || element === sidebar;
-  root.ownerDocument = { defaultView: { getComputedStyle: element => ({ opacity: String(element.opacity) }) } };
+  const library = { getAnimations: () => [] };
+  root.ownerDocument = {
+    defaultView: { getComputedStyle: element => ({ opacity: String(element.opacity) }) },
+    querySelector(selector) {
+      if (selector === '[data-party-shared-art]') return art;
+      assert.equal(selector, '[data-player-library-panel]'); return library;
+    },
+  };
   const open = () => {
     sidebar.hidden = false;
-    art.rect = rect(440, 150, 300, 300);
+    artSlot.rect = rect(440, 150, 300, 300);
+    art.rect = { ...artSlot.rect };
     info.rect = rect(350, 100, 510, 40);
     progress.rect = rect(350, 470, 510, 30);
     controls.rect.top = 550;
   };
-  return { root, info, art, progress, controls, sidebar, open };
+  return { root, info, art, artSlot, progress, controls, sidebar, open };
 }
 
 test('the cover flies from its actual previous box while labels, progress and buttons move without scaling text', () => {
   const s = motionScene(), animations = new Set();
   const before = snapshotPartyPlayer(s.root);
   assert.equal(before.sidebar, null);
-  assert.equal(before.elements.size, 4);
+  assert.equal(before.elements.size, 3);
   s.open();
   animatePartyPlayer(before, s.root, { open: true }, animations);
-  assert.equal(s.art.calls[0].frames[0].transform, 'translate(-160px, -40px) scale(1.3333333333333333, 1.3333333333333333)');
+  assert.deepEqual(s.art.calls[0].frames[0], { translate:'-160px -40px', scale:String(4 / 3) });
+  assert.equal(s.art.style.width, '300px');
   for (const element of [s.info, s.progress, s.controls]) {
-    assert.match(element.calls[0].frames[0].transform, /scale\(1, 1\)$/);
-  }
-  for (const element of s.root.targets) {
     const { frames, options } = element.calls[0];
     assert.equal(options.duration, 280);
     assert.equal(options.easing, PARTY_PLAYER_EASE);
-    for (const frame of frames) assert.deepEqual(Object.keys(frame), ['transform']);
+    for (const frame of frames) assert.match(frame.transform, /^translate\([^)]*\)$/);
   }
   assert.equal(s.sidebar.calls[0].frames[0].opacity, 0);
   assert.equal(s.sidebar.calls[0].options.fill, 'backwards');
@@ -172,11 +182,11 @@ test('rapid reversals restart at the currently visible cover size and room opaci
   s.art.rect = { left: 330, top: 125, width: 375, height: 375 };
   s.sidebar.opacity = 0.6;
   const midFlight = snapshotPartyPlayer(s.root);
-  s.art.rect = before.elements.get(s.art).rect;
+  s.artSlot.rect = before.artworkRect;
   s.sidebar.hidden = true;
   animatePartyPlayer(midFlight, s.root, { open: false }, animations);
   assert.equal(previous.cancelled, true);
-  assert.equal(s.art.calls.at(-1).frames[0].transform, 'translate(50px, 15px) scale(0.9375, 0.9375)');
+  assert.deepEqual(s.art.calls.at(-1).frames[0], { translate:'50px 15px', scale:'0.9375' });
   assert.equal(s.art.calls.at(-1).options.duration, 240);
   assert.equal(s.sidebar.calls.at(-1).frames[0].opacity, 0.6);
   const oldFade = s.sidebar.calls.at(-1).animation;
@@ -270,7 +280,7 @@ test('the pre-commit layout snapshot handles room switches, avoids hero flights 
 });
 
 test('controls use the artwork grid only for an open room with the library collapsed', () => {
-  assert.match(app, /<PartyPlayerLayout open=\{partyOpen\} controlsAligned=\{partyOpen && libCollapsed\}/);
+  assert.match(app, /<PartyPlayerLayout\b[^>]*\bopen=\{partyOpen\}[^>]*\bcontrolsAligned=\{partyOpen && libCollapsed\}/);
   assert.match(app, /className="player-controls-layout">\s*<div data-party-motion="controls"/);
   assert.match(css, /\.player-controls-layout \{ width:100%; display:grid; grid-template-columns:minmax\(0, 1fr\); \}/);
   assert.match(css, /\.player-stage-party,\s*\.player-composition\[data-party-controls-aligned="true"\] \.player-controls-layout \{\s*display:grid; grid-template-columns:clamp\(184px, 30cqw, 224px\) minmax\(0, 1fr\)/);
@@ -294,7 +304,7 @@ test('controls use the artwork grid only for an open room with the library colla
   s.controls.rect = { ...s.controls.rect, left: 350, width: 510 };
   layout.componentDidUpdate(previous, null, before);
   assert.equal(layout.animations.size, 1);
-  assert.equal(s.controls.calls[0].frames[0].transform, 'translate(-125px, 0px) scale(1, 1)');
+  assert.equal(s.controls.calls[0].frames[0].transform, 'translate(-125px, 0px)');
   assert.equal(s.sidebar.calls.length, 0);
   assert.equal(layout.getSnapshotBeforeUpdate(layout.props), null);
   layout.componentWillUnmount();
@@ -311,7 +321,7 @@ test('rapid control alignment reversals continue from visible geometry without r
   s.controls.rect = { ...s.controls.rect, left: 100, width: 760 };
   animatePartyPlayer(during, s.root, { open: true, layoutOnly: true }, animations);
   assert.equal(old.cancelled, true);
-  assert.equal(s.controls.calls.at(-1).frames[0].transform, 'translate(75px, 0px) scale(1, 1)');
+  assert.equal(s.controls.calls.at(-1).frames[0].transform, 'translate(75px, 0px)');
   assert.equal(s.sidebar.calls.length, 0);
   animatePartyPlayer(during, s.root, { open: true, layoutOnly: true, reduced: true }, animations);
   assert.equal(animations.size, 0);
@@ -498,7 +508,7 @@ test('the room view keeps real progress under the artwork and the lower controls
   const player = app.slice(app.indexOf('className="player-composition"'), app.indexOf('{/* volume panel.'));
   const sidebarIndex = player.indexOf('<ListeningParty visible=');
   const mediaIndex = player.indexOf('className="player-stage-media"');
-  const artIndex = player.indexOf('<AlbumArt track={track}');
+  const artIndex = player.indexOf('id="player-album-art"');
   const stageEnd = player.indexOf('shared artwork stage;');
   const progressIndex = player.indexOf('<ProgressBar progressRef=');
   const mediaEnd = player.indexOf('player-stage-media end:');
@@ -506,13 +516,14 @@ test('the room view keeps real progress under the artwork and the lower controls
   assert.ok(sidebarIndex < mediaIndex && mediaIndex < artIndex && artIndex < stageEnd);
   assert.ok(artIndex < progressIndex && progressIndex < mediaEnd && mediaEnd < stageEnd && stageEnd < transportIndex);
   assert.match(player, /className="player-stage-progress" data-motion-spatial="" style=\{\{\s*width:partyOpen\s*\? 'min\(100%, clamp\(320px, 54vw, 760px\), clamp\(240px, 58vh, 760px\)\)'/);
-  assert.equal((player.match(/<AlbumArt /g) || []).length, 1);
+  assert.equal((app.match(/<AlbumArt /g) || []).length, 1);
+  assert.match(app, /data-party-shared-art=[^\n]+[\s\S]*?<AlbumArt track=\{coverTrack\}/);
   assert.equal((player.match(/<ProgressBar /g) || []).length, 1);
   assert.equal((player.match(/<PlayBtn /g) || []).length, 1);
   assert.match(player, /ref=\{playerArtRef\}/);
   assert.match(player, /ref=\{playerInfoRef\}/);
-  assert.match(player, /text=\{track.title\}/);
-  assert.match(player, /splitArtists\(track.artist\)/);
+  assert.match(player, /text=\{playerDisplayTrack.title\}/);
+  assert.match(player, /splitArtists\(playerDisplayTrack.artist\)/);
   assert.doesNotMatch(source, /createPortal|new Audio|AudioContext|\.play\(|setIsPlaying|scFetch|WebSocket|fetch\(/);
 });
 
@@ -536,8 +547,8 @@ test('artist and title visibility follows player state even when metadata remoun
   for (let i = 0; i < 40; i++) {
     const visible = i % 3 !== 0;
     const context = { module: { exports: {} }, React, playerInfoRef: { current: null }, playerVisible: visible,
-      hasTrack: true, scPlayingTrack: i % 2 ? { id: 1 } : null, editingTitle: false,
-      track: { title: 'a favourite song', artist: 'a favourite artist' },
+      hasTrack: true, scPlayingTrack: i % 2 ? { id: 1 } : null, pendingPlayerTrack: null, editingTitle: false,
+      playerDisplayTrack: { title: 'a favourite song', artist: 'a favourite artist' },
       formatArtistDisplay: artist => artist, splitArtists: artist => [{ name: artist, sep: '' }],
       MarqueeText: ({ text }) => React.createElement('span', null, text) };
     // A fresh render each time also covers replacing the metadata DOM while
@@ -549,6 +560,7 @@ test('artist and title visibility follows player state even when metadata remoun
     const html = renderToStaticMarkup(tree);
     assert.ok(html.includes('a favourite song'));
     assert.ok(html.includes('a favourite artist'));
+    assert.match(html, /class="player-info-artist" data-lyrics-meta-anchor=""/);
   }
   assert.match(css, /\.player-info\[data-visible="true"\]\s*\{\s*opacity:1; visibility:visible; pointer-events:auto;/);
   assert.match(css, /prefers-reduced-motion:reduce[\s\S]*?\.player-info[^{}]+\{ transition:none; transform:none;/);

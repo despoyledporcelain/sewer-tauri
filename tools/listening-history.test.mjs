@@ -424,6 +424,7 @@ function replayHarness(overrides = {}) {
     setSettings: update => { state.settings = update(state.settings); },
     setHistoryErrorId: id => { state.error = id; }, setHistoryLoadingId: id => { state.loading = id; },
     setLoadingTrackId: () => {}, setIsPlaying: playing => { state.playing = playing; },
+    setPendingPlayerTrack: track => { state.pendingTrack = track; },
     setScPlayingTrack: track => { state.scTrack = track; }, setTrackIdx: idx => { state.idx = idx; },
     setStationActive: station => { state.station = station; }, setPlaylistActive: playlist => { state.playlist = playlist; },
     abortCrossfade: () => { state.aborted = true; }, showToast: message => state.toasts.push(message), t: key => key,
@@ -440,6 +441,7 @@ test('local replay selects files by path, works offline and cancels pending Soun
   await t.replay(historyEntry({ ...local, id: 987 }, 'local', stamp));
   assert.equal(t.state.idx, 0);
   assert.equal(t.state.scTrack, null);
+  assert.equal(t.state.pendingTrack, null);
   assert.equal(t.state.settings.sourceMode, 'local');
   assert.equal(t.state.settings.untouched, true);
   assert.equal(t.state.playing, true);

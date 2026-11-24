@@ -35,6 +35,8 @@ import { sliderFraction, sliderValue, pointerFraction } from './slider.js'
 import { Disclosure, DisclosureLayout } from './disclosure.jsx'
 import { MiniPlayer } from './mini-player.jsx'
 import { useSoundCloudWaveform } from './use-soundcloud-waveform.js'
+import { lyricsReturnFlight } from './lyrics-transition.js'
+import { checkSoundCloudFollowing } from './soundcloud-followings.js'
 import { addListeningHistory, cleanListeningHistory, historyTrackKey } from './listening-history.js'
 import { useListeningHistory } from './use-listening-history.js'
 import { useHistoryCovers } from './use-history-covers.js'
@@ -1835,6 +1837,7 @@ const STRINGS = {
     back:'назад',
     subscribe:'Подписаться', subscribed:'Вы подписаны',
     follow_err:'не удалось подписаться', unfollow_err:'не удалось отписаться',
+    follow_check_retry:'Повторить проверку подписки',
     copy_link:'Скопировать ссылку', link_copied:'Ссылка скопирована', copy_link_err:'не удалось скопировать ссылку',
     start_station:'Запустить станцию', station_for:'Станция по треку', station_label:'Станция', station_exit:'выйти', station_err:'не удалось запустить станцию',
     add_to_pl:'Добавить в плейлист', add_pl_new:'новый плейлист', added_to:'добавлено в',
@@ -2041,6 +2044,7 @@ const STRINGS = {
     back:'back',
     subscribe:'Follow', subscribed:'Following',
     follow_err:'could not follow', unfollow_err:'could not unfollow',
+    follow_check_retry:'Retry follow check',
     copy_link:'Copy link', link_copied:'Link copied', copy_link_err:'could not copy link',
     start_station:'Start station', station_for:'Station for', station_label:'Station', station_exit:'exit', station_err:'could not start station',
     add_to_pl:'Add to playlist', add_pl_new:'new playlist', added_to:'added to',
@@ -2621,6 +2625,7 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
   const thumbRef         = useRef(null);
   const glowRef          = useRef(null);
   const signalRef        = useRef(null);
+  const signalKickRef    = useRef(null);
   const classicRef       = useRef(classic);
   classicRef.current = classic;
   const rafRef           = useRef(null);
@@ -2634,7 +2639,7 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
   isPlayingRef.current = isPlaying;
   const [hover, setHover]   = useState(false);
   const [active, setActive] = useState(false);
-  const [tip, setTip] = useState({ x: 0, t: 0, show: false });
+  const [tip, setTip] = useState(null);
   const [waveReady, setWaveReady] = useState(false);
 
   const initP = useRef(progressRef.current).current;
@@ -2654,19 +2659,19 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
   useEffect(() => {
     visibleRef.current = visible;
     if (visible) kick();
-    else { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    else { cancelAnimationFrame(rafRef.current); rafRef.current = null; setTip(null); }
   }, [visible]);
 
-  useEffect(() => { kick(); }, [isPlaying]);
+  useEffect(() => { kick(); signalKickRef.current?.(); }, [isPlaying]);
   useEffect(() => { kick(); }, [positionVersion, classic, signal]);
   useEffect(() => { if (disabled) { dragging.current = false; setActive(false); } }, [disabled]);
 
   useEffect(() => {
     const path = signalRef.current;
-    if (!signal || !visible || !isPlaying || reduced || !path) return;
+    if (!signal || !visible || reduced || !path) return;
 
     // Fixed visualizer gain, applied to the spectrum before mapping it to bar heights.
-    const signalGainDb = 20 * Math.log10(0.3);
+    const signalGainDb = 20 * Math.log10(0.2);
     const heights = new Float32Array(15);
     let audio, tap, samples, bandEdges, frame;
     let lastDraw = -Infinity;
@@ -2678,6 +2683,7 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
       path.setAttribute('d', value);
     };
     const draw = now => {
+      frame = null;
       if (audio !== audioRef.current) {
         tap?.dispose();
         tap = null;
@@ -2689,7 +2695,13 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
       if (now - lastDraw >= 32) {
         const elapsed = Math.min(now - lastDraw, 64);
         lastDraw = now;
-        const playing = audio && !audio.paused && !audio.ended && !audio.seeking && audio.readyState >= 2;
+        const paused = !isPlayingRef.current || audio?.paused || audio?.ended;
+        const playing = audio && !paused && !audio.seeking && audio.readyState >= 2;
+        if (paused && tap) {
+          tap.dispose();
+          tap = null;
+          retryAt = 0;
+        }
         if (playing && !tap && now >= retryAt) {
           retryAt = now + 1000;
           tap = connectPlaybackAnalyser(audio, { beforeVolume: true });
@@ -2717,31 +2729,36 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
             const height = heights[i];
             heights[i] += (target - height) * (1 - Math.exp(-elapsed / (target > height ? 30 : 155)));
           }
-          let strokes = '';
-          const lastBand = heights.length - 1;
-          const span = lastBand * 2;
-          for (let i = 0; i <= span; i++) {
-            const band = Math.floor(i / 2);
-            const height = i % 2 ? (heights[band] + heights[band + 1]) / 2 : heights[band];
-            if (height < 0.35) continue;
-            const x = (12 + i * 616 / span).toFixed(2);
-            strokes += `M${x} 28V${(28 - height).toFixed(2)}`;
-          }
-          paint(strokes);
         } else {
-          heights.fill(0);
-          paint('');
+          const decay = Math.exp(-elapsed / 85);
+          for (let i = 0; i < heights.length; i++) heights[i] *= decay;
         }
+        let strokes = '';
+        const span = (heights.length - 1) * 2;
+        for (let i = 0; i <= span; i++) {
+          const band = Math.floor(i / 2);
+          const height = i % 2 ? (heights[band] + heights[band + 1]) / 2 : heights[band];
+          if (height < 0.35) continue;
+          const x = (12 + i * 616 / span).toFixed(2);
+          strokes += `M${x} 28V${(28 - height).toFixed(2)}`;
+        }
+        if (!strokes && paused) heights.fill(0);
+        paint(strokes);
       }
-      frame = requestAnimationFrame(draw);
+      requestDraw();
     };
-    frame = requestAnimationFrame(draw);
+    const requestDraw = () => {
+      if (frame == null && (isPlayingRef.current || tap || lastPath)) frame = requestAnimationFrame(draw);
+    };
+    signalKickRef.current = requestDraw;
+    requestDraw();
     return () => {
       cancelAnimationFrame(frame);
+      signalKickRef.current = null;
       tap?.dispose();
       paint('');
     };
-  }, [audioRef, signal, visible, isPlaying, reduced, trackId]);
+  }, [audioRef, signal, visible, reduced, trackId]);
 
   useEffect(() => {
     if (!visible) {
@@ -2860,14 +2877,13 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
       {/* clickable hit-zone with vertical padding */}
       <div
         onPointerEnter={e => { if (isFineHover(e)) setHover(true); }}
-        onPointerLeave={() => { setHover(false); setTip(s => ({...s, show:false})); }}
+        onPointerLeave={() => { setHover(false); setTip(null); }}
         onPointerMove={e => {
           if (!isFineHover(e)) return;
           const rect = trackRef.current?.getBoundingClientRect();
-          if (!rect) return;
-          const wrapRect = e.currentTarget.getBoundingClientRect();
+          if (!rect?.width) return;
           const p = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-          setTip({ x: e.clientX - wrapRect.left, t: Math.floor(p * (total || 0)), show: true });
+          setTip({ x:e.clientX, y:e.currentTarget.getBoundingClientRect().top - 4, t:Math.floor(p * (total || 0)) });
         }}
         aria-disabled={disabled || undefined}
         onMouseDown={e => { if (disabled) return; dragging.current = true; setActive(true); onSeek(getVal(e)); kick(); }}
@@ -2877,21 +2893,9 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
           display:'flex', alignItems:'center',
         }}
       >
-        {/* time tooltip on hover */}
-        {tip.show && (
-          <div style={{
-            position:'absolute',
-            left: tip.x, top: -4,
-            translate: '-50% -100%',
-            background:'var(--pop-bg)',
-            border:'1px solid rgba(255,255,255,0.055)',
-            padding:'4px 9px', borderRadius:6,
-            fontSize: 'var(--fs-xs)', fontWeight:600, fontVariantNumeric:'tabular-nums',
-            color:'rgba(255,255,255,0.92)',
-            pointerEvents:'none', whiteSpace:'nowrap',
-            boxShadow:'0 8px 20px rgba(0,0,0,0.5)',
-            zIndex: 5,
-          }}>{fmt(tip.t)}</div>
+        {visible && tip && createPortal(
+          <div className="player-progress-tooltip" aria-hidden="true" style={{left:tip.x, top:tip.y}}>{fmt(tip.t)}</div>,
+          document.body,
         )}
         <div className="player-wave" aria-hidden="true"
           data-signal={signal}
@@ -3586,16 +3590,9 @@ function PlayBtn({ isPlaying, onToggle, trackKey = null, disabled = false, title
 /* ── NavIcon ─────────────────────────────────────────────────────────────── */
 function NavIcon({ icon, label, active, onClick, size=38, noActiveBg=false }) {
   return (
-    <button onClick={onClick} title={label}
-      style={{
-        width:size, height:size, borderRadius:11, border:'none',
-        background: (active && !noActiveBg) ? 'rgba(178,178,178,0.11)' : 'none',
-        display:'flex', alignItems:'center', justifyContent:'center',
-        cursor:'pointer', flexShrink:0,
-        opacity: active ? 1 : 0.5,
-        transition:'opacity 0.18s ease, background 0.18s ease',
-      }}>
-      {icon}
+    <button type="button" className="topbar-nav-button" onClick={onClick} title={label} aria-label={label}
+      data-active={active} data-active-fill={active && !noActiveBg} style={{width:size, height:size}}>
+      <span className="topbar-nav-icon" aria-hidden="true">{icon}</span>
     </button>
   );
 }
@@ -4619,6 +4616,52 @@ function lyricOpeningWordRect(line) {
   return null;
 }
 
+function lyricsMetadataAnchor(container) {
+  const rect = container?.querySelector('[data-lyrics-meta-anchor]')?.getBoundingClientRect();
+  return rect?.width && rect.height ? { x:rect.left + rect.width / 2, y:rect.top + rect.height / 2 } : null;
+}
+
+function lyricsFlightSource(list, line, lines) {
+  if (!list) return null;
+  const rect = list.getBoundingClientRect();
+  const width = parseFloat(list.style.width);
+  if (!rect.width || !rect.height || !width) return null;
+  const scale = rect.width / width;
+  const style = getComputedStyle(list);
+  const top = rect.top + (parseFloat(style.getPropertyValue('--lyrics-edge-top')) || 0) * scale;
+  const bottom = rect.bottom - (parseFloat(style.getPropertyValue('--lyrics-edge-bottom')) || 0) * scale;
+  let word = lyricOpeningWordRect(line);
+  if (!word || word.top >= bottom || word.bottom <= top) {
+    const center = (top + bottom) / 2;
+    let distance = Infinity;
+    line = null;
+    for (const candidate of lines) {
+      if (!candidate) continue;
+      const bounds = candidate.getBoundingClientRect();
+      if (bounds.top >= bottom || bounds.bottom <= top) continue;
+      const offset = Math.abs(bounds.top + bounds.height / 2 - center);
+      if (offset < distance) {
+        line = candidate;
+        distance = offset;
+      }
+    }
+    word = lyricOpeningWordRect(line);
+  }
+  const layer = list.cloneNode(true);
+  layer.setAttribute('aria-hidden', 'true');
+  Object.assign(layer.style, {
+    left:`${rect.left}px`, top:`${rect.top}px`, zIndex:'10000', pointerEvents:'none',
+  });
+  for (const edge of ['top', 'bottom', 'feather']) {
+    const property = `--lyrics-edge-${edge}`;
+    layer.style.setProperty(property, style.getPropertyValue(property));
+  }
+  return {
+    layer, rect, scale, line, word, scrollTop:list.scrollTop,
+    font:line ? parseFloat(getComputedStyle(line).fontSize) : 0,
+  };
+}
+
 const playbackCaptureTaps = new WeakMap();
 
 function connectPlaybackAnalyser(audio, { beforeVolume = false } = {}) {
@@ -4736,10 +4779,8 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
      идёт поиск по прошлой паре, набранное в них не должно меняться под рукой */
   const [editOpen, setEditOpen] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
-  const [fullscreenSurface, setFullscreenSurface] = useState(false);
   const [fullscreenFlightStart, setFullscreenFlightStart] = useState(null);
   const [sharedCoverMotion, setSharedCoverMotion] = useState(null);
-  const [fullscreenReturning, setFullscreenReturning] = useState(false);
   const [fullscreenFlightReady, setFullscreenFlightReady] = useState(false);
   const sharedCoverRef = useRef(null);
   const [sharedCoverRect, setSharedCoverRect] = useState(null);
@@ -4751,11 +4792,11 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   lyricsTrackIdRef.current = track?.id;
   const fullscreenArtRef = useRef(null);
   const fullscreenMetaRef = useRef(null);
-  const fullscreenMetaFadeRef = useRef(null);
   const fullscreenLinesSlotRef = useRef(null);
   const compactLinesSlotRef = useRef(null);
   const lyricsLayoutRef = useRef(null);
   const lyricsFlightRef = useRef(null);
+  const lyricsExitSourceRef = useRef(null);
   const activeLyricsLineRef = useRef(activeLine);
   activeLyricsLineRef.current = activeLine;
   const setSharedCoverNode = useCallback(node => {
@@ -4786,10 +4827,8 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   const synced  = state?.status === 'ready' && !!state.synced;
   useEffect(() => {
     if ((!fullScreen && !fullscreenFlightStart) || fullscreenTrackIdRef.current === track?.id) return;
-    setFullscreenReturning(true);
     setSharedCoverMotion(null);
     setFullscreenFlightStart(null);
-    setFullscreenSurface(false);
     setFullScreen(false);
     fullscreenTransitionRef.current = false;
     fullscreenClosingRef.current = false;
@@ -4797,11 +4836,16 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   useLayoutEffect(() => {
     const shell = document.getElementById('app-shell');
     const waitForIncomingCover = fullscreenFlightStart?.direction === 'in' && !fullscreenFlightReady;
-    shell?.classList.toggle('lyrics-fullscreen-open', fullscreenSurface && !waitForIncomingCover);
+    shell?.classList.toggle('lyrics-fullscreen-open', fullScreen && !waitForIncomingCover);
     return () => {
       shell?.classList.remove('lyrics-fullscreen-open');
     };
-  }, [fullscreenSurface, fullscreenFlightStart, fullscreenFlightReady]);
+  }, [fullScreen, fullscreenFlightStart, fullscreenFlightReady]);
+  useLayoutEffect(() => {
+    if (fullScreen || fullscreenFlightStart) return;
+    fullscreenTransitionRef.current = false;
+    fullscreenClosingRef.current = false;
+  }, [fullScreen, fullscreenFlightStart]);
   const requestFullscreenClose = () => {
     if (!fullScreen || fullscreenClosingRef.current) return;
     fullscreenClosingRef.current = true;
@@ -4810,26 +4854,18 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     const target = document.getElementById('player-album-art')?.getBoundingClientRect();
     const trackId = track?.id;
     if (lyricsTrackIdRef.current !== trackId) {
-      setFullscreenSurface(false);
       setFullScreen(false);
-      setFullscreenReturning(false);
       fullscreenTransitionRef.current = false;
       fullscreenClosingRef.current = false;
       return;
     }
+    const line = lineRefs.current[activeLyricsLineRef.current] || lineRefs.current.find(Boolean);
+    lyricsExitSourceRef.current = reduced ? null : lyricsFlightSource(bodyRef.current, line, lineRefs.current);
     if (!reduced && source && target) {
-      const meta = fullscreenMetaRef.current;
-      const info = playerInfoRef.current;
-      const metaRect = meta?.getBoundingClientRect();
-      const infoRect = info?.getBoundingClientRect();
-      const metaReturn = metaRect?.width && infoRect?.width ? {
-        dx:metaRect.left + metaRect.width / 2 - infoRect.left - infoRect.width / 2,
-        dy:metaRect.top - infoRect.top,
-      } : null;
       setFullscreenFlightStart({
         direction:'out', trackId,
         rect:{left:source.left, top:source.top, width:source.width, height:source.height},
-        metaReturn,
+        metaSource:lyricsMetadataAnchor(fullscreenMetaRef.current),
       });
     } else {
       setSharedCoverMotion(null);
@@ -4838,9 +4874,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     /* Плеер и полноэкранный текст переключаются сразу; один и тот же
        AlbumArt остаётся поверх обеих сцен и физически перемещается между
        измеренными позициями. */
-    setFullscreenReturning(true);
     setFullScreen(false);
-    setFullscreenSurface(false);
   };
   useLayoutEffect(() => {
     if (!fullscreenFlightStart) {
@@ -4857,7 +4891,6 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     if (!targetEl) {
       setFullscreenFlightReady(true);
       setFullscreenFlightStart(null);
-      if (fullscreenFlightStart.direction === 'out') setFullscreenReturning(false);
       fullscreenTransitionRef.current = false;
       fullscreenClosingRef.current = false;
       return;
@@ -4868,7 +4901,6 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     if (reduced) {
       setFullscreenFlightReady(true);
       setFullscreenFlightStart(null);
-      if (fullscreenFlightStart.direction === 'out') setFullscreenReturning(false);
       fullscreenTransitionRef.current = false;
       fullscreenClosingRef.current = false;
       return;
@@ -4887,7 +4919,6 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     const complete = () => {
       setSharedCoverMotion(current => current === sharedCoverMotion ? null : current);
       setFullscreenFlightStart(null);
-      setFullscreenReturning(false);
       fullscreenTransitionRef.current = false;
       fullscreenClosingRef.current = false;
     };
@@ -4903,28 +4934,39 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     animation.onfinish = complete;
     return () => { animation.onfinish = null; animation.cancel(); };
   }, [sharedCoverMotion]);
+  const completedEntryFlightRef = useRef(null);
+  const completeEntryCoverFlight = useCallback(owner => {
+    if (completedEntryFlightRef.current === owner) return;
+    completedEntryFlightRef.current = owner;
+    onEntryCoverFlightComplete?.();
+  }, [onEntryCoverFlightComplete]);
   useLayoutEffect(() => {
-    if (!entryHero || !inPlayer || fullScreen || fullscreenFlightStart
+    if (!entryHero || completedEntryFlightRef.current === entryHero || !inPlayer || fullScreen || fullscreenFlightStart
       || String(entryHero.track?.id) !== String(coverTrack?.id) || readyCoverKey !== coverKey) return;
     if (reduced) {
-      onEntryCoverFlightComplete?.();
+      setSharedCoverMotion(current => current?.kind === 'player-entry' ? null : current);
+      completeEntryCoverFlight(entryHero);
       return;
     }
     const target = document.getElementById('player-album-art')?.getBoundingClientRect();
     if (!target?.width || !target.height) {
-      onEntryCoverFlightComplete?.();
+      completeEntryCoverFlight(entryHero);
       return;
     }
     const targetRect = { left:target.left, top:target.top, size:target.width };
     setSharedCoverRect(targetRect);
     setSharedCoverMotion({
-      kind:'player-entry', startRect:entryHero.startRect, targetRect,
+      kind:'player-entry', owner:entryHero, startRect:entryHero.startRect, targetRect,
     });
-  }, [entryHero, inPlayer, reduced, fullScreen, fullscreenFlightStart, coverTrack?.id, readyCoverKey, coverKey, onEntryCoverFlightComplete]);
+  }, [entryHero, inPlayer, reduced, fullScreen, fullscreenFlightStart, coverTrack?.id, readyCoverKey, coverKey, completeEntryCoverFlight]);
   useLayoutEffect(() => {
     if (sharedCoverMotion?.kind !== 'player-entry') return;
     const el = sharedCoverRef.current;
-    if (!el) return;
+    if (!el?.animate) {
+      setSharedCoverMotion(current => current === sharedCoverMotion ? null : current);
+      completeEntryCoverFlight(sharedCoverMotion.owner);
+      return;
+    }
     const { startRect, targetRect } = sharedCoverMotion;
     const dx = startRect.left - targetRect.left;
     const dy = startRect.top - targetRect.top;
@@ -4934,15 +4976,19 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       { transform:'translate3d(0, 0, 0) scale(1)' },
     ], { duration:HERO_DUR_MS, easing:HERO_EASE, fill:'forwards' });
     onEntryCoverFlightStart?.();
-    animation.onfinish = () => {
+    const complete = () => {
+      if (animation.onfinish !== complete) return;
+      animation.onfinish = null;
       setSharedCoverMotion(current => current === sharedCoverMotion ? null : current);
-      onEntryCoverFlightComplete?.();
+      completeEntryCoverFlight(sharedCoverMotion.owner);
     };
+    animation.onfinish = complete;
     return () => { animation.onfinish = null; animation.cancel(); };
-  }, [sharedCoverMotion, onEntryCoverFlightStart, onEntryCoverFlightComplete]);
+  }, [sharedCoverMotion, onEntryCoverFlightStart, completeEntryCoverFlight]);
   useLayoutEffect(() => {
     if (!exitHero || fullscreenFlightStart) return;
     if (String(exitHero.track?.id) !== String(coverTrack?.id) || reduced) {
+      setSharedCoverMotion(current => current?.kind === 'player-exit' ? null : current);
       onExitCoverFlightComplete?.();
       return;
     }
@@ -4963,7 +5009,11 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   useLayoutEffect(() => {
     if (sharedCoverMotion?.kind !== 'player-exit') return;
     const el = sharedCoverRef.current;
-    if (!el) { onExitCoverFlightComplete?.(); return; }
+    if (!el?.animate) {
+      setSharedCoverMotion(current => current === sharedCoverMotion ? null : current);
+      onExitCoverFlightComplete?.();
+      return;
+    }
     const { startRect, targetRect } = sharedCoverMotion;
     const dx = startRect.left - targetRect.left;
     const dy = startRect.top - targetRect.top;
@@ -4992,13 +5042,16 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       anchor.element.addEventListener('scroll', startFollowing, { passive:true });
       if (anchor.element.scrollTop !== anchor.top) startFollowing();
     }
-    animation.onfinish = () => {
+    const complete = () => {
+      if (animation.onfinish !== complete) return;
+      animation.onfinish = null;
       anchor?.element.removeEventListener('scroll', startFollowing);
       cancelAnimationFrame(scrollFrame);
       followCard(1);
       setSharedCoverMotion(current => current === sharedCoverMotion ? null : current);
       onExitCoverFlightComplete?.();
     };
+    animation.onfinish = complete;
     return () => {
       anchor?.element.removeEventListener('scroll', startFollowing);
       cancelAnimationFrame(scrollFrame);
@@ -5035,7 +5088,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     if (fullscreenArtRef.current) observer.observe(fullscreenArtRef.current);
     window.addEventListener('resize', measure);
     return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
-  }, [fullScreen, fullscreenSurface, sharedCoverMotion, track?.id, inPlayer, partyLayoutOpen, partyControlsAligned]);
+  }, [fullScreen, sharedCoverMotion, track?.id, inPlayer, partyLayoutOpen, partyControlsAligned]);
   useEffect(() => {
     if (!fullScreen || !synced || !open) setFullScreen(false);
   }, [fullScreen, synced, open, track?.id]);
@@ -5050,55 +5103,26 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     return () => window.removeEventListener('keydown', closeOnEscape, true);
   }, [fullScreen, requestFullscreenClose]);
   useLayoutEffect(() => {
-    if (!fullScreen) return;
-    fullscreenMetaFadeRef.current?.cancel();
-    fullscreenMetaFadeRef.current = null;
-  }, [fullScreen]);
-  useLayoutEffect(() => {
     const source = fullscreenFlightStart?.metaSource;
     const meta = fullscreenMetaRef.current;
-    if (!source || !meta?.animate || reduced) return;
-    const target = meta.getBoundingClientRect();
-    if (!target.width || !target.height) return;
-    const dx = source.centerX - (target.left + target.width / 2);
-    const dy = source.top - target.top;
-    const animation = meta.animate([
-      { transform:`translate3d(${dx}px, ${dy}px, 0)` },
-      { transform:'translate3d(0, 0, 0)' },
-    ], { duration:HERO_DUR_MS, easing:HERO_EASE });
-    return () => animation.cancel();
-  }, [fullscreenFlightStart, reduced]);
-  useLayoutEffect(() => {
-    const destination = fullscreenFlightStart?.metaReturn;
-    const meta = fullscreenMetaRef.current;
     const info = playerInfoRef.current;
-    if (!destination || !meta?.animate || !info?.animate || reduced) return;
-    // Keep the outgoing labels visible while the player fades back in.
-    fullscreenMetaFadeRef.current?.cancel();
-    fullscreenMetaFadeRef.current = meta.animate([
-      { opacity:getComputedStyle(meta).opacity },
-      { opacity:0 },
-    ], { duration:120, easing:'ease-in', fill:'forwards' });
-    const flight = info.animate([
-      { transform:`translate3d(${destination.dx}px, ${destination.dy}px, 0)` },
-      { transform:'translate3d(0, 0, 0)' },
-    ], { duration:HERO_DUR_MS, easing:HERO_EASE });
-    return () => flight.cancel();
-  }, [fullscreenFlightStart, reduced]);
-  useLayoutEffect(() => {
-    if (!fullScreen || reduced) return;
-    const source = playerInfoRef.current?.querySelector('[data-marquee-text]');
-    const title = fullscreenMetaRef.current?.querySelector('[data-marquee-text]');
-    if (!source || !title?.animate || source.scrollWidth <= source.clientWidth + 1) return;
-    const from = source.clientWidth;
-    const to = title.clientWidth;
-    if (!from || to <= from + 1) return;
-    const reveal = title.animate([
-      { maxWidth:`${from}px` },
-      { maxWidth:`${to}px` },
-    ], { delay:HERO_DUR_MS, duration:180, easing:'ease-out', fill:'backwards' });
-    return () => reveal.cancel();
-  }, [fullScreen, reduced, coverTrack?.title, playerInfoRef]);
+    if (!source || !meta?.animate || !info || reduced) return;
+    const rest = lyricsMetadataAnchor(meta);
+    const target = fullscreenFlightStart.direction === 'out' ? lyricsMetadataAnchor(info) : rest;
+    if (!rest || !target) return;
+
+    // Keep only the fullscreen labels visible until the flight lands.
+    const visibility = info.style.visibility;
+    info.style.visibility = 'hidden';
+    const translate = point => ({ translate:`${point.x - rest.x}px ${point.y - rest.y}px` });
+    const flight = meta.animate([translate(source), translate(target)], {
+      duration:HERO_DUR_MS, easing:HERO_EASE, fill:'forwards',
+    });
+    return () => {
+      flight.cancel();
+      info.style.visibility = visibility;
+    };
+  }, [fullscreenFlightStart, reduced, playerInfoRef]);
   /* Тексты, между которыми можно переключаться: источники, которые реально
      дали строки. Обычно один, но иногда оба — тогда плашки в шапке становятся
      переключателем. Set, потому что проверка идёт у каждого чипа на каждом
@@ -5129,7 +5153,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     const compactSlot = compactLinesSlotRef.current;
     const slot = fullScreen ? fullscreenLinesSlotRef.current : compactSlot;
     if (!list || !slot) return;
-    let edgeReveal;
+    let edgeReveal, removeReturnLayer, slotMovedDuringFlight = false;
     const applyLayout = rect => {
       list.classList.toggle('is-fullscreen', fullScreen);
       Object.assign(list.style, {
@@ -5154,17 +5178,21 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     };
     const rect = slot.getBoundingClientRect();
     const previous = lyricsLayoutRef.current?.list === list ? lyricsLayoutRef.current : null;
-    const activeIndex = activeLyricsLineRef.current;
-    const line = lineRefs.current[activeIndex] || lineRefs.current.find(Boolean);
     const switching = previous && previous.fullScreen !== fullScreen;
     const openingCompact = lyricsVisible && !fullScreen && !previous?.visible && !switching;
+    const active = lineRefs.current[activeLyricsLineRef.current] || lineRefs.current.find(Boolean);
+    const returnSource = switching && !fullScreen && lyricsVisible && !reduced
+      ? lyricsExitSourceRef.current || lyricsFlightSource(list, active, lineRefs.current) : null;
+    const line = returnSource?.line?.isConnected ? returnSource.line : active;
+    if (!fullScreen) lyricsExitSourceRef.current = null;
     if (switching) stopSmoothScroll(list);
     if (switching || !previous || openingCompact) autoUntilRef.current = Date.now() + HERO_DUR_MS + 120;
     const previousScroll = list.scrollTop;
-    const sourceWord = switching && lyricOpeningWordRect(line);
-    const sourceFont = switching && line ? parseFloat(getComputedStyle(line).fontSize) : 0;
-    const source = list.getBoundingClientRect();
-    const sourceFeather = switching ? parseFloat(getComputedStyle(list).getPropertyValue('--lyrics-edge-feather')) : 0;
+    const entering = switching && fullScreen && !reduced;
+    const sourceWord = entering && lyricOpeningWordRect(line);
+    const sourceFont = entering && line ? parseFloat(getComputedStyle(line).fontSize) : 0;
+    const source = entering && list.getBoundingClientRect();
+    const sourceFeather = entering ? parseFloat(getComputedStyle(list).getPropertyValue('--lyrics-edge-feather')) : 0;
 
     applyLayout(rect);
     if (!previous || switching || openingCompact) {
@@ -5175,7 +5203,35 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       { duration:reduced ? 120 : 220, easing:'ease-out', fill:'backwards' },
     );
 
-    if (switching && !reduced && list.animate && source.width && rect.width) {
+    const startFlight = (frames, onLanding, easing = HERO_EASE) => {
+      const flight = list.animate(frames, { duration:HERO_DUR_MS, easing, fill:'both' });
+      lyricsFlightRef.current = flight;
+      flight.onfinish = () => {
+        flight.onfinish = null;
+        flight.cancel();
+        lyricsFlightRef.current = null;
+        onLanding();
+      };
+    };
+
+    if (returnSource && list.animate && rect.width && rect.height) {
+      const { layer } = returnSource;
+      const { travel, fade, reveal } = lyricsReturnFlight(returnSource, {
+        rect, word:lyricOpeningWordRect(line), font:line ? parseFloat(getComputedStyle(line).fontSize) : 0,
+      }, HERO_EASE);
+      // Move the old wrapping as-is while the real list stays in its compact slot.
+      list.style.zIndex = '10000';
+      list.after(layer);
+      layer.scrollTop = returnSource.scrollTop;
+      const movement = layer.animate(travel, { duration:HERO_DUR_MS, fill:'both' });
+      const fading = layer.animate(fade, { duration:HERO_DUR_MS, fill:'both' });
+      removeReturnLayer = () => { movement.cancel(); fading.cancel(); layer.remove(); };
+      startFlight(reveal, () => {
+        removeReturnLayer();
+        list.style.zIndex = '8';
+        if (slotMovedDuringFlight) applyLayout(slot.getBoundingClientRect());
+      }, 'linear');
+    } else if (source?.width && rect.width && list.animate) {
       const targetScroll = list.scrollTop;
       const target = lyricOpeningWordRect(line);
       const targetFont = line ? parseFloat(getComputedStyle(line).fontSize) : 0;
@@ -5206,16 +5262,11 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
         width: source.width + 'px', height: source.height + 'px', zIndex:'10000',
       });
       list.scrollTop = previousScroll;
-      const flight = list.animate([
+      startFlight([
         { transform:'none', ...openEdges, '--lyrics-edge-feather':sourceFeather + 'px' },
         { transform:'translate3d(' + x + 'px,' + y + 'px,0) scale(' + scale + ')',
           ...arrivalEdges, '--lyrics-edge-feather':targetFeather / scale + 'px' },
-      ], { duration:HERO_DUR_MS, easing:HERO_EASE, fill:'forwards' });
-      lyricsFlightRef.current = flight;
-      flight.onfinish = () => {
-        flight.onfinish = null;
-        flight.cancel();
-        lyricsFlightRef.current = null;
+      ], () => {
         applyLayout(slot.getBoundingClientRect());
         list.scrollTop = targetScroll;
         if (line?.isConnected && useWord) {
@@ -5235,15 +5286,18 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
           }
         }
         const current = lineRefs.current[activeLyricsLineRef.current];
-        if (current && current !== line) {
+        if (current && current !== line && Date.now() - userScrollRef.current >= 4000) {
           autoUntilRef.current = Date.now() + 700;
           smoothScroll(list, Math.max(0, current.offsetTop + current.offsetHeight / 2 - list.clientHeight / 2), 520);
         }
-      };
+      });
     }
 
     const sync = () => {
-      if (!lyricsFlightRef.current) applyLayout(slot.getBoundingClientRect());
+      const next = slot.getBoundingClientRect();
+      if (!lyricsFlightRef.current) applyLayout(next);
+      else slotMovedDuringFlight = next.left !== rect.left || next.top !== rect.top
+        || next.width !== rect.width || next.height !== rect.height;
     };
     const observer = new ResizeObserver(sync);
     observer.observe(slot);
@@ -5257,6 +5311,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
       observer.disconnect();
       openingFade?.cancel?.();
       edgeReveal?.cancel();
+      removeReturnLayer?.();
       window.removeEventListener('transitionend', onSlotTransition, true);
       window.removeEventListener('resize', sync);
       const flight = lyricsFlightRef.current;
@@ -5351,18 +5406,13 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
     fullscreenTransitionRef.current = true;
     fullscreenTrackIdRef.current = track?.id;
     const source = document.getElementById('player-album-art')?.getBoundingClientRect();
-    const infoRect = playerInfoRef.current?.getBoundingClientRect();
-    const metaSource = infoRect?.width && infoRect.height
-      ? { centerX:infoRect.left + infoRect.width / 2, top:infoRect.top }
-      : null;
     const trackId = track?.id;
     setFullscreenFlightReady(false);
     setFullscreenFlightStart(!reduced && source ? {
       direction:'in', trackId,
       rect:{ left:source.left, top:source.top, width:source.width, height:source.height },
-      metaSource,
+      metaSource:lyricsMetadataAnchor(playerInfoRef.current),
     } : null);
-    setFullscreenSurface(true);
     setFullScreen(true);
     if (reduced || !source) fullscreenTransitionRef.current = false;
   };
@@ -5501,32 +5551,19 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
         </div>
       </div>
 
-      {createPortal(<AnimatePresence onExitComplete={() => {
-        if (!fullScreen) {
-          setFullscreenSurface(false);
-          if (fullscreenFlightStart?.direction !== 'out') {
-            setFullscreenReturning(false);
-            fullscreenTransitionRef.current = false;
-            fullscreenClosingRef.current = false;
-          }
-        }
-      }}>
-        {fullScreen && synced && lines && <motion.div key="fullscreen-lyrics" className="lyrics-fullscreen" role="dialog" aria-modal="true"
-          initial={{opacity:0}}
-          animate={{opacity:fullscreenFlightStart?.direction === 'in' && !fullscreenFlightReady ? 0 : 1}}
-          exit={{opacity:0, transition:{duration:reduced ? 0.12 : (HERO_DUR_MS + 40) / 1000, ease:'easeIn'}}}
-          transition={{duration:reduced ? 0.12 : 0.3, ease:[0.23,1,0.32,1]}}>
-          <button type="button" className="lyrics-fullscreen-back" onClick={requestFullscreenClose} aria-label={t('lyrics_close')} title={`${t('back')} (Esc)`}>
+      {(fullScreen || fullscreenFlightStart?.direction === 'out') && synced && lines && createPortal(
+        <div className="lyrics-fullscreen" role="dialog" aria-modal={fullScreen || undefined} aria-hidden={!fullScreen}
+          style={{pointerEvents:fullScreen ? undefined : 'none'}}>
+          <motion.button type="button" className="lyrics-fullscreen-back" onClick={requestFullscreenClose}
+            disabled={!fullScreen} aria-label={t('lyrics_close')} title={`${t('back')} (Esc)`}
+            initial={{opacity:0}} animate={{opacity:fullScreen ? 1 : 0}}
+            transition={{duration:0.12, ease:[0.23,1,0.32,1]}}>
             <img src="../assets/back.png" alt="" draggable="false"/>
-          </button>
+          </motion.button>
           <div className="lyrics-fullscreen-content">
             <div className="lyrics-fullscreen-artwork">
-              <div ref={fullscreenMetaRef} className="lyrics-fullscreen-meta" style={{
-                opacity:fullscreenReturning ? 0 : 1,
-                transform:fullscreenReturning && !reduced ? 'translateY(-5px)' : 'translateY(0)',
-                transition:reduced ? 'none' : 'opacity 180ms ease, transform 180ms cubic-bezier(0.23,1,0.32,1)',
-              }}>
-                <div className="lyrics-fullscreen-artist">{formatArtistDisplay(coverTrack?.artist)}</div>
+              <div ref={fullscreenMetaRef} className="lyrics-fullscreen-meta">
+                <div className="lyrics-fullscreen-artist" data-lyrics-meta-anchor="">{formatArtistDisplay(coverTrack?.artist)}</div>
                 <div className="lyrics-fullscreen-track">
                   <MarqueeText
                     text={coverTrack?.title || ''}
@@ -5539,8 +5576,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
             </div>
             <div ref={fullscreenLinesSlotRef} className="lyrics-fullscreen-lines-slot"/>
           </div>
-        </motion.div>}
-      </AnimatePresence>, document.getElementById('app-shell') || document.body)}
+        </div>, document.getElementById('app-shell') || document.body)}
       {lines && createPortal(
         <div ref={bodyRef} className="shared-lyrics-lines scroll-none" onScroll={onBodyScroll}
           style={{ visibility:lyricsVisible ? 'visible' : 'hidden' }}>
@@ -6440,12 +6476,14 @@ function TopBar({ navActive, onNav, libCollapsed, onToggleLib, inPlayer, scAuth,
           </div>
 
           {/* комнаты перед collapse списка и системными кнопками, во всех разделах */}
-          <div style={{flex:1, display:'flex', alignItems:'center', justifyContent:'flex-end', gap:3, paddingRight:6}}>
-            <button type="button" className="party-trigger" ref={partyTriggerRef} onClick={onToggleParty}
-              title={t('nav_party')} aria-label={t('nav_party')} aria-expanded={!!partyOpen}
-              aria-controls="listening-party-stage" data-room={partyActive ? 'true' : 'false'}>
-              <span className="party-icon" aria-hidden="true"/>
-            </button>
+          <div className="topbar-right" data-in-player={inPlayer}>
+            <div className="topbar-party-slot">
+              <button type="button" className="party-trigger" ref={partyTriggerRef} onClick={onToggleParty}
+                title={t('nav_party')} aria-label={t('nav_party')} aria-expanded={!!partyOpen}
+                aria-controls="listening-party-stage" data-room={partyActive ? 'true' : 'false'}>
+                <span className="party-icon" aria-hidden="true"/>
+              </button>
+            </div>
             <button type="button" className="topbar-sidebar-toggle" data-visible={inPlayer}
               onClick={onToggleLib} disabled={!inPlayer}
               title={t(libCollapsed ? 'show_player_sidebar' : 'hide_player_sidebar')}
@@ -9788,8 +9826,12 @@ function SearchArtistCard({ user, onClick }) {
       onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
       onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
       {user.avatarUrl
-        ? <img src={user.avatarUrl} loading="lazy" decoding="async"
-            style={{width:'100%', maxWidth:124, aspectRatio:'1', borderRadius:'50%', objectFit:'cover', background:'#111116'}}/>
+        ? <div style={{position:'relative', isolation:'isolate', overflow:'hidden', width:'100%',
+            maxWidth:124, aspectRatio:'1', borderRadius:'50%', background:'#111116'}}>
+            <img src={user.avatarUrl} alt="" loading="lazy" decoding="async"
+              style={{display:'block', width:'100%', height:'100%', objectFit:'cover'}}/>
+            <CoverTint/>
+          </div>
         : <div style={{width:'100%', maxWidth:124, aspectRatio:'1', borderRadius:'50%', background:'rgba(255,255,255,0.05)',
             display:'flex', alignItems:'center', justifyContent:'center'}}>
             <svg width="26" height="26" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.6" viewBox="0 0 24 24">
@@ -10373,7 +10415,7 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
 
 /* ── ArtistView ──────────────────────────────────────────────────────────── */
 function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlayTrack, onSelectTrack,
-                      loadingTrackId, errorTrackId, artistCacheRef, onFollow, onCheckFollow,
+                      loadingTrackId, errorTrackId, artistCacheRef, onFollow,
                       onTracksAppended, onLogin, hideDividers, glowOff }) {
   const t = useLang();
   const [tab, setTab] = useState('popular');
@@ -10389,8 +10431,8 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
   const tabCacheRef = useRef({});
   const scrollContainerRef = useRef(null);
   const tabReqRef = useRef(0);
-  const [isFollowing, setIsFollowing] = useState(null);
-  const [followBusy, setFollowBusy] = useState(false);
+  const [followStatus, setFollowStatus] = useState(null);
+  const [followCheckVersion, setFollowCheckVersion] = useState(0);
   const [glowRgb, setGlowRgb] = useState(null);
   const [avatarBroken, setAvatarBroken] = useState(false);
 
@@ -10405,7 +10447,7 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
     if (!artist) return;
     tabCacheRef.current = {};
     setTab('popular'); setFetched(null); setArtistTracks([]);
-    setIsFollowing(null); setFollowBusy(false);
+    setFollowStatus(null);
     setAvatarBroken(false); setGlowRgb(null);
   }, [artist?.id, artist?.username]);
 
@@ -10449,23 +10491,25 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
   }, [visible, artist?.id, artist?.username]);
 
   const profileId = fetched?.id || artist?.id || null;
+  const follow = followStatus?.profileId === profileId && followStatus.auth === scAuth ? followStatus : null;
+  const isFollowing = follow?.following;
 
   useEffect(() => {
-    if (!visible || !scAuth || !profileId || !onCheckFollow) return;
-    let cancelled = false;
-    (async () => {
-      const f = await onCheckFollow(profileId);
-      if (!cancelled) setIsFollowing(!!f);
-    })();
-    return () => { cancelled = true; };
-  }, [visible, profileId, onCheckFollow, scAuth]);
+    if (!visible || !scAuth || !profileId) return;
+    const controller = new AbortController();
+    setFollowStatus(null);
+    checkSoundCloudFollowing(window.electronAPI.scFetch, scAuth, profileId, controller.signal).then(following => {
+      if (!controller.signal.aborted) setFollowStatus({ profileId, auth: scAuth, following });
+    });
+    return () => controller.abort();
+  }, [visible, profileId, scAuth, followCheckVersion]);
 
   const handleSubscribeClick = async () => {
-    if (!profileId || !onFollow || followBusy) return;
-    setFollowBusy(true);
+    if (typeof isFollowing !== 'boolean' || !onFollow || follow.busy) return;
+    const pending = { ...follow, busy: true };
+    setFollowStatus(pending);
     const result = await onFollow(profileId, isFollowing);
-    setFollowBusy(false);
-    if (result !== null) setIsFollowing(result);
+    setFollowStatus(current => current === pending ? { ...follow, following: result ?? isFollowing } : current);
   };
 
   useEffect(() => {
@@ -10561,10 +10605,6 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
   }, [avatarUrl]);
 
   const AV = 168;                                   /* аватар */
-  /* суммарная длительность загруженного — второе число в строке мета.
-     пересчитывается на каждой подгрузке, поэтому мемо не нужен: список
-     треков и так меняет рендер */
-  const totalDur = artistTracks.reduce((s, x) => s + (x.duration || 0), 0);
   /* что сейчас в колонке — вкладка + состояние. ключ меняется при
      переключении вкладки и при появлении списка после скелета, и вся колонка
      один раз коротко проявляется. это единственная анимация смены: строки
@@ -10584,46 +10624,17 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
-      {/* ── шапка ───────────────────────────────────────────────────────────
-          Одна колонка по центру, без фоновой картинки. Раньше здесь был баннер
-          на blur(56px) во всю ширину: он съедал ~230px высоты, превращал
-          страницу в мутное пятно и стоил полноэкранного блюра на каждом
-          пересчёте. Теперь верх держат аватар, одно слово имени и волосок —
-          остальное контент, а не декор. */}
-      <div style={{ position: 'relative', flexShrink: 0, padding: '0 24px' }}>
-        {/* назад — тихая квадратная кнопка, как в редакторе плейлиста:
-            круглая с blur была сделана под поверхность-герой и на странице
-            только шумела */}
-        <div onClick={onClose} title={t('back')} style={{
-          position: 'absolute', top: 14, left: 18, zIndex: 4,
-          width: 28, height: 28, borderRadius: 9,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'transparent', cursor: 'pointer', transition: 'background 0.15s',
-        }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-        >
-          <img src="../assets/back.png" alt="" draggable="false"
-            style={{ width: 15, height: 15, objectFit: 'contain', opacity: 0.5,
-              filter: 'brightness(0) invert(1)', transition: 'opacity 0.15s' }}
-            onMouseEnter={e => e.currentTarget.style.opacity = '0.95'}
-            onMouseLeave={e => e.currentTarget.style.opacity = '0.5'}/>
-        </div>
-
+      <div style={{ position: 'relative', flexShrink: 0 }}>
+        <button type="button" className="artist-back" onClick={onClose} title={t('back')} aria-label={t('back')}
+          tabIndex={visible ? 0 : -1}>
+          <img src="../assets/back.png" alt="" draggable="false"/>
+        </button>
         <motion.div data-motion-spatial="" {...rise(0.02)} style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          padding: '30px 24px 14px',
+          display: 'flex', alignItems: 'center', gap: 24,
+          width: 'calc(100% - 104px)', maxWidth: 760, margin: '0 auto', padding: '16px 0 14px',
         }}>
-          {/* «артист» — НАД аватаром: подпись относится к тому, что ниже, и
-              работает как заголовок блока, а не как подпись к картинке */}
-          <div style={{
-            marginBottom: 12,
-            fontSize: 'var(--fs-eyebrow)', letterSpacing: '0.19em', textTransform: 'uppercase',
-            color: 'rgba(255,255,255,0.34)', fontWeight: 600,
-          }}>{t('artist_label')}</div>
-
           {/* аватар в пятне своего цвета */}
-          <div style={{ position: 'relative', display: 'grid', placeItems: 'center' }}>
+          <div style={{ position: 'relative', flexShrink: 0, display: 'grid', placeItems: 'center' }}>
             {glowRgb && !glowOff && (
               <div style={{
                 position: 'absolute',
@@ -10635,125 +10646,83 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
               }}/>
             )}
             <div style={{
-              position: 'relative', width: AV, height: AV, borderRadius: 30, overflow: 'hidden',
+              position: 'relative', isolation: 'isolate', width: AV, height: AV, borderRadius: 30, overflow: 'hidden',
               background: '#111116',
               boxShadow: '0 0 0 1px rgba(255,255,255,0.075), 0 18px 44px rgba(0,0,0,0.55)',
             }}>
               {avatarUrl && !avatarBroken
-                ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                    onError={() => setAvatarBroken(true)}/>
+                ? <>
+                    <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                      onError={() => setAvatarBroken(true)}/>
+                    <CoverTint/>
+                  </>
                 : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <svg width="56" height="56" fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="1.3" viewBox="0 0 24 24">
                       <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
                     </svg>
                   </div>}
 
-              {/* тень под ником: снизу вверх и только на нижнюю половину. Без
-                  неё белое имя на светлой аватарке пропадает; полноэкранный
-                  скрим затемнил бы всю картинку, а тут гаснет только подпись.
-                  сам ник — поверх тени, с двойной тенью для контраста */}
-              <div aria-hidden="true" style={{
-                position: 'absolute', left: 0, right: 0, bottom: 0, height: '52%',
-                background: 'linear-gradient(to top, rgba(0,0,0,0.70) 0%, rgba(0,0,0,0.34) 42%, rgba(0,0,0,0) 100%)',
-                pointerEvents: 'none',
-              }}/>
-              <div style={{
-                position: 'absolute', left: 12, right: 12, bottom: 12,
-                textAlign: 'center',
-                fontSize: 'clamp(15px, 2vw, 22px)', fontWeight: 700,
-                letterSpacing: '-0.022em', lineHeight: 1.12,
-                color: 'rgba(255,255,255,0.97)',
-                textShadow: '0 1px 3px rgba(0,0,0,0.9), 0 2px 14px rgba(0,0,0,0.6)',
-                overflowWrap: 'anywhere',
-                display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-              }}>{tidyScArtist(profile?.username || artist?.username || '') || '—'}</div>
             </div>
           </div>
 
-          {/* мета: подписчики и длительность загруженного — цифры
-              tabular, иначе при подгрузке колонка дёргается по ширине */}
-          {((profile?.followersCount > 0) || artistTracks.length > 0) && (
+          <div style={{ position: 'relative', minWidth: 0 }}>
+            <h1 style={{
+              margin: '0 0 6px', fontSize: 'clamp(15px, 2vw, 22px)', fontWeight: 700,
+              letterSpacing: '-0.022em', lineHeight: 1.12, color: 'var(--text)',
+              overflowWrap: 'anywhere',
+              display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+            }}>{tidyScArtist(profile?.username || artist?.username || '') || '—'}</h1>
             <div style={{
-              display: 'flex', alignItems: 'center', gap: 8, marginTop: 12,
-              fontSize: 'var(--fs-sm)', color: 'rgba(255,255,255,0.42)',
-              fontVariantNumeric: 'tabular-nums',
-            }}>
-              {profile?.followersCount > 0 && (
-                <span>{profile.followersCount.toLocaleString()} {t('followers')}</span>
-              )}
-              {profile?.followersCount > 0 && artistTracks.length > 0 && (
-                <span style={{ color: 'rgba(255,255,255,0.2)' }}>·</span>
-              )}
-              {artistTracks.length > 0 && <span>{fmtHMS(totalDur)}</span>}
-            </div>
-          )}
+              fontSize: 'var(--fs-eyebrow)', letterSpacing: '0.19em', textTransform: 'uppercase',
+              color: 'rgba(255,255,255,0.34)', fontWeight: 600,
+            }}>{t('artist_label')}</div>
 
-          {/* два действия. заливка акцентом только у «слушать всё» — это
-              главное действие страницы; подписка остаётся контуром, чтобы
-              два залитых пилюля не спорили друг с другом */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, flexWrap: 'wrap', justifyContent: 'center' }}>
-            <button type="button" className="artist-play-all" disabled={!canPlay}
-              onPointerDown={event => { if (canPlay && event.button === 0) event.currentTarget.dataset.pointerPressed = 'true'; }}
-              onPointerUp={event => { delete event.currentTarget.dataset.pointerPressed; }}
-              onPointerCancel={event => { delete event.currentTarget.dataset.pointerPressed; }}
-              onPointerLeave={event => { delete event.currentTarget.dataset.pointerPressed; if (canPlay) event.currentTarget.style.background = 'rgba(var(--accent-rgb),0.92)'; }}
-              onBlur={event => { delete event.currentTarget.dataset.pointerPressed; }}
-              onKeyDown={event => { delete event.currentTarget.dataset.pointerPressed; }}
-              onClick={() => canPlay && onPlayTrack(artistTracks[0], artistTracks)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                height: 32, padding: '0 18px 0 15px', borderRadius: 999, border: 'none',
-                background: canPlay ? 'rgba(var(--accent-rgb),0.92)' : 'rgba(255,255,255,0.05)',
-                color: canPlay ? '#0a0a0c' : 'rgba(255,255,255,0.28)',
-                fontSize: 'var(--fs-sm)', fontWeight: 600, fontFamily: 'inherit',
-                letterSpacing: '0.01em', cursor: canPlay ? 'pointer' : 'default',
-                transition: 'background 0.18s, color 0.18s, transform 120ms var(--ease-out)',
-              }}
-              onPointerEnter={e => { if (canPlay && isFineHover(e)) e.currentTarget.style.background = 'var(--accent)'; }}
-            >
-              <svg width="9" height="10" viewBox="0 0 10 12" fill="currentColor" aria-hidden="true">
-                <polygon points="0,0 10,6 0,12"/>
-              </svg>
-              {t('artist_play_all')}
-            </button>
-
-            {profileId && scAuth && isFollowing !== null && (
-              <button
-                disabled={followBusy}
-                onClick={handleSubscribeClick}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 7,
-                  height: 32, padding: '0 18px', borderRadius: 999,
-                  background: isFollowing ? 'rgba(255,255,255,0.045)' : 'transparent',
-                  border: `1px solid ${isFollowing ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.22)'}`,
-                  color: isFollowing ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.9)',
-                  fontSize: 'var(--fs-sm)', fontWeight: 600, fontFamily: 'inherit',
-                  letterSpacing: '0.01em',
-                  cursor: followBusy ? 'default' : 'pointer',
-                  opacity: followBusy ? 0.55 : 1,
-                  transition: 'background 0.18s, color 0.18s, border-color 0.18s, opacity 0.18s',
-                }}
-                onMouseEnter={e => {
-                  if (followBusy) return;
-                  e.currentTarget.style.background = isFollowing ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.06)';
-                  e.currentTarget.style.color = '#fff';
-                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.34)';
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.background = isFollowing ? 'rgba(255,255,255,0.045)' : 'transparent';
-                  e.currentTarget.style.color = isFollowing ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.9)';
-                  e.currentTarget.style.borderColor = isFollowing ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.22)';
-                }}
-              >
-                {isFollowing && (
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                )}
-                {isFollowing ? t('subscribed') : t('subscribe')}
-              </button>
+            {profile?.followersCount > 0 && (
+              <div style={{
+                marginTop: 8,
+                fontSize: 'var(--fs-sm)', color: 'rgba(255,255,255,0.42)',
+                fontVariantNumeric: 'tabular-nums',
+              }}>
+                {profile.followersCount.toLocaleString()} {t('followers')}
+              </div>
             )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
+              <button type="button" className="artist-play-all" disabled={!canPlay}
+                onPointerDown={event => { if (canPlay && event.button === 0) event.currentTarget.dataset.pointerPressed = 'true'; }}
+                onPointerUp={event => { delete event.currentTarget.dataset.pointerPressed; }}
+                onPointerCancel={event => { delete event.currentTarget.dataset.pointerPressed; }}
+                onPointerLeave={event => { delete event.currentTarget.dataset.pointerPressed; }}
+                onBlur={event => { delete event.currentTarget.dataset.pointerPressed; }}
+                onKeyDown={event => { delete event.currentTarget.dataset.pointerPressed; }}
+                onClick={() => canPlay && onPlayTrack(artistTracks[0], artistTracks)}
+              >
+                <svg width="9" height="10" viewBox="0 0 10 12" fill="currentColor" aria-hidden="true">
+                  <polygon points="0,0 10,6 0,12"/>
+                </svg>
+                {t('artist_play_all')}
+              </button>
+
+              {isFollowing === null && (
+                <button type="button" className="artist-follow" onClick={() => setFollowCheckVersion(v => v + 1)}>
+                  {t('follow_check_retry')}
+                </button>
+              )}
+              {typeof isFollowing === 'boolean' && (
+                <button type="button" className="artist-follow" data-following={isFollowing}
+                  disabled={follow.busy}
+                  onClick={handleSubscribeClick}
+                >
+                  {isFollowing && (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  )}
+                  {isFollowing ? t('subscribed') : t('subscribe')}
+                </button>
+              )}
+            </div>
           </div>
         </motion.div>
       </div>
@@ -11127,7 +11096,6 @@ function App() {
   const scCacheRef        = useRef([]);
   const scCacheMapRef     = useRef(new Map());
   const artistCacheRef    = useRef(new Map());
-  const followedIdsRef    = useRef(new Set());
   const prevSearchRef     = useRef('');
   const prevViewRef       = useRef('search');
   const homeSearchRef     = useRef(null);
@@ -12027,8 +11995,9 @@ function App() {
   // The timeout is only a guard for missing DOM targets or failed image loads.
   useLayoutEffect(() => {
     if (!hero) return;
+    let alive = true;
     const fallback = setTimeout(() => {
-      if (entryCoverFlightRef.current !== 'complete') {
+      if (alive && entryCoverFlightRef.current !== 'complete') {
         // A cancelled WAAPI flight must never leave both the source card and
         // player cover hidden. Reveal the shared cover at its player slot.
         entryCoverFlightRef.current = 'fallback';
@@ -12036,7 +12005,7 @@ function App() {
         setHeroExiting(true);
       }
     }, ART_READY_WAIT_MS + HERO_DUR_MS + 250);
-    return () => clearTimeout(fallback);
+    return () => { alive = false; clearTimeout(fallback); };
   }, [hero]);
 
   const artEntranceTweenRef = useRef(null);
@@ -14401,17 +14370,15 @@ function App() {
 
   const handleFollow = useCallback(async (userId, currentlyFollowing) => {
     const auth = scAuthRef.current;
-    if (!auth || !userId) return false;
+    if (!auth || !userId) return null;
     const url = `https://api-v2.soundcloud.com/me/followings/${userId}`;
     const method = currentlyFollowing ? 'DELETE' : 'POST';
-    const res = await window.electronAPI.scFetch(url, auth.token, auth.clientId, method);
-    if (res.error) {
-      showToast((res.error === 403 || res.error === 429) ? t('sc_blocked')
+    const res = await window.electronAPI.scFetch(url, auth.token, auth.clientId, method).catch(() => null);
+    if (!res || res.error) {
+      showToast((res?.error === 403 || res?.error === 429) ? t('sc_blocked')
         : currentlyFollowing ? t('unfollow_err') : t('follow_err'));
       return null;
     }
-    if (currentlyFollowing) followedIdsRef.current.delete(userId);
-    else followedIdsRef.current.add(userId);
     return !currentlyFollowing;
   }, [t]);
 
@@ -14517,20 +14484,6 @@ function App() {
     }
     showToast(name ? `${t('dl_ok')} — ${name}` : t('dl_ok'));
   }, [t]);
-
-  const checkFollow = useCallback(async (userId) => {
-    if (!userId) return false;
-    if (followedIdsRef.current.has(userId)) return true;
-    const auth = scAuthRef.current;
-    if (!auth) return false;
-    const res = await window.electronAPI.scFetch(
-      `https://api-v2.soundcloud.com/me/followings/${userId}`,
-      auth.token, auth.clientId
-    );
-    const following = !res.error && res.data;
-    if (following) followedIdsRef.current.add(userId);
-    return !!following;
-  }, []);
 
   const sortedTracks = useMemo(() => {
     const arr = [...tracks];
@@ -15647,7 +15600,7 @@ function App() {
                 }}>{t('player_pick')}</div>
               ) : (<>
               {/* artist */}
-              <div className="player-info-artist" title={formatArtistDisplay(playerDisplayTrack.artist)}>
+              <div className="player-info-artist" data-lyrics-meta-anchor="" title={formatArtistDisplay(playerDisplayTrack.artist)}>
                 {scPlayingTrack || pendingPlayerTrack
                   ? splitArtists(playerDisplayTrack.artist).map(({ name, sep }, i) => {
                       const isUploader = playerDisplayTrack.uploaderUsername
@@ -15788,20 +15741,8 @@ function App() {
               <TransportButton onClick={handleToggleLyrics} active={lyricsOpen} size={SIDE}>
                 <span aria-hidden="true" className="player-toggle-icon player-lyrics-icon"/>
               </TransportButton>
-              <TransportButton onClick={handleToggleFx} active={fxOpen} size={SIDE}>
-                <div style={{
-                  width:'clamp(18px, 2.2vw, 26px)', height:'clamp(18px, 2.2vw, 26px)',
-                }}>
-                  <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none"
-                    stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                    <line x1="6"  y1="4" x2="6"  y2="20"/>
-                    <line x1="12" y1="4" x2="12" y2="20"/>
-                    <line x1="18" y1="4" x2="18" y2="20"/>
-                    <line x1="2.6"  y1="15" x2="9.4"  y2="15" strokeWidth="2.4"/>
-                    <line x1="8.6"  y1="8"  x2="15.4" y2="8"  strokeWidth="2.4"/>
-                    <line x1="14.6" y1="13" x2="21.4" y2="13" strokeWidth="2.4"/>
-                  </svg>
-                </div>
+              <TransportButton onClick={handleToggleFx} active={fxOpen} size={SIDE} title={t('eq')}>
+                <span aria-hidden="true" className="player-toggle-icon player-equalizer-icon"/>
               </TransportButton>
               <TransportButton onClick={()=>{ if (partyCanControl()) setShuffle(s=>!s); }} disabled={partyLocked} active={shuffle} size={SIDE}>
                 <span aria-hidden="true" className="player-toggle-icon player-shuffle-icon"/>
@@ -15898,7 +15839,7 @@ function App() {
           onTracksAppended={handleSearchResultsLoaded}
           onLogin={() => { setSettingsSec('account'); handleNav('settings'); }}
           loadingTrackId={loadingTrackId} errorTrackId={errorTrackId}
-          onFollow={handleFollow} onCheckFollow={checkFollow}/>
+          onFollow={handleFollow}/>
 
         <AnimatePresence>
           {toast && !toastExiting && (

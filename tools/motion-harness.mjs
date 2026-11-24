@@ -28,7 +28,13 @@ export function hookHarness(source, imports = {}, globals = {}) {
       if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
       return [slots[index], value => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }];
     },
-    useCallback(callback) { cursor++; return callback; },
+    useCallback(callback, deps) {
+      const index = cursor++;
+      const previous = slots[index];
+      if (same(previous?.deps, deps)) return previous.callback;
+      slots[index] = { callback, deps };
+      return callback;
+    },
     useLayoutEffect(effect, deps) {
       const index = cursor++;
       if (same(slots[index], deps)) return;

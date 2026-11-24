@@ -38,7 +38,7 @@ test('real navigation cancels at entry, retains the unsaved guard and restores s
   const state = { view: 'home', nav: 'home', home: true, player: false };
   const context = {
     view: 'home', reduced: false, editingPlaylist: null, track: { id: 1 },
-    homeScrollRef: { current: null }, plEditorRef: { current: null },
+    homeScrollRef: { current: null }, plEditorRef: { current: null }, navRequestRef: { current: 0 },
     setNavActive: value => { state.nav = value; },
     setHomeVisible: value => { state.home = value; }, setPlayerVisible: value => { state.player = value; },
     setLibScrollTargetId: () => {}, setLibScrollTrigger: () => {},

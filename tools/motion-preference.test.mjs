@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { reducedMotionNow, subscribeReducedMotion, animateHeroFlight, heroMayReveal } from '../src/motion-preference.js';
+import { reducedMotionNow, subscribeReducedMotion, animateHeroFlight } from '../src/motion-preference.js';
 import { isFineHover } from '../src/motion-lifecycle.js';
 import { sliderFraction } from '../src/slider.js';
 import { makeSoundCloudWaveformPath } from '../src/use-soundcloud-waveform.js';
+import { lyricsReturnFlight } from '../src/lyrics-transition.js';
 import { hookHarness, animationElement, fakeClock, findNode } from './motion-harness.mjs';
 
 const app = readFileSync(new URL('../src/app.jsx', import.meta.url), 'utf8');
@@ -87,138 +88,174 @@ test('reduced hero skips travel, preference changes settle an active flight and 
   assert.doesNotThrow(() => animateHeroFlight({ style: {} }, { style: {} }, from, to, options, false, () => () => {})());
 });
 
-test('actual HeroClone retargets replaced heroes, and retired preference callbacks cannot mutate the new flight', () => {
-  const begin = app.indexOf('function HeroClone('), end = app.indexOf('/* ── TopBar', begin);
-  assert.ok(begin > 0 && end > begin);
-  const listeners = [];
-  const harness = hookHarness(`${app.slice(begin, end)}\nexport { HeroClone };`, {}, {
-    HERO_DUR_MS: 430, HERO_FADE_MS: 140, HERO_EASE: options.easing,
-    createPortal: node => node, document: { body: {} }, CoverTint: 'tint',
-    animateHeroFlight: (el, clip, from, to, opts) => animateHeroFlight(el, clip, from, to, opts, false,
-      fn => { listeners.push(fn); return () => {}; }),
-  });
-  const hero = { targetRect: { left: 200, top: 100, size: 400 }, startRect: { left: 10, top: 10, width: 100, height: 100 }, track: {} };
-  const props = { hero, exiting: false };
-  let tree = harness.render(harness.exports.HeroClone, props); const element = tree.ref.current;
-  const first = element.calls[0]; assert.equal(first.options.duration, 430);
-  props.hero = { ...hero, startRect: { ...hero.startRect, left: 50 } };
-  tree = harness.render(harness.exports.HeroClone, props);
-  assert.equal(first.cancelled, true); assert.equal(element.calls.length, 2);
-  assert.notEqual(element.calls[0].frames[0].transform, element.calls[1].frames[0].transform);
-  listeners[0]({ matches: true }); assert.deepEqual(element.style, {}); assert.equal(element.calls[1].cancelled, false);
-  listeners[1]({ matches: true }); assert.equal(element.calls[1].cancelled, true);
-  assert.equal(element.style.transform, 'translate3d(0px, 0px, 0) scale(1)');
-  harness.unmount();
-});
-
-function handoffHarness(reduced) {
-  const begin = app.indexOf('  // Normal handoff keeps 430ms');
-  const end = app.indexOf('  const artEntranceTweenRef', begin);
-  assert.ok(begin > 0 && end > begin);
-  const clock = fakeClock(), changes = [], ready = { current: false }, listeners = new Set();
-  const harness = hookHarness(`export function Setup() { ${app.slice(begin, end)} }`, {}, {
-    hero: {}, reduced, HERO_DUR_MS: 430, ART_READY_WAIT_MS: 900, artReadyRef: ready, heroMayReveal,
-    reducedMotionNow: () => reduced, subscribeReducedMotion: fn => { listeners.add(fn); return () => listeners.delete(fn); },
-    setHeroExiting: value => changes.push(value), performance: { now: () => clock.now },
-    setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
-    requestAnimationFrame: fn => clock.setTimeout(() => fn(clock.now), 16), cancelAnimationFrame: clock.clearTimeout,
-  });
-  harness.render(harness.exports.Setup);
-  return { harness, clock, changes, ready, listeners, preference(value) {
-    reduced = value;
-    for (const fn of [...listeners]) fn({ matches: value });
-  } };
-}
-test('actual reduced hero handoff waits for decode/draw rather than exposing the previous artwork', () => {
-  const t = handoffHarness(true); t.clock.advance(480); assert.deepEqual(t.changes, [false]);
-  t.ready.current = true; t.clock.advance(16); assert.deepEqual(t.changes, [false, true]);
-  t.harness.unmount(); assert.equal(t.clock.timers.size, 0);
-  assert.match(app, /const faded = elapsed >= HERO_FADE_MS \+ 20/);
-  assert.match(app, /!artReadyRef\.current && elapsed < ART_READY_WAIT_MS/);
-  assert.match(app, /const HERO_FADE_MS\s*= 140/);
-});
-test('hero readiness is bounded; normal travel is unchanged and switching preference cancels the old timer', () => {
-  const reduced = handoffHarness(true); reduced.clock.advance(896); assert.deepEqual(reduced.changes, [false]);
-  reduced.clock.advance(16); assert.deepEqual(reduced.changes, [false, true]); reduced.harness.unmount();
-  const normal = handoffHarness(false); normal.clock.advance(429); assert.deepEqual(normal.changes, [false]);
-  normal.clock.advance(1); assert.deepEqual(normal.changes, [false, true]); normal.harness.unmount();
-  const changing = handoffHarness(false); changing.clock.advance(100);
-  changing.preference(true); changing.harness.render(changing.harness.exports.Setup);
-  changing.clock.advance(400); assert.deepEqual(changing.changes, [false]);
-  changing.ready.current = true; changing.clock.advance(16); assert.deepEqual(changing.changes, [false, true]);
-  changing.preference(false); changing.harness.render(changing.harness.exports.Setup);
-  changing.preference(true); changing.clock.advance(1000);
-  assert.deepEqual(changing.changes, [false, true], 'preference updates never restart a fade already in progress');
-  changing.harness.unmount(); assert.equal(changing.clock.timers.size, 0);
-  assert.equal(changing.listeners.size, 0);
-});
-
-test('forward hero cleanup rejects already-queued timers and frames after unmount', () => {
-  for (const reduced of [false, true]) {
-    const t = handoffHarness(reduced);
-    const stale = [...t.clock.queued], preference = [...t.listeners];
-    t.harness.unmount(); t.ready.current = true;
-    for (const callback of stale) callback();
-    for (const callback of preference) callback({ matches: true });
-    t.clock.advance(2000);
-    assert.deepEqual(t.changes, [false]); assert.equal(t.clock.timers.size, 0);
-  }
-});
-
-test('hero removal retains the fade/readiness bound and a retired frame cannot clear a replacement hero', () => {
+function sharedCoverHarness(overrides = {}) {
   const normalized = app.replace(/\r\n/g, '\n');
-  const start = normalized.indexOf('  useEffect(() => {\n    if (!hero || !heroExiting) return;');
-  const stop = normalized.indexOf('  /* gsap грузится лениво', start);
-  assert.ok(start > 0 && stop > start);
-  const setup = ready => {
+  const begin = normalized.indexOf('  const completedEntryFlightRef =');
+  const end = normalized.indexOf('  useLayoutEffect(() => {\n    const measure = () => {', begin);
+  assert.ok(begin > 0 && end > begin);
+  const cover = animationElement(), events = [], clock = fakeClock();
+  const track = { id: 1, coverUrl: 'cover' };
+  const entry = { track, startRect: { left: 10, top: 15, width: 100 } };
+  const exit = { track, startRect: { left: 120, top: 70, width: 300 },
+    targetRect: { left: 10, top: 15, size: 100 } };
+  const state = { coverTrack:track, coverKey:'1:cover', readyCoverKey:'1:cover', inPlayer:true,
+    entryHero:entry, exitHero:null, reduced:false, sharedCoverMotion:null, ...overrides };
+  const harness = hookHarness('export function Setup({ coverTrack, coverKey, readyCoverKey, inPlayer, entryHero, exitHero, reduced, sharedCoverMotion }) {'
+    + normalized.slice(begin, end) + '}', {}, {
+    fullScreen:false, fullscreenFlightStart:null, sharedCoverRef:{ current:cover },
+    HERO_DUR_MS:430, HERO_EASE:options.easing,
+    setSharedCoverRect: value => { state.rect = value; },
+    setSharedCoverMotion: value => { state.sharedCoverMotion = typeof value === 'function' ? value(state.sharedCoverMotion) : value; },
+    onEntryCoverFlightStart: () => events.push('entry-start'),
+    onEntryCoverFlightComplete: () => events.push('entry-complete'),
+    onExitCoverFlightComplete: () => events.push('exit-complete'),
+    document:{ getElementById: id => {
+      assert.equal(id, 'player-album-art');
+      return { getBoundingClientRect: () => ({ left:120, top:70, width:300, height:300 }) };
+    } },
+    requestAnimationFrame: fn => clock.setTimeout(fn, 16), cancelAnimationFrame: clock.clearTimeout,
+  });
+  const render = () => {
+    for (let i = 0; i < 5; i++) {
+      const previous = state.sharedCoverMotion;
+      harness.render(harness.exports.Setup, state);
+      if (state.sharedCoverMotion === previous) return;
+    }
+    assert.fail('shared cover effects did not settle');
+  };
+  return { harness, state, render, cover, clock, events, entry, exit };
+}
+
+test('the live shared cover retargets replacement heroes and ignores an obsolete finish callback', () => {
+  const t = sharedCoverHarness(); t.render();
+  const first = t.cover.calls[0], staleFinish = first.onfinish;
+  assert.equal(first.options.duration, 430);
+  t.state.entryHero = { ...t.entry, startRect:{ ...t.entry.startRect, left:50 } };
+  t.render();
+  assert.equal(first.cancelled, true);
+  assert.equal(t.cover.calls.length, 2);
+  assert.notEqual(first.frames[0].transform, t.cover.calls[1].frames[0].transform);
+  staleFinish();
+  assert.deepEqual(t.events, ['entry-start', 'entry-start']);
+  t.cover.calls[1].onfinish();
+  t.render();
+  assert.deepEqual(t.events, ['entry-start', 'entry-start', 'entry-complete']);
+  assert.equal(t.state.sharedCoverMotion, null);
+  t.harness.unmount();
+});
+
+test('reduced entry waits for the current cover to be drawn before replacing the source card', () => {
+  const t = sharedCoverHarness({ reduced:true, readyCoverKey:'old' });
+  t.render();
+  assert.deepEqual(t.events, []);
+  t.state.readyCoverKey = t.state.coverKey;
+  t.render();
+  assert.deepEqual(t.events, ['entry-complete']);
+  assert.equal(t.cover.calls.length, 0);
+  t.harness.unmount();
+});
+
+test('live motion reduction settles an active entry and cannot replay the same artwork flight', () => {
+  const t = sharedCoverHarness(); t.render();
+  const flight = t.cover.calls[0], staleFinish = flight.onfinish;
+  t.state.reduced = true;
+  t.render();
+  assert.equal(flight.cancelled, true);
+  assert.equal(t.state.sharedCoverMotion, null);
+  assert.deepEqual(t.events, ['entry-start', 'entry-complete']);
+  t.state.reduced = false;
+  t.render();
+  staleFinish();
+  assert.equal(t.cover.calls.length, 1);
+  assert.deepEqual(t.events, ['entry-start', 'entry-complete']);
+  t.harness.unmount();
+});
+
+test('missing WAAPI completes the shared artwork handoff and unmount rejects a retired finish', () => {
+  const missing = sharedCoverHarness();
+  missing.cover.animate = undefined;
+  missing.render();
+  assert.deepEqual(missing.events, ['entry-complete']);
+  assert.equal(missing.state.sharedCoverMotion, null);
+  missing.harness.unmount();
+
+  const t = sharedCoverHarness(); t.render();
+  const staleFinish = t.cover.calls[0].onfinish;
+  t.harness.unmount();
+  staleFinish();
+  assert.equal(t.cover.calls[0].cancelled, true);
+  assert.deepEqual(t.events, ['entry-start']);
+});
+
+test('source card remains hidden until artwork is ready and retired readiness frames cannot clear a replacement', () => {
+  const normalized = app.replace(/\r\n/g, '\n');
+  const begin = normalized.indexOf('  useEffect(() => {\n    if (!hero || !heroExiting) return;');
+  const end = normalized.indexOf('  }, [hero, heroExiting]);', begin) + '  }, [hero, heroExiting]);'.length;
+  assert.ok(begin > 0 && end > begin);
+  const setup = (ready, status = 'complete') => {
     const clock = fakeClock(), changes = [];
-    const harness = hookHarness(`export function Setup() { ${normalized.slice(start, stop)} }`, {}, {
-      hero: {}, heroExiting: true, artReadyRef: { current: ready }, HERO_FADE_MS: 140, ART_READY_WAIT_MS: 900,
-      performance: { now: () => clock.now },
+    const harness = hookHarness('export function Setup() {' + normalized.slice(begin, end) + '}', {}, {
+      hero:{}, heroExiting:true, artReadyRef:{ current:ready }, entryCoverFlightRef:{ current:status }, ART_READY_WAIT_MS:900,
+      performance:{ now: () => clock.now },
       requestAnimationFrame: fn => clock.setTimeout(fn, 16), cancelAnimationFrame: clock.clearTimeout,
       setHero: value => changes.push(['hero', value]), setHeroExiting: value => changes.push(['exit', value]),
     });
     harness.render(harness.exports.Setup); return { clock, changes, harness };
   };
-  const ready = setup(true); ready.clock.advance(159); assert.deepEqual(ready.changes, []);
-  ready.clock.advance(1); assert.deepEqual(ready.changes, [['hero', null], ['exit', false]]); ready.harness.unmount();
-  const waiting = setup(false); waiting.clock.advance(896); assert.deepEqual(waiting.changes, []);
-  waiting.clock.advance(16); assert.equal(waiting.changes.length, 2); waiting.harness.unmount();
-  const replacement = setup(true), stale = replacement.clock.queued[0];
-  replacement.harness.context.hero = {}; replacement.harness.context.heroExiting = false;
-  replacement.harness.render(replacement.harness.exports.Setup); replacement.clock.advance(1000); stale();
-  assert.deepEqual(replacement.changes, []); assert.equal(replacement.clock.timers.size, 0); replacement.harness.unmount();
+  const ready = setup(true);
+  ready.clock.advance(16);
+  assert.deepEqual(ready.changes, [['hero', null], ['exit', false]]);
+  ready.harness.unmount();
+
+  const waiting = setup(false);
+  waiting.clock.advance(896);
+  assert.deepEqual(waiting.changes, []);
+  waiting.clock.advance(16);
+  assert.deepEqual(waiting.changes, [['hero', null], ['exit', false]]);
+  waiting.harness.unmount();
+
+  const replacement = setup(true, 'started'), stale = replacement.clock.queued[0];
+  replacement.clock.advance(1000);
+  assert.deepEqual(replacement.changes, []);
+  replacement.harness.context.hero = {};
+  replacement.harness.context.heroExiting = false;
+  replacement.harness.render(replacement.harness.exports.Setup);
+  stale();
+  assert.deepEqual(replacement.changes, []);
+  assert.equal(replacement.clock.timers.size, 0);
+  replacement.harness.unmount();
 });
 
-test('reverse hero retains 430/140ms, settles once on live reduction and releases both timer stages', () => {
-  // The extraction supports checked-out CRLF as well as newly patched LF.
-  const normalized = app.replace(/\r\n/g, '\n');
-  const start = normalized.indexOf('  useLayoutEffect(() => {\n    if (!reverseHero) return;');
-  const stop = normalized.indexOf('  // Normal handoff keeps 430ms', start);
-  assert.ok(start > 0 && stop > start);
-  const setup = initial => {
-    const clock = fakeClock(), listeners = new Set(), changes = [];
-    const harness = hookHarness(`export function Setup() { ${normalized.slice(start, stop)} }`, {}, {
-      reverseHero: {}, reducedMotionNow: () => initial, HERO_DUR_MS: 430, HERO_FADE_MS: 140,
-      subscribeReducedMotion: fn => { listeners.add(fn); return () => listeners.delete(fn); },
-      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
-      setReverseHeroExiting: value => changes.push(['exit', value]), setReverseHero: value => changes.push(['hero', value]),
-    });
-    harness.render(harness.exports.Setup); return { clock, listeners, changes, harness };
-  };
-  const normal = setup(false); normal.clock.advance(429); assert.deepEqual(normal.changes, [['exit', false]]);
-  normal.clock.advance(1); assert.deepEqual(normal.changes.at(-1), ['exit', true]);
-  normal.clock.advance(159); assert.equal(normal.changes.length, 2);
-  normal.clock.advance(1); assert.deepEqual(normal.changes.slice(-2), [['hero', null], ['exit', false]]); normal.harness.unmount();
-  const live = setup(false); live.clock.advance(100);
-  for (const fn of live.listeners) fn({ matches: true });
-  assert.deepEqual(live.changes, [['exit', false], ['exit', true]]);
-  for (const fn of live.listeners) { fn({ matches: false }); fn({ matches: true }); }
-  live.clock.advance(160); assert.equal(live.changes.length, 4); live.harness.unmount();
-  const reduced = setup(true); reduced.clock.advance(0); assert.deepEqual(reduced.changes.at(-1), ['exit', true]);
-  const stale = [...reduced.clock.queued]; reduced.harness.unmount();
-  for (const fn of stale) fn(); assert.equal(reduced.changes.length, 2);
-  assert.equal(reduced.clock.timers.size, 0); assert.equal(reduced.listeners.size, 0);
+test('reverse shared artwork flies for 430ms and live reduction releases its scroll listener immediately', () => {
+  const t = sharedCoverHarness({ entryHero:null });
+  const listeners = new Map();
+  const anchor = { scrollTop:0, addEventListener: (name, fn) => listeners.set(name, fn),
+    removeEventListener: name => listeners.delete(name) };
+  t.state.exitHero = { ...t.exit, scrollAnchor:{ element:anchor, top:0 } };
+  t.render();
+  const flight = t.cover.calls[0], staleFinish = flight.onfinish;
+  assert.equal(flight.options.duration, 430);
+  assert.deepEqual(t.events, []);
+  assert.equal(listeners.size, 1);
+  anchor.scrollTop = 24;
+  listeners.get('scroll')();
+  assert.equal(t.clock.timers.size, 1);
+  t.state.reduced = true;
+  t.render();
+  staleFinish();
+  assert.deepEqual(t.events, ['exit-complete']);
+  assert.equal(flight.cancelled, true);
+  assert.equal(listeners.size, 0);
+  assert.equal(t.clock.timers.size, 0);
+  t.harness.unmount();
+
+  const normal = sharedCoverHarness({ entryHero:null });
+  normal.state.exitHero = normal.exit;
+  normal.render();
+  const finish = normal.cover.calls[0].onfinish;
+  finish(); finish(); normal.render();
+  assert.deepEqual(normal.events, ['exit-complete']);
+  normal.harness.unmount();
 });
 
 test('settings focus cancels native smooth movement on live reduction while retaining the requested final scroll', () => {
@@ -295,11 +332,12 @@ test('track waveform entrance follows the player reveal and both color layers re
 test('progress clips the track waveform at the decoder position and keeps seeking available', () => {
   const begin = app.indexOf('function ProgressBar('), end = app.indexOf('const MENU_VARIANTS', begin);
   assert.ok(begin > 0 && end > begin);
-  const clock = fakeClock(), seeks = [];
+  const clock = fakeClock(), seeks = [], body = {};
   const harness = hookHarness(`${app.slice(begin, end)}\nexport { ProgressBar };`, {}, {
     useReducedMotion: () => true, isFineHover: event => isFineHover(event, () => ({ matches: true })),
     fmt: String, requestAnimationFrame: fn => clock.setTimeout(fn, 16), cancelAnimationFrame: clock.clearTimeout,
-    document: { addEventListener() {}, removeEventListener() {} },
+    document: { body, addEventListener() {}, removeEventListener() {} },
+    createPortal: (node, target) => { assert.equal(target, body); return node; },
     ResizeObserver: class { constructor(callback) { this.callback = callback; } observe(el) { el.offsetWidth = 100; this.callback(); } disconnect() {} },
   });
   const props = { progressRef: { current: 0.75 }, audioRef: { current: { duration: 100, currentTime: 75 } },
@@ -314,8 +352,17 @@ test('progress clips the track waveform at the decoder position and keeps seekin
   const hit = findNode(tree, node => node.props?.onPointerEnter && node.props?.onMouseDown);
   hit.props.onPointerEnter({ pointerType: 'mouse' }); tree = harness.render(harness.exports.ProgressBar, props);
   const rail = findNode(tree, node => node.props?.className === 'player-wave-track');
-  rail.ref.current.getBoundingClientRect = () => ({ left: 0, width: 100 });
-  hit.props.onMouseDown({ clientX: 25 }); tree = harness.render(harness.exports.ProgressBar, props);
+  rail.ref.current.getBoundingClientRect = () => ({ left: 180, width: 100 });
+  hit.props.onPointerMove({ pointerType:'mouse', clientX:205, currentTarget:{ getBoundingClientRect: () => ({ top:510 }) } });
+  tree = harness.render(harness.exports.ProgressBar, props);
+  const tooltip = findNode(tree, node => node.props?.className === 'player-progress-tooltip');
+  assert.equal(tooltip.props.style.left, 205);
+  assert.equal(tooltip.props.style.top, 506);
+  assert.equal(tooltip.props.children, '25');
+  hit.props.onPointerLeave();
+  tree = harness.render(harness.exports.ProgressBar, props);
+  assert.equal(findNode(tree, node => node.props?.className === 'player-progress-tooltip'), null);
+  hit.props.onMouseDown({ clientX: 205 }); tree = harness.render(harness.exports.ProgressBar, props);
   assert.deepEqual(seeks, [0.25]); assert.equal(rail.props['data-motion-position'], '');
   assert.equal(findNode(tree, node => node.props?.className === 'player-wave').props['data-engaged'], true);
   props.classic = true; props.isPlaying = false;
@@ -423,9 +470,27 @@ test('live wave reads the active audio and keeps seeking usable with reduced mot
   assert.ok(strokes().some(({ top }) => top < 14));
   assert.ok(strokes().every(({ x, top }) => x > 440 && top < 28));
 
+  const tallestTop = () => Math.min(...strokes().map(({ top }) => top));
+  const playingTop = tallestTop();
+  props.isPlaying = false;
+  render();
+  assert.equal(tallestTop(), playingTop);
+  clock.advance(64);
+  assert.ok(tallestTop() > playingTop && tallestTop() < 28);
+  assert.deepEqual(released, [audio, nextAudio]);
+  clock.advance(500);
+  assert.equal(path.d, '');
+  assert.equal(clock.timers.size, 0);
+
+  props.isPlaying = true;
+  render();
+  clock.advance(48);
+  assert.deepEqual(connected, [audio, nextAudio, nextAudio]);
+  assert.ok(strokes().length > 0);
+
   reduced = true;
   render();
-  assert.deepEqual(released, [audio, nextAudio]);
+  assert.deepEqual(released, [audio, nextAudio, nextAudio]);
   assert.equal(path.d, '');
   harness.unmount();
   assert.equal(clock.timers.size, 0);
@@ -485,7 +550,7 @@ test('shared artwork follows the sidebar even when its slot changes position onl
   const observed = new Map();
   const harness = hookHarness(`export function Setup() { ${app.slice(start, end)} }`, {}, {
     sharedCoverMotion: null, sharedCoverRef: { current: cover }, fullscreenArtRef: { current: null },
-    fullScreen: false, fullscreenSurface: false, track: { id: 1 }, inPlayer: true,
+    fullScreen: false, track: { id: 1 }, inPlayer: true,
     partyLayoutOpen: false, partyControlsAligned: false,
     document: { getElementById: id => id === 'player-album-art' ? slot : sidebar },
     window: { addEventListener() {}, removeEventListener() {} },
@@ -502,6 +567,115 @@ test('shared artwork follows the sidebar even when its slot changes position onl
   assert.equal(cover.style.width, '300px');
   harness.unmount();
   assert.equal(observed.size, 0);
+});
+
+test('fullscreen lyrics moves one metadata layer and hides the player copy until handoff', () => {
+  const anchorStart = app.indexOf('function lyricsMetadataAnchor(');
+  const anchorEnd = app.indexOf('function lyricsFlightSource(', anchorStart);
+  const effectStart = app.lastIndexOf('  useLayoutEffect(() => {', app.indexOf('const source = fullscreenFlightStart?.metaSource'));
+  const deps = '}, [fullscreenFlightStart, reduced, playerInfoRef]);';
+  const effectEnd = app.indexOf(deps, effectStart) + deps.length;
+  const compact = animationElement(), full = animationElement();
+  compact.querySelector = () => ({ getBoundingClientRect: () => ({ left:100, top:130, width:300, height:20 }) });
+  full.querySelector = () => ({ getBoundingClientRect: () => ({ left:0, top:40, width:300, height:20 }) });
+  const harness = hookHarness(`${app.slice(anchorStart, anchorEnd)}
+    export function Setup(fullscreenFlightStart, reduced) { ${app.slice(effectStart, effectEnd)} }`, {}, {
+    playerInfoRef: { current: compact }, fullscreenMetaRef: { current: full }, HERO_DUR_MS: 430, HERO_EASE: 'ease',
+  });
+  harness.render(harness.exports.Setup, { direction:'in', metaSource:{ x:250, y:140 } }, false);
+  assert.deepEqual(Array.from(full.calls[0].frames, frame => frame.translate), ['100px 90px', '0px 0px']);
+  assert.equal(compact.style.visibility, 'hidden');
+
+  // Close while still between the two anchors.
+  harness.render(harness.exports.Setup, { direction:'out', metaSource:{ x:180, y:75 } }, false);
+  assert.ok(full.calls[0].cancelled);
+  assert.deepEqual(Array.from(full.calls[1].frames, frame => frame.translate), ['30px 25px', '100px 90px']);
+  assert.equal(compact.style.visibility, 'hidden');
+
+  harness.render(harness.exports.Setup, null, false);
+  assert.ok(full.calls[1].cancelled);
+  assert.equal(compact.style.visibility, undefined);
+  assert.deepEqual(compact.calls, []);
+  harness.render(harness.exports.Setup, { direction:'out', metaSource:{ x:180, y:75 } }, true);
+  assert.equal(full.calls.length, 2);
+});
+
+test('the return flight aligns the old active word and reveals the compact viewport at landing', () => {
+  const source = { rect:{ left:400, top:30, width:520, height:420, bottom:450 },
+    word:{ left:440, top:130, bottom:158, height:28 }, font:28, scale:1 };
+  const target = { rect:{ left:16, top:80, width:220, height:180, right:236, bottom:260 },
+    word:{ left:26, top:150, height:14 }, font:14 };
+  const { travel, fade, reveal } = lyricsReturnFlight(source, target, 'ease');
+  assert.equal(travel[1].transform, 'translate3d(-394px, 70px, 0) scale(0.5)');
+  assert.equal(travel[1].clipPath, 'inset(0px 60px 100px 20px)');
+  assert.equal(travel[1].offset, reveal[1].offset);
+  assert.equal(travel[2].transform, travel[1].transform);
+  assert.equal(travel[2].clipPath, travel[1].clipPath);
+  assert.equal(reveal[0].clipPath, 'inset(56px 0px 82px)');
+  assert.equal(reveal[1].offset, fade[1].offset);
+  assert.equal(fade[1].opacity, 1);
+  assert.deepEqual(reveal[2], { opacity:1, clipPath:'inset(0px)' });
+
+  const interrupted = lyricsReturnFlight({ ...source, scale:1.5, font:20, word:{ ...source.word, height:35 } }, target, 'ease');
+  assert.equal(interrupted.travel[0].transform, 'translate3d(0px, 0px, 0) scale(1.5)');
+  assert.equal(interrupted.travel[1].transform, 'translate3d(-390px, 80px, 0) scale(0.6)');
+});
+
+test('closing after manual scrolling anchors the flight to a visible lyric', () => {
+  const begin = app.indexOf('function lyricsFlightSource(');
+  const end = app.indexOf('const playbackCaptureTaps', begin);
+  const lineAt = (top, bottom) => ({
+    rect: { top, bottom, height:bottom - top },
+    getBoundingClientRect() { return this.rect; },
+  });
+  const hidden = lineAt(200, 220), center = lineAt(132, 152), edge = lineAt(85, 105);
+  const layer = animationElement();
+  layer.setAttribute = () => {};
+  const list = { style:{ width:'100px' }, scrollTop:90, cloneNode:() => layer,
+    getBoundingClientRect:() => ({ left:50, width:100, height:120, top:80, bottom:200 }) };
+  const harness = hookHarness(`${app.slice(begin, end)}\nexport { lyricsFlightSource };`, {}, {
+    lyricOpeningWordRect: line => line?.rect,
+    getComputedStyle: () => ({ getPropertyValue:() => '0px', fontSize:'16px' }),
+  });
+  const snapshot = harness.exports.lyricsFlightSource(list, hidden, [edge, center, hidden]);
+  assert.equal(snapshot.line, center);
+  assert.equal(snapshot.word, center.rect);
+  assert.equal(snapshot.scrollTop, 90);
+});
+
+test('the compact lyrics layout is already final before the departing layer is removed', () => {
+  const begin = app.indexOf('  useLayoutEffect(() => {', app.indexOf('const lyricsVisible ='));
+  const end = app.indexOf('  useEffect(() => {', begin);
+  const list = animationElement(), layer = animationElement();
+  const layout = { left:12, top:80, width:240, height:180, right:252, bottom:260 };
+  const compactSlot = { getBoundingClientRect: () => layout };
+  let layerMounted = false;
+  list.classList = { toggle() {} };
+  list.after = node => { assert.equal(node, layer); layerMounted = true; };
+  layer.remove = () => { layerMounted = false; };
+  const flightRef = { current: null };
+  const harness = hookHarness(`export function Setup() { ${app.slice(begin, end)} }`, {}, {
+    bodyRef:{ current:list }, compactLinesSlotRef:{ current:compactSlot }, fullScreen:false, reduced:false, lyricsVisible:true,
+    lyricsLayoutRef:{ current:{ list, fullScreen:true, visible:true } }, lyricsFlightRef:flightRef,
+    lyricsExitSourceRef:{ current:{ layer, rect:{ left:400, top:50, width:500, height:420 }, scale:1, scrollTop:90 } },
+    lineRefs:{ current:[] }, activeLyricsLineRef:{ current:-1 }, autoUntilRef:{ current:0 }, userScrollRef:{ current:0 },
+    stopSmoothScroll() {}, lyricOpeningWordRect:() => null, lyricsReturnFlight, HERO_DUR_MS:430, HERO_EASE:'ease',
+    window:{ addEventListener() {}, removeEventListener() {} }, ResizeObserver:class { observe() {} disconnect() {} },
+  });
+  harness.render(harness.exports.Setup);
+  assert.equal(list.style.width, '240px');
+  assert.equal(list.style.height, '180px');
+  assert.equal(layer.scrollTop, 90);
+  assert.equal(layerMounted, true);
+  assert.ok(layer.calls.every(animation => animation.options.duration === flightRef.current.options.duration));
+  list.scrollTop = 126;
+  flightRef.current.onfinish();
+  assert.equal(layerMounted, false);
+  assert.equal(list.scrollTop, 126);
+  assert.equal(list.style.height, '180px');
+  assert.equal(list.style.zIndex, '8');
+  assert.equal(flightRef.current, null);
+  harness.unmount();
 });
 
 test('AlbumArt reports only the requested drawn cover, and failed new artwork cannot uncover the old layer', () => {
@@ -524,7 +698,7 @@ test('AlbumArt reports only the requested drawn cover, and failed new artwork ca
   assert.equal(reported.at(-1), 'new', 'the current placeholder is ready, not the preceding cover');
   for (let i = 0; i < 4; i++) assert.equal(findNode(render(), node => node.type === 'cover-layer'), null, 'failure must stay settled after subsequent renders');
   harness.unmount(); assert.equal(clock.timers.size, 0);
-  assert.match(app, /useLayoutEffect\(\(\) => \{ artReadyRef\.current = false; \}, \[track\?\.id, track\?\.coverUrl\]\)/);
+  assert.match(app, /useLayoutEffect\(\(\) => \{ artReadyRef\.current = false; \}, \[playerDisplayTrack\?\.id, playerDisplayTrack\?\.coverUrl\]\)/);
 });
 
 function albumArtHarness(initialUrl, instant = true) {
@@ -594,14 +768,38 @@ test('AlbumArt keeps normal crossfade layers until pruning and rejects late call
   assert.deepEqual(t.reported, reported); assert.equal(t.clock.timers.size, 0);
 });
 
-test('replacement heroes reset exit state before paint and retired handoff timers cannot fade the new clone', () => {
-  const start = app.indexOf('  // Normal handoff keeps 430ms');
-  assert.match(app.slice(start, app.indexOf('  const artEntranceTweenRef', start)), /useLayoutEffect\(\(\) => \{\s*if \(!hero\) return;\s*setHeroExiting\(false\)/);
-  assert.match(app, /useLayoutEffect\(\(\) => \{\s*if \(!reverseHero\) return;\s*setReverseHeroExiting\(false\)/);
-  const t = handoffHarness(false); t.clock.advance(430); assert.deepEqual(t.changes, [false, true]);
-  const stale = [...t.clock.queued]; t.harness.context.hero = {}; t.harness.render(t.harness.exports.Setup);
-  assert.deepEqual(t.changes, [false, true, false]); for (const callback of stale) callback();
-  assert.deepEqual(t.changes, [false, true, false]); t.clock.advance(430); assert.equal(t.changes.at(-1), true); t.harness.unmount();
+test('replacement heroes reset exit state and only the current cover can reach the timeout fallback', () => {
+  const callback = app.indexOf('  const beginHeroFlight = useCallback');
+  const callbackEnd = app.indexOf('  const handleExitCoverFlightComplete', callback);
+  const fallback = app.indexOf('  useLayoutEffect(() => {', app.indexOf('  // Release the source card'));
+  const fallbackEnd = app.indexOf('  const artEntranceTweenRef', fallback);
+  assert.ok(callback > 0 && callbackEnd > callback && fallback > callbackEnd && fallbackEnd > fallback);
+  const clock = fakeClock(), exits = [];
+  const entryCoverFlightRef = { current:'started' };
+  const harness = hookHarness(`export function Setup() { ${app.slice(callback, callbackEnd)}
+    ${app.slice(fallback, fallbackEnd)} return beginHeroFlight; }`, {}, {
+    hero:{}, entryCoverFlightRef, ART_READY_WAIT_MS:900, HERO_DUR_MS:430,
+    setTimeout:clock.setTimeout, clearTimeout:clock.clearTimeout,
+    setHeroExiting: value => exits.push(value), setEntryCoverFlightStarted() {}, setReverseHero() {},
+    setHero: value => { harness.context.hero = value; },
+  });
+  const replace = harness.render(harness.exports.Setup), retired = clock.queued.at(-1);
+  clock.advance(400); replace({ id:2 }); harness.render(harness.exports.Setup);
+  assert.equal(entryCoverFlightRef.current, 'idle');
+  retired();
+  assert.deepEqual(exits, [false]);
+  clock.advance(1579);
+  assert.deepEqual(exits, [false]);
+  clock.advance(1);
+  assert.equal(entryCoverFlightRef.current, 'fallback');
+  assert.deepEqual(exits, [false, true]);
+
+  replace({ id:3 }); harness.render(harness.exports.Setup);
+  entryCoverFlightRef.current = 'complete';
+  clock.advance(1580);
+  assert.deepEqual(exits, [false, true, false]);
+  harness.unmount();
+  assert.equal(clock.timers.size, 0);
 });
 
 test('actual smooth scroll cancels active frames on preference changes, wheel interrupts and newer targets win', () => {
@@ -681,5 +879,5 @@ test('only generic popup exits use the existing strong ease-out with unchanged d
   assert.doesNotMatch(exits.join('\n'), /easeIn|\[0\.4, 0, 1, 1\]/);
   assert.match(app, /transformOrigin: 'top left'/); assert.match(app, /variants=\{MENU_VARIANTS\}/);
   assert.match(app, /const MENU_VARIANTS =/); assert.match(app, /const HERO_DUR_MS\s*= 430/);
-  assert.match(app, /opacity 0\.12s ease-in, transform 0\.12s ease-in/);
+  assert.match(app, /const MENU_VARIANTS = \{\s*hidden: \{ opacity: 0, scale: 0\.92, y: -7 \}/);
 });
