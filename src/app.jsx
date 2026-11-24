@@ -4225,15 +4225,12 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
   const pct = prog && prog.total ? Math.min(99, Math.round(prog.got / prog.total * 100)) : null;
   const mb = n => (n / 1048576).toFixed(1);
 
-  return (
+  return createPortal(
     <AnimatePresence>
       {track && (
-        <motion.div key="dl" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-          transition={{ duration: 0.16 }}
-          /* zIndex выше меню (9998): клик по «Скачать» закрывает меню, и его
-             exit-анимация не должна прорисоваться поверх диалога */
-          style={{ position: 'absolute', inset: 0, zIndex: 10000, background: 'rgba(4,4,8,0.55)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <motion.div key="dl" className="download-dialog-overlay"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.16 }}>
           <motion.div data-motion-spatial=""
             initial={{ scale: 0.97, y: 10, opacity: 0 }}
             animate={{ scale: 1, y: 0, opacity: 1 }}
@@ -4374,7 +4371,7 @@ function DownloadDialog({ track, scAuth, dir, onPickDir, onClose, onSaved }) {
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>, document.body
   );
 }
 
@@ -4767,6 +4764,8 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   }, [artEntranceRef]);
   const coverTrack = coverTrackProp || track;
   const coverKey = `${coverTrack?.id ?? ''}:${coverTrack?.coverUrl ?? ''}`;
+  const showSharedCover = (inPlayer && (coverVisible || sharedCoverMotion?.kind === 'player-entry'))
+    || (exitHero && sharedCoverMotion?.kind === 'player-exit');
   const handleSharedCoverReady = useCallback(() => {
     setReadyCoverKey(coverKey);
     onCoverReady?.();
@@ -5566,7 +5565,8 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
           ? `translate3d(${sharedCoverMotion.startRect.left - sharedCoverMotion.targetRect.left}px, ${sharedCoverMotion.startRect.top - sharedCoverMotion.targetRect.top}px, 0) scale(${sharedCoverMotion.startRect.width / sharedCoverMotion.targetRect.size})`
           : 'none',
         zIndex:fullScreen || fullscreenFlightStart ? 10001 : sharedCoverMotion?.kind === 'player-exit' ? 960 : 2,
-        opacity:coverVisible || sharedCoverMotion?.kind === 'player-entry' || sharedCoverMotion?.kind === 'player-exit' ? 1 : 0,
+        visibility:showSharedCover ? 'visible' : 'hidden',
+        opacity:showSharedCover ? 1 : 0,
         pointerEvents:'none',
         overflow:'hidden', borderRadius:sharedCoverMotion?.kind === 'player-exit' ? sharedCoverMotion.targetRadius : 16,
         willChange:'transform',
@@ -12046,7 +12046,7 @@ function App() {
     artEntranceViewRef.current = view;
     if (reduced) {
       artEntranceTweenRef.current?.kill();
-      if (artEntranceRef.current) {
+      if (view === 'player' && !hero && artEntranceRef.current) {
         artEntranceRef.current.style.opacity = '1';
         artEntranceRef.current.style.transform = 'none';
       }
@@ -15588,7 +15588,7 @@ function App() {
             onContextMenuItem={libCtxStable}
           />
           </div>
-          <LyricsPanel open={lyricsOpen} inPlayer={playerVisible} state={lyricsView} activeLine={lyricsActive}
+          <LyricsPanel open={lyricsOpen} inPlayer={view === 'player' && playerVisible} state={lyricsView} activeLine={lyricsActive}
             audioRef={audioRef}
             playerInfoRef={playerInfoRef}
             onSeek={handleLyricsSeek} onRetry={handleLyricsRefresh}
@@ -15599,7 +15599,8 @@ function App() {
             onFindLyrics={handleLyricsFind} onUnpin={handleLyricsUnpin} track={track}
             isPlaying={isPlaying} coverInstant={!!(hero || reverseHero)}
             coverVisible={playerVisible && !((hero && !heroExiting) || reverseHero)}
-            onCoverReady={handleArtReady} artEntranceRef={artEntranceRef} entryHero={hero} exitHero={reverseHero} coverTrack={playerDisplayTrack}
+            onCoverReady={handleArtReady} artEntranceRef={artEntranceRef} entryHero={hero}
+            exitHero={view === 'home' ? reverseHero : null} coverTrack={playerDisplayTrack}
             partyLayoutOpen={partyOpen} partyControlsAligned={partyOpen && libCollapsed}
             onEntryCoverFlightStart={handleEntryCoverFlightStart}
             onEntryCoverFlightComplete={handleEntryCoverFlightComplete}

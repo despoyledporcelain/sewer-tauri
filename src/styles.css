@@ -133,6 +133,14 @@
      Ползунок «скругление» под материалом поэтому не действует — так же, как
      в стоковых windows-приложениях: форма задаётся системой. */
   body.effect-mica #app-shell { border-radius:8px; }
+  .download-dialog-overlay {
+    position:fixed; inset:0; z-index:10002;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(4,4,8,0.55);
+    border-radius:var(--radius, 12px);
+    -webkit-app-region:no-drag;
+  }
+  body.effect-mica .download-dialog-overlay { border-radius:8px; }
   /* Виньетка затемняет края для сплошной заливки. Под материалом она съедает
      ровно то, что должно быть видно — углы, где мика заметнее всего.
      Сила — из настроек, но под материалом всегда сбивается до четверти:
