@@ -345,30 +345,33 @@
   .player-wave[data-engaged="true"] .player-wave-cursor { opacity:1; }
   .player-wave[data-empty="true"] .player-wave-cursor { visibility:hidden; }
 
-  .player-wave[data-film="true"] .player-wave-track::before,
-  .player-wave[data-film="true"] .player-wave-played::before {
+  .player-wave[data-signal="true"] { height:36px; }
+  .player-wave[data-signal="true"] .player-wave-track::before,
+  .player-wave[data-signal="true"] .player-wave-played::before {
     content:"";
     position:absolute;
-    inset:5px 0;
-    border-radius:3px;
-    background:
-      radial-gradient(ellipse 2px 1.25px at 4px 3px, currentColor 80%, transparent) top left / 8px 6px repeat-x,
-      radial-gradient(ellipse 2px 1.25px at 4px 3px, currentColor 80%, transparent) bottom left / 8px 6px repeat-x,
-      linear-gradient(90deg, color-mix(in oklch, currentColor 27%, transparent), color-mix(in oklch, currentColor 48%, transparent));
-  }
-  .player-wave[data-film="true"] .player-wave-cursor {
-    width:9px;
-    height:9px;
-    background:none;
-    opacity:1;
-  }
-  .player-wave[data-film="true"] .player-wave-cursor::after {
-    content:"";
-    position:absolute;
-    inset:0;
+    inset:auto 0 3px;
+    height:2px;
     border-radius:2px;
-    rotate:45deg;
-    background:color-mix(in oklch, var(--accent) 35%, #faf8f5);
+    background:currentColor;
+  }
+  .player-wave[data-signal="true"] .player-wave-played::before {
+    background:linear-gradient(90deg,
+      currentColor max(0px, calc(var(--signal-progress, 0%) - 48px)),
+      color-mix(in oklch, currentColor 40%, #f2f1f6) var(--signal-progress, 0%));
+  }
+  .player-live-signal {
+    position:absolute;
+    inset:0 0 auto;
+    width:100%;
+    height:30px;
+    overflow:visible;
+    fill:none;
+    stroke:color-mix(in oklch, var(--accent) 65%, #f2f1f6);
+    stroke-width:1.6px;
+    stroke-linecap:round;
+    mask-image:linear-gradient(90deg, transparent, #f2f1f6 8% 92%, transparent);
+    filter:drop-shadow(0 0 3px rgba(var(--accent-rgb),0.3));
   }
 
   .player-wave[data-classic="true"] {
@@ -533,7 +536,7 @@
   }
 
   .player-play-button {
-    width:clamp(58px, 7.2vw, 86px);
+    width:var(--player-play-size, clamp(58px, 7.2vw, 86px));
     aspect-ratio:1;
     flex:none;
     position:relative;
@@ -1321,3 +1324,84 @@
 .settings-update-button:hover:enabled { background:rgba(var(--accent-rgb),0.2); }
 .settings-update-button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .settings-update-button:disabled { opacity:0.5; cursor:default; }
+
+.app-update-dialog {
+  position:fixed;
+  inset:0;
+  width:min(392px, calc(100vw - 40px));
+  max-height:calc(100vh - 40px);
+  height:fit-content;
+  margin:auto;
+  padding:24px;
+  border:1px solid rgba(242,241,246,0.12);
+  border-radius:20px;
+  background:color-mix(in oklch, var(--pop-bg) 48%, #1c1c22);
+  color:#f2f1f6;
+  box-shadow:0 22px 58px rgba(0,0,0,0.4);
+  overflow:auto;
+  -webkit-app-region:no-drag;
+}
+.app-update-dialog::backdrop { background:rgba(10,10,15,0.64); }
+.app-update-heading { display:flex; align-items:center; gap:14px; }
+.app-update-symbol {
+  display:grid;
+  place-items:center;
+  flex:none;
+  width:42px;
+  height:42px;
+  border-radius:13px;
+  background:rgba(var(--accent-rgb),0.14);
+  color:color-mix(in oklch, var(--accent) 60%, #f2f1f6);
+  font:600 24px/1 system-ui;
+}
+.app-update-heading h2 {
+  margin:0;
+  font-size:var(--fs-xl);
+  font-weight:650;
+  letter-spacing:-0.025em;
+}
+.app-update-heading p {
+  margin:4px 0 0;
+  color:color-mix(in oklch, var(--accent) 42%, #e4e3eb);
+  font-size:var(--fs-sm);
+  font-variant-numeric:tabular-nums;
+}
+.app-update-message {
+  margin:18px 0 0;
+  color:rgba(242,241,246,0.7);
+  font-size:var(--fs-md);
+}
+.app-update-dialog progress {
+  display:block;
+  width:100%;
+  height:4px;
+  margin-top:10px;
+  accent-color:var(--accent);
+}
+.app-update-actions {
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+  gap:8px;
+  margin-top:22px;
+}
+.app-update-actions button {
+  padding:8px 15px;
+  border:1px solid transparent;
+  border-radius:9px;
+  background:rgba(242,241,246,0.08);
+  color:inherit;
+  font:inherit;
+  font-size:var(--fs-md);
+  font-weight:600;
+  cursor:pointer;
+}
+.app-update-actions .app-update-primary {
+  background:color-mix(in oklch, var(--accent) 45%, #f2f1f6);
+  color:#171820;
+}
+@media (hover: hover) and (pointer: fine) {
+  .app-update-actions button:hover:enabled { border-color:currentColor; }
+}
+.app-update-actions button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.app-update-actions button:disabled { opacity:0.55; cursor:default; }

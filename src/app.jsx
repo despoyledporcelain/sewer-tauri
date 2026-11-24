@@ -1776,6 +1776,8 @@ const STRINGS = {
     version:'Версия', repository:'Репозиторий', stack:'Стек',
     update_idle:'Обновления', update_check:'Проверить', update_checking:'Проверяем обновления…',
     update_available:'Доступно обновление', update_install:'Обновить и перезапустить',
+    update_later:'Позже', update_dialog_install:'Установить',
+    update_dialog_restart:'После установки seWer перезапустится.',
     update_current:'Установлена последняя версия', update_checkFailed:'Не удалось проверить обновления',
     update_downloading:'Скачиваем обновление…', update_installing:'Запускаем установку…',
     update_installFailed:'Не удалось установить обновление',
@@ -1878,7 +1880,7 @@ const STRINGS = {
     ui_radius:'Скругление', ui_radius_sub:'Углы карточек в настройках. Углы самого окна рисует система',
     ui_vignette:'Виньетка', ui_vignette_sub:'Затемнение по краям окна',
     card_ui:'Элементы интерфейса', ui_hide_sub:'Спрятать лишнее. Всё возвращается здесь же — ничего не пропадает насовсем',
-    progress_bar_style:'Стиль полосы прогресса', progress_bar_waveform:'Волна SoundCloud', progress_bar_classic:'Классическая', progress_bar_film:'Кинолента',
+    progress_bar_style:'Стиль полосы прогресса', progress_bar_waveform:'Волна SoundCloud', progress_bar_classic:'Классическая', progress_bar_signal:'Живая волна',
     ui_hide_source:'Переключатель источника', ui_hide_source_sub:'Иконка папки в шапке: локальные треки ↔ облако. Переключать можно и в «Аккаунте»',
     ui_hide_mini_player:'Миниплеер в шапке', ui_hide_mini_player_sub:'Обложка и управление треком вне плеера',
     ui_hide_volume:'Громкость в плеере', ui_hide_volume_sub:'Тонкий ползунок справа. Громкость остаётся в микшере Windows',
@@ -1983,6 +1985,8 @@ const STRINGS = {
     version:'Version', repository:'Repository', stack:'Stack',
     update_idle:'Updates', update_check:'Check for updates', update_checking:'Checking for updates…',
     update_available:'Update available', update_install:'Update and restart',
+    update_later:'Later', update_dialog_install:'Install',
+    update_dialog_restart:'seWer will restart after installation.',
     update_current:'You’re on the latest version', update_checkFailed:'Could not check for updates',
     update_downloading:'Downloading update…', update_installing:'Starting the installer…',
     update_installFailed:'Could not install the update',
@@ -2082,7 +2086,7 @@ const STRINGS = {
     ui_radius:'Corner radius', ui_radius_sub:'Corners of the settings cards. The window corners are drawn by the system',
     ui_vignette:'Vignette', ui_vignette_sub:'Darkens the edges of the window',
     card_ui:'Interface elements', ui_hide_sub:'Hide the extra chrome. Everything comes back from here — nothing is lost for good',
-    progress_bar_style:'Progress bar style', progress_bar_waveform:'SoundCloud waveform', progress_bar_classic:'Classic', progress_bar_film:'Filmstrip',
+    progress_bar_style:'Progress bar style', progress_bar_waveform:'SoundCloud waveform', progress_bar_classic:'Classic', progress_bar_signal:'Live wave',
     ui_hide_source:'Source switch', ui_hide_source_sub:'Folder icon in the titlebar: local tracks ↔ cloud. You can also switch it in Account',
     ui_hide_mini_player:'Titlebar mini player', ui_hide_mini_player_sub:'Artwork and playback controls outside the player',
     ui_hide_volume:'Player volume', ui_hide_volume_sub:'Thin slider on the right. Volume stays available in the Windows mixer',
@@ -2610,12 +2614,13 @@ function afxTransport(patch) {
 /* ── Progress Bar ────────────────────────────────────────────────────────── */
 const PLAYER_PROGRESS_ENTRANCE_MS = 280;
 
-function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible, disabled = false, positionVersion, waveformPath, classic = false, film = false, trackId, entranceDelay = 0 }) {
+function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible, disabled = false, positionVersion, waveformPath, classic = false, signal = false, trackId, entranceDelay = 0 }) {
   const reduced = useReducedMotion();
   const trackRef         = useRef(null);
   const fillRef          = useRef(null);
   const thumbRef         = useRef(null);
   const glowRef          = useRef(null);
+  const signalRef        = useRef(null);
   const classicRef       = useRef(classic);
   classicRef.current = classic;
   const rafRef           = useRef(null);
@@ -2653,8 +2658,90 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
   }, [visible]);
 
   useEffect(() => { kick(); }, [isPlaying]);
-  useEffect(() => { kick(); }, [positionVersion, classic, film]);
+  useEffect(() => { kick(); }, [positionVersion, classic, signal]);
   useEffect(() => { if (disabled) { dragging.current = false; setActive(false); } }, [disabled]);
+
+  useEffect(() => {
+    const path = signalRef.current;
+    if (!signal || !visible || !isPlaying || reduced || !path) return;
+
+    // Fixed visualizer gain, applied to the spectrum before mapping it to bar heights.
+    const signalGainDb = 20 * Math.log10(0.3);
+    const heights = new Float32Array(15);
+    let audio, tap, samples, bandEdges, frame;
+    let lastDraw = -Infinity;
+    let retryAt = 0;
+    let lastPath = '';
+    const paint = value => {
+      if (value === lastPath) return;
+      lastPath = value;
+      path.setAttribute('d', value);
+    };
+    const draw = now => {
+      if (audio !== audioRef.current) {
+        tap?.dispose();
+        tap = null;
+        audio = audioRef.current;
+        retryAt = 0;
+        heights.fill(0);
+        paint('');
+      }
+      if (now - lastDraw >= 32) {
+        const elapsed = Math.min(now - lastDraw, 64);
+        lastDraw = now;
+        const playing = audio && !audio.paused && !audio.ended && !audio.seeking && audio.readyState >= 2;
+        if (playing && !tap && now >= retryAt) {
+          retryAt = now + 1000;
+          tap = connectPlaybackAnalyser(audio, { beforeVolume: true });
+          if (tap) {
+            const { analyser } = tap;
+            samples = new Float32Array(analyser.frequencyBinCount);
+            const hzPerBin = analyser.context.sampleRate / analyser.fftSize;
+            bandEdges = Array.from({ length:heights.length + 1 }, (_, i) =>
+              Math.min(samples.length - 1, Math.max(1, Math.round(45 * (12000 / 45) ** (i / heights.length) / hzPerBin))));
+          }
+        }
+        if (playing && tap) {
+          const { analyser } = tap;
+          analyser.getFloatFrequencyData(samples);
+          const rangeDb = analyser.maxDecibels - analyser.minDecibels;
+          for (let i = 0; i < heights.length; i++) {
+            const end = Math.max(bandEdges[i] + 1, bandEdges[i + 1]);
+            let energy = 0;
+            for (let bin = bandEdges[i]; bin < end; bin++) {
+              const level = (samples[bin] + signalGainDb - analyser.minDecibels) / rangeDb;
+              energy += Math.max(0, Math.min(1, level)) ** 2;
+            }
+            const level = Math.sqrt(energy / (end - bandEdges[i]));
+            const target = Math.min(25, 25 * (level * (1.12 + i * 0.02)) ** 0.55);
+            const height = heights[i];
+            heights[i] += (target - height) * (1 - Math.exp(-elapsed / (target > height ? 30 : 155)));
+          }
+          let strokes = '';
+          const lastBand = heights.length - 1;
+          const span = lastBand * 2;
+          for (let i = 0; i <= span; i++) {
+            const band = Math.floor(i / 2);
+            const height = i % 2 ? (heights[band] + heights[band + 1]) / 2 : heights[band];
+            if (height < 0.35) continue;
+            const x = (12 + i * 616 / span).toFixed(2);
+            strokes += `M${x} 28V${(28 - height).toFixed(2)}`;
+          }
+          paint(strokes);
+        } else {
+          heights.fill(0);
+          paint('');
+        }
+      }
+      frame = requestAnimationFrame(draw);
+    };
+    frame = requestAnimationFrame(draw);
+    return () => {
+      cancelAnimationFrame(frame);
+      tap?.dispose();
+      paint('');
+    };
+  }, [audioRef, signal, visible, isPlaying, reduced, trackId]);
 
   useEffect(() => {
     if (!visible) {
@@ -2694,6 +2781,7 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
         } else {
           // Keep the waveform fixed in place and clip only the accent overlay.
           fillRef.current.style.clipPath = `inset(0 ${((1 - p) * 100).toFixed(3)}% 0 0)`;
+          if (signalRef.current) fillRef.current.style.setProperty('--signal-progress', `${(p * 100).toFixed(3)}%`);
         }
       }
       if (thumbRef.current) thumbRef.current.style.transform =
@@ -2754,7 +2842,7 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
     userSelect: 'none', flexShrink: 0,
     transition: 'color 0.2s ease',
   };
-  const strokes = !classic && !film && waveformPath ? waveformPath.match(/M[^M]+/g) : null;
+  const strokes = !classic && !signal && waveformPath ? waveformPath.match(/M[^M]+/g) : null;
   const groupSize = strokes ? Math.ceil(strokes.length / 8) : 1;
   const waveform = strokes
     ? <svg key={trackId} className="player-wave-pattern" viewBox="0 0 576 24" preserveAspectRatio="none"
@@ -2806,7 +2894,7 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
           }}>{fmt(tip.t)}</div>
         )}
         <div className="player-wave" aria-hidden="true"
-          data-film={film}
+          data-signal={signal}
           data-classic={classic}
           data-reduced-motion={reduced}
           data-hover={hover}
@@ -2814,15 +2902,20 @@ function ProgressBar({ progressRef, audioRef, total, onSeek, isPlaying, visible,
           data-empty={!(total > 0)}
           data-engaged={hover || active}>
           <div ref={trackRef} className="player-wave-track" data-motion-position="">
-            {!classic && !film && waveform}
+            {!classic && !signal && waveform}
+            {signal && (
+              <svg className="player-live-signal" viewBox="0 0 640 30" preserveAspectRatio="none">
+                <path ref={signalRef} vectorEffect="non-scaling-stroke"/>
+              </svg>
+            )}
             <div ref={fillRef} className="player-wave-played"
               style={classic ? {transform: `scaleX(${initP})`} : {clipPath: `inset(0 ${(1 - initP) * 100}% 0 0)`}}>
-              {!classic && !film && waveform}
+              {!classic && !signal && waveform}
             </div>
           </div>
           {classic && <div key="classic-glow" ref={glowRef} className="player-classic-glow"/>}
-          <div key="position" ref={thumbRef} className="player-wave-cursor" data-motion-position=""
-            style={{transform: 'translate(0, -50%)'}}/>
+          {!signal && <div key="position" ref={thumbRef} className="player-wave-cursor" data-motion-position=""
+            style={{transform: 'translate(0, -50%)'}}/>}
         </div>
       </div>
       <span ref={remainingSpanRef} style={timeStyle}>-{fmt((total||0) - Math.floor(progressRef.current * (total||0)))}</span>
@@ -4529,7 +4622,15 @@ function lyricOpeningWordRect(line) {
   return null;
 }
 
-function connectPlaybackAnalyser(audio) {
+const playbackCaptureTaps = new WeakMap();
+
+function connectPlaybackAnalyser(audio, { beforeVolume = false } = {}) {
+  const useMixedOutput = !beforeVolume && _afx?.decks.has(audio) && _afx.bus;
+  if (!useMixedOutput) {
+    const shared = playbackCaptureTaps.get(audio);
+    if (shared) return shared.acquire();
+  }
+
   let source, analyser, stream, captureContext;
   const dispose = () => {
     if (source && analyser) {
@@ -4541,9 +4642,10 @@ function connectPlaybackAnalyser(audio) {
 
   try {
     // Read a parallel branch of the output. Leave all playback connections intact.
-    if (_afx?.decks.has(audio) && _afx.bus) {
+    if (useMixedOutput) {
       source = _afx.bus.input;
     } else {
+      // Element capture follows the track before the player's volume and mute.
       if (!audio.captureStream) return null;
       stream = audio.captureStream();
       if (!stream.getAudioTracks().length) { dispose(); return null; }
@@ -4556,7 +4658,25 @@ function connectPlaybackAnalyser(audio) {
     analyser.fftSize = 1024;
     analyser.smoothingTimeConstant = 0.68;
     source.connect(analyser);
-    return { analyser, dispose };
+    if (useMixedOutput) return { analyser, dispose };
+
+    // A deck has one capture branch even when both visualizers are visible.
+    let readers = 0;
+    const shared = {
+      acquire() {
+        readers++;
+        let released = false;
+        return { analyser, dispose() {
+          if (released) return;
+          released = true;
+          if (--readers > 0) return;
+          playbackCaptureTaps.delete(audio);
+          dispose();
+        } };
+      },
+    };
+    playbackCaptureTaps.set(audio, shared);
+    return shared.acquire();
   } catch {
     dispose();
     return null;
@@ -4923,7 +5043,7 @@ function LyricsPanel({ open, inPlayer, state, activeLine, onSeek, onRetry, onRef
   useEffect(() => {
     if (!fullScreen) return;
     const closeOnEscape = e => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || e.target.closest?.('.app-update-dialog')) return;
       e.stopImmediatePropagation();
       requestFullscreenClose();
     };
@@ -7272,6 +7392,43 @@ function LyricsSettings({ settings, onSettings }) {
   );
 }
 
+function AppUpdateDialog({ version, status, onInstall, onDismiss }) {
+  const t = useLang();
+  const dialogRef = useRef(null);
+  const titleId = useId();
+  const versionId = useId();
+  const busy = status === 'downloading' || status === 'installing';
+  const message = busy || status === 'installFailed' ? t(`update_${status}`) : t('update_dialog_restart');
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    dialog.showModal();
+    return () => dialog.close();
+  }, []);
+
+  return (
+    <dialog ref={dialogRef} className="app-update-dialog" aria-labelledby={titleId} aria-describedby={versionId}
+      onKeyDown={e => e.stopPropagation()}
+      onCancel={e => { e.preventDefault(); if (!busy) onDismiss(); }}>
+      <div className="app-update-heading">
+        <span className="app-update-symbol" aria-hidden="true">↑</span>
+        <div>
+          <h2 id={titleId}>{t('update_available')}</h2>
+          <p id={versionId}>seWer {version}</p>
+        </div>
+      </div>
+      <p className="app-update-message" role="status">{message}</p>
+      {busy && <progress aria-label={message}/>}
+      <div className="app-update-actions">
+        <button type="button" disabled={busy} onClick={onDismiss}>{t('update_later')}</button>
+        <button type="button" disabled={busy} className="app-update-primary" onClick={onInstall}>
+          {t('update_dialog_install')}
+        </button>
+      </div>
+    </dialog>
+  );
+}
+
 /* ── SettingsView ─────────────────────────────────────────────────────────── */
 /* ── что можно спрятать в интерфейсе ──────────────────────────────────────────
    Оформление → «Элементы интерфейса». Один объект вместо отдельных полей
@@ -7924,7 +8081,7 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             options={[
               { v: 'classic', label: t('progress_bar_classic') },
               { v: 'waveform', label: t('progress_bar_waveform') },
-              { v: 'live', label: t('progress_bar_film') },
+              { v: 'live', label: t('progress_bar_signal') },
             ]}/>
         </Row>
         <Row label={t('ui_hide_source')} sub={t('ui_hide_source_sub')}>
@@ -13108,13 +13265,9 @@ function App() {
     saveTimerRef.current = 0;
     await window.electronAPI.saveSettings(latestSettingsRef.current);
   });
-  const announcedUpdate = useRef(null);
-  useEffect(() => {
-    const version = appUpdate.availableVersion;
-    if (!version || announcedUpdate.current === version) return;
-    announcedUpdate.current = version;
-    showToast(`${t('update_available')} · ${version}`);
-  }, [appUpdate.availableVersion, lang]);
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState(null);
+  const showUpdateDialog = startupReady && settingsLoaded && appUpdate.availableVersion
+    && appUpdate.availableVersion !== dismissedUpdateVersion;
   function handleSearchResultsLoaded(newTracks) {
     if (!searchQueueRef.current) return;
     searchQueueRef.current = [...searchQueueRef.current, ...newTracks];
@@ -15493,10 +15646,7 @@ function App() {
                 }}>{t('player_pick')}</div>
               ) : (<>
               {/* artist */}
-              <div style={{
-                display:'flex', alignItems:'center', flexWrap:'wrap', justifyContent:'center',
-                fontSize:'clamp(12px, 1.5vw, 16px)', marginBottom:5,
-              }}>
+              <div className="player-info-artist" title={formatArtistDisplay(playerDisplayTrack.artist)}>
                 {scPlayingTrack || pendingPlayerTrack
                   ? splitArtists(playerDisplayTrack.artist).map(({ name, sep }, i) => {
                       const isUploader = playerDisplayTrack.uploaderUsername
@@ -15522,7 +15672,7 @@ function App() {
                 }
               </div>
               {/* title */}
-              <div style={{textAlign:'center', marginBottom:14, width:'100%'}}>
+              <div className="player-info-title">
                 {editingTitle ? (
                   <div style={{display:'flex', justifyContent:'center', width:'100%'}}>
                     <div style={{
@@ -15574,7 +15724,7 @@ function App() {
               {/* album art with ambient glow */}
               <div data-party-motion="art" style={{
                 width:'min(100%, clamp(320px, 54vw, 760px), clamp(240px, 58vh, 760px))',
-                marginBottom:24,
+                marginBottom:'var(--player-art-gap)',
                 position:'relative',
               }}>
                 {/* ambient glow blob — uses app accent (cover-derived or preset) */}
@@ -15609,7 +15759,7 @@ function App() {
             }}>
               <ProgressBar progressRef={progressRef} audioRef={audioRef} total={track.duration || 0}
                 waveformPath={soundCloudWaveform} classic={classicProgressBar} entranceDelay={PLAYER_PROGRESS_ENTRANCE_MS}
-                film={progressBarStyle === 'live'} trackId={track.id}
+                signal={progressBarStyle === 'live'} trackId={track.id}
                 onSeek={handleSeek} isPlaying={isPlaying} visible={playerVisible} disabled={partyLocked} positionVersion={partyState.room?.revision}
                 />
             </div>
@@ -15633,7 +15783,7 @@ function App() {
               const SKIP = 'clamp(52px, 6.6vw, 76px)';
               const SKIP_ICON = 'clamp(25px, 3.2vw, 36px)';
               return (
-            <div style={{display:'flex', alignItems:'center', gap:14, justifyContent:'center', marginTop:16}}>
+            <div style={{display:'flex', alignItems:'center', gap:8, justifyContent:'center', marginTop:'var(--player-controls-gap)'}}>
               <TransportButton onClick={handleToggleLyrics} active={lyricsOpen} size={SIDE}>
                 <span aria-hidden="true" className="player-toggle-icon player-lyrics-icon"/>
               </TransportButton>
@@ -15673,8 +15823,8 @@ function App() {
               </TransportButton>
               {scPlayingTrack
                 ? <PlayerLikeBtn liked={likedIds.has(scPlayingTrack.id)}
-                    onLike={() => handleLike(scPlayingTrack)} style={{marginLeft:14}}/>
-                : <div style={{width:27, marginLeft:14, flexShrink:0}}/>}
+                    onLike={() => handleLike(scPlayingTrack)} style={{marginLeft:8}}/>
+                : <div style={{width:27, marginLeft:8, flexShrink:0}}/>}
               <div style={{width:SIDE, flexShrink:0}} aria-hidden="true"/>
             </div>
             ); })()}
@@ -15808,6 +15958,11 @@ function App() {
           onPickDir={handlePickDlDir}
           onClose={() => setDlTrack(null)}
           onSaved={handleDlSaved}/>
+
+        {showUpdateDialog && (
+          <AppUpdateDialog version={appUpdate.availableVersion} status={appUpdate.status}
+            onInstall={appUpdate.install} onDismiss={() => setDismissedUpdateVersion(appUpdate.availableVersion)}/>
+        )}
 
       </div>
     </div>

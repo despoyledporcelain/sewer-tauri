@@ -350,11 +350,13 @@ test('uncached lyrics can mount their loading meter during playback and release 
   assert.equal(clock.timers.size, 0);
 });
 
-test('filmstrip keeps the played overlay and marker aligned when seeking with reduced motion', () => {
+test('live wave reads the active audio and keeps seeking usable with reduced motion', () => {
   const begin = app.indexOf('function ProgressBar('), end = app.indexOf('const MENU_VARIANTS', begin);
   const clock = fakeClock();
+  const connected = [], released = [];
+  let reduced = true;
   const harness = hookHarness(`${app.slice(begin, end)}\nexport { ProgressBar };`, {}, {
-    useReducedMotion: () => true, fmt: String,
+    useReducedMotion: () => reduced, fmt: String,
     requestAnimationFrame: fn => clock.setTimeout(() => fn(clock.now), 16), cancelAnimationFrame: clock.clearTimeout,
     document: { addEventListener() {}, removeEventListener() {} },
     ResizeObserver: class {
@@ -362,18 +364,32 @@ test('filmstrip keeps the played overlay and marker aligned when seeking with re
       observe(el) { el.offsetWidth = 200; this.callback(); }
       disconnect() {}
     },
+    connectPlaybackAnalyser(audio, options) {
+      assert.equal(options.beforeVolume, true);
+      connected.push(audio);
+      return {
+        analyser: { fftSize: 1024, frequencyBinCount: 512, context: { sampleRate: 48000 },
+          minDecibels: -100, maxDecibels: -30, getFloatFrequencyData(samples) {
+          samples.fill(-Infinity);
+          samples.fill(-40, audio.bandStart, audio.bandEnd);
+        } },
+        dispose: () => released.push(audio),
+      };
+    },
   });
-  const audio = { currentTime: 1, duration: 10 };
+  const audio = { currentTime: 1, duration: 10, readyState: 2, bandStart: 1, bandEnd: 4 };
   const props = { progressRef: { current: 0.1 }, audioRef: { current: audio }, total: 10,
-    visible: true, isPlaying: false, film: true, positionVersion: 0 };
+    visible: true, isPlaying: false, signal: true, positionVersion: 0 };
   const render = () => harness.render(harness.exports.ProgressBar, props);
   const tree = render();
-  assert.equal(findNode(tree, node => node.props['data-film']).props['data-film'], true);
+  assert.equal(findNode(tree, node => node.props['data-signal']).props['data-signal'], true);
+  const path = findNode(tree, node => node.type === 'path').ref.current;
+  path.setAttribute = (key, value) => { path[key] = value; };
   const fill = findNode(tree, node => node.props.className === 'player-wave-played').ref.current;
-  const cursor = findNode(tree, node => node.props.className === 'player-wave-cursor').ref.current;
+  assert.equal(findNode(tree, node => node.props.className === 'player-wave-cursor'), null);
   clock.advance(48);
   assert.equal(fill.style.clipPath, 'inset(0 90.000% 0 0)');
-  assert.equal(cursor.style.transform, 'translate(calc(20.00px - 50%), -50%)');
+  assert.equal(fill.style['--signal-progress'], '10.000%');
   assert.equal(clock.timers.size, 0);
 
   audio.currentTime = 7.5;
@@ -381,9 +397,83 @@ test('filmstrip keeps the played overlay and marker aligned when seeking with re
   render();
   clock.advance(48);
   assert.equal(fill.style.clipPath, 'inset(0 25.000% 0 0)');
-  assert.equal(cursor.style.transform, 'translate(calc(150.00px - 50%), -50%)');
+  assert.equal(fill.style['--signal-progress'], '75.000%');
+  assert.deepEqual(connected, []);
+
+  reduced = false;
+  props.isPlaying = true;
+  render();
+  clock.advance(48);
+  assert.deepEqual(connected, [audio]);
+  const strokes = () => Array.from(path.d.matchAll(/M([\d.]+) 28V([\d.]+)/g),
+    ([, x, top]) => ({ x: Number(x), top: Number(top) }));
+  assert.ok(strokes().some(({ top }) => top < 14));
+  assert.ok(strokes().every(({ x, top }) => x < 220 && top < 28));
+  clock.advance(1000);
+  const atFullVolume = path.d;
+  audio.volume = 0.03;
+  clock.advance(96);
+  assert.equal(path.d, atFullVolume);
+
+  const nextAudio = { ...audio, bandStart: 160, bandEnd: 240 };
+  props.audioRef.current = nextAudio;
+  clock.advance(48);
+  assert.deepEqual(connected, [audio, nextAudio]);
+  assert.deepEqual(released, [audio]);
+  assert.ok(strokes().some(({ top }) => top < 14));
+  assert.ok(strokes().every(({ x, top }) => x > 440 && top < 28));
+
+  reduced = true;
+  render();
+  assert.deepEqual(released, [audio, nextAudio]);
+  assert.equal(path.d, '');
   harness.unmount();
   assert.equal(clock.timers.size, 0);
+});
+
+test('the live wave taps the track before volume and shares an existing element capture', () => {
+  const start = app.indexOf('const playbackCaptureTaps');
+  const end = app.indexOf('function AudioMeter(', start);
+  const calls = [];
+  const captureSource = {
+    connect: () => calls.push('connect'),
+    disconnect: () => calls.push('disconnect'),
+  };
+  const audio = {
+    volume: 0,
+    captureStream() {
+      calls.push('capture');
+      const track = { stop: () => calls.push('stop') };
+      return { getAudioTracks: () => [track], getTracks: () => [track] };
+    },
+  };
+  class AudioContext {
+    createMediaStreamSource() { return { ...captureSource, context: this }; }
+    createAnalyser() { return {}; }
+    async resume() {}
+    async close() { calls.push('close'); }
+  }
+  const bus = {
+    context: { createAnalyser: () => ({ mixed: true }) },
+    connect: () => calls.push('connect mix'),
+    disconnect: () => calls.push('disconnect mix'),
+  };
+  const { exports: { connectPlaybackAnalyser } } = hookHarness(
+    `${app.slice(start, end)}\nexport { connectPlaybackAnalyser };`, {},
+    { _afx: { decks: new Map([[audio, {}]]), bus: { input: bus } }, window: { AudioContext } },
+  );
+  const mix = connectPlaybackAnalyser(audio);
+  const first = connectPlaybackAnalyser(audio, { beforeVolume: true });
+  const second = connectPlaybackAnalyser(audio, { beforeVolume: true });
+  assert.equal(mix.analyser.mixed, true);
+  assert.equal(first.analyser, second.analyser);
+  assert.deepEqual(calls, ['connect mix', 'capture', 'connect']);
+  first.dispose();
+  assert.deepEqual(calls, ['connect mix', 'capture', 'connect']);
+  second.dispose();
+  mix.dispose();
+  assert.deepEqual(calls.slice(3), ['disconnect', 'stop', 'close', 'disconnect mix']);
+  assert.equal(audio.volume, 0);
 });
 
 test('shared artwork follows the sidebar even when its slot changes position only', () => {
