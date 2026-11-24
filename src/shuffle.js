@@ -1,3 +1,5 @@
+import { moveQueueItem } from './playback-queue.js';
+
 /* Перемешивание: перестановка + курсор. Одно место, где живёт порядок.
  *
  * Раньше порядок перемешивания был размазан по десяти местам app.jsx: массив
@@ -50,6 +52,7 @@ export class Shuffle {
     this.poolIds = [];
     this._list   = null;
     this._byId   = new Map();
+    this._preview = null;
   }
 
   /* Есть ли вообще что перемешивать. Пустой order = перемешивания нет, даже если
@@ -75,6 +78,9 @@ export class Shuffle {
       if (!t) continue;
       this._byId.set(t.id, t);
       ids.push(t.id);
+    }
+    if (ids.length !== this.poolIds.length || ids.some((id, index) => id !== this.poolIds[index])) {
+      this._preview = null;
     }
     this.poolIds = ids;
   }
@@ -102,6 +108,7 @@ export class Shuffle {
     this.pos = order.length ? 0 : -1;
     this.curId = order.length ? order[0] : curId ?? null;
     this.history = order.length ? [order[0]] : [];
+    this._preview = null;
   }
 
   /* Включить перемешивание на переданном списке. currentId = null — случайный
@@ -109,6 +116,13 @@ export class Shuffle {
   start(list, currentId = null) {
     this.sync(list);
     this.#apply(this.#shuffle(this.poolIds, currentId), currentId);
+  }
+
+  prepare(list) {
+    this.start(list);
+    this.pos = -1;
+    this.curId = null;
+    this.history = [];
   }
 
   /* Ручной клик по треку: играющий встаёт первым, остальное перемешивается. */
@@ -130,6 +144,17 @@ export class Shuffle {
     }
     if (!ids.length) return;
     this.order.push(...shuffleInPlace(ids));
+    this._preview = null;
+  }
+
+  #previewOrder(currentId) {
+    if (this._preview?.currentId === currentId) return this._preview.order;
+    const order = this.#shuffle(this.poolIds, currentId);
+    if (currentId === null && order.length > 1 && order[0] === this.curId) {
+      [order[0], order[1]] = [order[1], order[0]];
+    }
+    this._preview = { currentId, order };
+    return order;
   }
 
   /* Кто следующий. dir = 1 вперёд, -1 назад. НИЧЕГО не меняет: отдаёт
@@ -144,7 +169,7 @@ export class Shuffle {
       /* Порядок от ДРУГОЙ очереди: плейлист/станция/поиск сменились, а
          перемешивание осталось включённым. Раньше order[ni] просто не
          находился в списке и next молча останавливал плеер. */
-      const fresh = this.#shuffle(this.poolIds, this.curId);
+      const fresh = this.#previewOrder(this.curId);
       const j = fresh[0] === this.curId ? (dir > 0 ? 1 : -1) : 0;
       if (j >= 0 && j < fresh.length) return { id: fresh[j], index: j, order: fresh };
       return null;
@@ -152,16 +177,41 @@ export class Shuffle {
     /* Конец прохода. Вперёд и только при repeat-all заворачиваем новой
        перестановкой; назад за начало не ходим, как и раньше. */
     if (dir > 0 && this.repeat() === 'all') {
-      const fresh = this.#shuffle(this.poolIds, null);
+      const fresh = this.#previewOrder(null);
       return fresh.length ? { id: fresh[0], index: 0, order: fresh } : null;
     }
     return null;
+  }
+
+  upcoming() {
+    const next = this.peek(1);
+    if (!next) return [];
+    const order = next.order || this.order;
+    const steps = [];
+    for (let i = next.index; i < order.length; i++) {
+      if (this._byId.has(order[i])) steps.push({ id: order[i], index: i, order: next.order });
+    }
+    return steps;
+  }
+
+  moveUpcoming(from, to) {
+    const next = this.peek(1);
+    if (!next || from.order !== next.order || to.order !== next.order) return false;
+    const order = next.order || this.order;
+    if (from.index < next.index || to.index < next.index
+      || order[from.index] !== from.id || order[to.index] !== to.id) return false;
+    const reordered = moveQueueItem(order, from.index, to.index);
+    if (reordered === order) return false;
+    if (next.order) this._preview.order = reordered;
+    else { this.order = reordered; this._preview = null; }
+    return true;
   }
 
   /* «Он и правда заиграл». Единственное место, где двигается позиция. */
   commit(step) {
     if (!step) return;
     if (step.order) this.order = step.order;
+    this._preview = null;
     this.pos = step.index;
     this.curId = step.id;
     if (this.history[this.history.length - 1] !== step.id) this.history.push(step.id);
@@ -184,5 +234,6 @@ export class Shuffle {
     this.pos     = s.pos;
     this.curId   = s.curId;
     this.history = s.history.slice();
+    this._preview = null;
   }
 }

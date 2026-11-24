@@ -634,7 +634,7 @@
     position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
   }
   .mini-player-cover img[hidden] { display:none; }
-  .mini-player-cover-tint, .history-cover-tint {
+  .mini-player-cover-tint, .history-cover-tint, .queue-cover-tint {
     position:absolute; inset:0; pointer-events:none;
     background:rgb(var(--cover-tint-rgb)); mix-blend-mode:color;
     opacity:var(--cover-tint, 0);

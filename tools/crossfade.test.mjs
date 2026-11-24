@@ -158,7 +158,11 @@ const app = readFileSync(new URL('../src/app.jsx', import.meta.url), 'utf8');
 const start = app.indexOf('  const XFADE_PRIME_LEAD =');
 const end = app.indexOf('  xfadeTickRef.current = xfadeTick;', start);
 assert.ok(start >= 0 && end > start, 'App transport test anchors must exist');
-const source = app.slice(start, end);
+const queueStart = app.indexOf('  function updateQueuedTracks(');
+const queueEnd = app.indexOf('  handleNextRef.current = handleNext;', queueStart);
+assert.ok(queueStart >= 0 && queueEnd > queueStart, 'App queue test anchors must exist');
+const source = app.slice(queueStart, queueEnd) + app.slice(start, end);
+const { queueSource, queueTrackKey, moveQueueItem, moveQueuedTrack } = await import('../src/playback-queue.js');
 const ref = current => ({ current });
 const trackList = (local = true) => Array.from({ length: 4 }, (_, i) => ({ id: i + 1,
   title: `song ${i + 1}`, duration: 100, ...(local ? { path: `${i + 1}.mp3` } : { streamUrl: `stream:${i + 1}` }) }));
@@ -172,6 +176,9 @@ function transport({ local = true, tracks = trackList(local), settings = {}, sta
   let frameId = 0;
   const context = {
     ...crossfade, Audio: FakeAudio, AbortController, Promise, setTimeout, clearTimeout,
+    queueSource, queueTrackKey, moveQueueItem, BLANK_TRACK: { id: 0 }, sourceMode: local ? 'local' : 'sc',
+    queuedTracksRef: ref([]), queueRunRef: ref(null), scCacheMapRef: ref(new Map()), localPlaybackQueueRef: ref(null),
+    setQueuedTracks: () => {}, refreshPlaybackQueue: () => {},
     performance, HOT_STORE: { audio: current },
     settingsRef: ref({ crossfade: 5, ...settings }), isPlayingRef: ref(true),
     volumeRef: ref(0.8), trackRef: ref(tracks[0]), scPlayingTrackRef: ref(local ? null : tracks[0]),
@@ -193,6 +200,7 @@ function transport({ local = true, tracks = trackList(local), settings = {}, sta
     window: { electronAPI: { scFetch: scFetch || (async url => ({ data: { url: `cdn:${url}` } })) } },
   };
   context.shuffleStateRef = ref(new Shuffle({ repeat: () => context.repeatRef.current }));
+  context.localShuffleRef = ref(new Shuffle({ repeat: () => context.repeatRef.current }));
   context.handleNextRef = ref(() => { context.state.nextCalls++; });
   context.discordPushRef = ref(() => { context.state.rpc.push({ track: context.trackRef.current.id,
     position: context.audioRef.current.currentTime }); });
@@ -203,7 +211,8 @@ function transport({ local = true, tracks = trackList(local), settings = {}, sta
   context.setIsPlaying = v => { context.isPlayingRef.current = v; };
   vm.runInNewContext(`${source}\nglobalThis.engine = { xfadeTick, startCrossfade,
     primeNextPlayback, peekNextPlayback, primeStillValid, abortCrossfade, finishCrossfade,
-    handleDeckEnded, handleDeckTime, restorePlaybackVolume, handleDeckPlayback };`, context);
+    handleDeckEnded, handleDeckTime, restorePlaybackVolume, handleDeckPlayback, handleNext,
+    upcomingSourceTracks, movePlaybackSourceTrack };`, context);
   context.xfadeTickRef.current = context.engine.xfadeTick;
   return Object.assign(context, {
     tracks, frames,
@@ -221,6 +230,127 @@ function transport({ local = true, tracks = trackList(local), settings = {}, sta
     },
   });
 }
+
+test('queued local tracks take priority and crossfade returns to the original list position', async () => {
+  const ctx = transport();
+  const [first, second, , queued] = ctx.tracks;
+  const cloud = { id: 99, streamUrl: 'stream:99' };
+  ctx.queuedTracksRef.current = [{ id: 1, track: cloud }, { id: 2, track: queued }];
+
+  assert.equal(ctx.engine.peekNextPlayback().track, queued);
+  await ctx.tick();
+  assert.equal(ctx.trackRef.current.id, queued.id);
+  assert.equal(ctx.queueRunRef.current.anchor, first);
+  assert.equal(ctx.queuedTracksRef.current.length, 1);
+  assert.equal(ctx.queuedTracksRef.current[0].track, cloud);
+  assert.equal(ctx.engine.peekNextPlayback().track, second);
+});
+
+test('clearing a preloaded manual queue does not start or consume the removed track', async () => {
+  const ctx = transport();
+  const entry = { id: 1, track: ctx.tracks[3] };
+  ctx.queuedTracksRef.current = [entry];
+  ctx.audioRef.current.currentTime = 92;
+  await ctx.tick();
+  assert.equal(ctx.xfadePrimeRef.current.next.queued, entry);
+
+  ctx.queuedTracksRef.current = [];
+  ctx.audioRef.current.currentTime = 96;
+  await ctx.tick();
+  assert.equal(ctx.trackRef.current, ctx.tracks[0]);
+  assert.equal(ctx.queueRunRef.current, null);
+  assert.equal(ctx.engine.peekNextPlayback().track, ctx.tracks[1]);
+});
+
+test('queue reordering moves individual entries within their source', () => {
+  const track = { path: '1.mp3' };
+  const first = { id: 1, track };
+  const cloud = { id: 2, track: { id: 1 } };
+  const duplicate = { id: 3, track };
+  const list = [first, cloud, duplicate];
+  assert.deepEqual(moveQueuedTrack(list, duplicate, -1), [duplicate, cloud, first]);
+  assert.equal(moveQueuedTrack(list, cloud, 1), list);
+});
+
+test('repeat-one keeps the current track on ended but manual next plays the queue', () => {
+  const ctx = transport();
+  const entry = { id: 1, track: ctx.tracks[3] };
+  ctx.queuedTracksRef.current = [entry];
+  Object.assign(ctx, { repeat: 'one', trackIdx: 0, scReqRef: ref(0), partyCanControl: () => true,
+    setLoadingTrackId: () => {}, setPendingPlayerTrack: () => {}, pushDiscord: () => {} });
+
+  ctx.engine.handleNext(true);
+  assert.equal(ctx.queuedTracksRef.current[0], entry);
+  assert.equal(ctx.audioRef.current.currentTime, 0);
+
+  ctx.engine.handleNext();
+  assert.equal(ctx.queuedTracksRef.current.length, 0);
+  assert.equal(ctx.state.trackIndex, 3);
+  assert.equal(ctx.queueRunRef.current.anchor, ctx.tracks[0]);
+});
+
+test('an artist playback list replaces the previous station and supplies the following tracks', () => {
+  const ctx = transport({ local: false });
+  const artistTracks = [ctx.tracks[0], ctx.tracks[3], ctx.tracks[2]];
+  ctx.stationQueueRef.current = ctx.tracks.slice(0, 2);
+  ctx.playlistQueueRef.current = ctx.tracks.slice(0, 3);
+  ctx.scPlaybackOriginRef = ref(null);
+  ctx.setStationActive = ctx.setPlaylistActive = () => {};
+  vm.runInNewContext(`rememberScQueue(artistTracks, { kind: 'artist', key: '1:popular' });`,
+    Object.assign(ctx, { artistTracks }));
+  const visible = ctx.engine.upcomingSourceTracks(ctx.trackRef.current, true);
+  assert.deepEqual(Array.from(visible, item => item.track), artistTracks.slice(1));
+  assert.equal(ctx.engine.peekNextPlayback().track, visible[0].track);
+});
+
+test('local shuffle shows the same upcoming order as manual Next and crossfade', () => {
+  const ctx = transport();
+  const [first, , third, fourth] = ctx.tracks;
+  ctx.localPlaybackQueueRef.current = { paths: [first.path, third.path, fourth.path] };
+  ctx.shuffle = ctx.shuffleOnRef.current = true;
+  ctx.localShuffleRef.current.start([first, third, fourth], first.id);
+  Object.assign(ctx, { repeat: 'off', trackIdx: 0, scReqRef: ref(0),
+    partyCanControl: () => true, partyCanSelect: () => true,
+    setLoadingTrackId: () => {}, setPendingPlayerTrack: () => {} });
+
+  const visible = ctx.engine.upcomingSourceTracks(first, true);
+  assert.equal(visible.length, 2);
+  assert.equal(ctx.engine.peekNextPlayback().track, visible[0].track);
+  ctx.engine.handleNext();
+  assert.equal(ctx.trackRef.current, visible[0].track);
+  assert.equal(ctx.engine.peekNextPlayback().track, visible[1].track);
+});
+
+test('moving an upcoming track changes the actual next track and invalidates an old crossfade prime', async () => {
+  const ctx = transport();
+  const [first, second, third, fourth] = ctx.tracks;
+  ctx.audioRef.current.currentTime = 92;
+  await ctx.tick();
+  const prime = ctx.xfadePrimeRef.current;
+  assert.equal(prime.next.track, second);
+
+  const shown = ctx.engine.upcomingSourceTracks(first, true);
+  ctx.engine.movePlaybackSourceTrack(shown[2], shown[0]);
+  assert.deepEqual(Array.from(ctx.engine.upcomingSourceTracks(first, true), item => item.track), [fourth, second, third]);
+  assert.equal(ctx.engine.peekNextPlayback().track, fourth);
+  assert.equal(ctx.engine.primeStillValid(prime), false);
+});
+
+test('moving a shuffled track keeps the current cursor and changes the reserved next track', () => {
+  const ctx = transport();
+  const first = ctx.tracks[0];
+  ctx.shuffleOnRef.current = true;
+  const shuffle = ctx.localShuffleRef.current;
+  shuffle.start(ctx.tracks, first.id);
+
+  const shown = ctx.engine.upcomingSourceTracks(first, true);
+  ctx.engine.movePlaybackSourceTrack(shown[2], shown[0]);
+  assert.equal(shuffle.pos, 0);
+  assert.equal(shuffle.curId, first.id);
+  assert.deepEqual(Array.from(ctx.engine.upcomingSourceTracks(first, true), item => item.track),
+    [shown[2].track, shown[0].track, shown[1].track]);
+  assert.equal(ctx.engine.peekNextPlayback().track, shown[2].track);
+});
 
 test('three consecutive local transitions rotate both decks and keep the next track audible', async () => {
   const t = transport();
@@ -436,15 +566,9 @@ test('shuffle repeat-all reserves a single wrap step and commits it only after p
   eng.start(t.tracks, t.tracks[0].id);
   eng.pos = eng.order.length - 1;
   eng.curId = eng.order.at(-1);
-  const originalPeek = eng.peek.bind(eng);
-  let wraps = 0;
-  eng.peek = direction => {
-    if (direction !== 1 || eng.pos !== eng.order.length - 1) return originalPeek(direction);
-    const others = eng.order.filter(id => id !== eng.curId);
-    const id = others[wraps++ % others.length];
-    return { id, index: 0, order: [id, ...eng.order.filter(other => other !== id)] };
-  };
   t.trackRef.current = t.scPlayingTrackRef.current = eng.track(eng.curId);
+  const shown = t.engine.upcomingSourceTracks(t.trackRef.current, true);
+  assert.notEqual(shown[0].track.id, eng.curId);
   t.audioRef.current.currentTime = 85;
   await t.tick();
   assert.ok(t.xfadePrimeRef.current);
@@ -455,7 +579,8 @@ test('shuffle repeat-all reserves a single wrap step and commits it only after p
     assert.equal(t.xfadePrimeRef.current, prime);
     assert.equal(eng.pos, eng.order.length - 1);
   }
-  assert.equal(wraps, 1, 'a random wrap must not be drawn again for validation');
+  assert.equal(prime.next.step.order, shown[0].step.order);
+  assert.equal(prime.next.track, shown[0].track);
   t.audioRef.current.currentTime = 96;
   await t.tick();
   assert.equal(t.trackRef.current.id, nextId);

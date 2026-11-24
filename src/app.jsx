@@ -34,6 +34,8 @@ import { CROSSFADE_MAX, CROSSFADE_PRESETS, crossfadeSettings, cleanCrossfadeSett
 import { sliderFraction, sliderValue, pointerFraction } from './slider.js'
 import { Disclosure, DisclosureLayout } from './disclosure.jsx'
 import { MiniPlayer } from './mini-player.jsx'
+import { PlaybackQueue, QueueIcon, QueueToggle } from './playback-queue.jsx'
+import { moveQueueItem, moveQueuedTrack, queueSource, queueTrackKey } from './playback-queue.js'
 import { useSoundCloudWaveform } from './use-soundcloud-waveform.js'
 import { lyricsReturnFlight } from './lyrics-transition.js'
 import { checkSoundCloudFollowing } from './soundcloud-followings.js'
@@ -1701,6 +1703,15 @@ const STRINGS = {
     player_pick:'Выбери трек',
     mini_player:'Миниплеер', playback_previous:'Предыдущий трек', playback_next:'Следующий трек',
     mini_player_open:'Открыть плеер',
+    queue_title:'Очередь', queue_upcoming:'Далее',
+    queue_empty:'Нажмите правой кнопкой на трек и выберите «Добавить в очередь».',
+    queue_add:'Добавить в очередь', queue_next:'Играть следующим', queue_added:'Трек добавлен в очередь',
+    queue_added_next:'Трек будет следующим', queue_back:'Вернуться к списку треков', queue_clear:'Очистить',
+    queue_remove:'Убрать из очереди', queue_playing_status:'Сейчас играет', queue_paused_status:'На паузе',
+    queue_manual:'Вручную', queue_reorder:'Перетащите или используйте ↑ и ↓',
+    queue_more:'Показать ещё', queue_end:'В очереди больше нет треков', queue_repeat_one:'Включён повтор трека',
+    queue_party:'Воспроизведением управляет комната.',
+    queue_unavailable:'Трек из очереди недоступен',
     nav_history:'История прослушиваний', history_title:'История', history_subtitle:'Прослушанное в этом приложении',
     history_count:'Прослушиваний: {n}', history_clear:'Очистить', history_confirm_clear:'Удалить историю?',
     history_empty:'Здесь будет твоя музыка', history_empty_hint:'Включи трек. Через несколько секунд он появится здесь.',
@@ -1775,7 +1786,7 @@ const STRINGS = {
     remove:'Удалить', choose:'Выбрать',
     min_dur:'Мин. длительность аудиофайлов', min_dur_sub:'Файлы короче этого значения пропускаются при сканировании',
     secs:'сек',
-    version:'Версия', repository:'Репозиторий', stack:'Стек',
+    version:'Версия', repository:'Репозиторий', stack:'Стек', queue_icon_credit:'Значок очереди',
     update_idle:'Обновления', update_check:'Проверить', update_checking:'Проверяем обновления…',
     update_available:'Доступно обновление', update_install:'Обновить и перезапустить',
     update_later:'Позже', update_dialog_install:'Установить',
@@ -1922,6 +1933,15 @@ const STRINGS = {
     player_pick:'Pick a track',
     mini_player:'Mini player', playback_previous:'Previous track', playback_next:'Next track',
     mini_player_open:'Open player',
+    queue_title:'Queue', queue_upcoming:'Up next',
+    queue_empty:'Right-click a track and choose “Add to queue”.',
+    queue_add:'Add to queue', queue_next:'Play next', queue_added:'Track added to queue',
+    queue_added_next:'Track will play next', queue_back:'Back to track list', queue_clear:'Clear',
+    queue_remove:'Remove from queue', queue_playing_status:'Now playing', queue_paused_status:'Paused',
+    queue_manual:'Added manually', queue_reorder:'Drag or use ↑ and ↓',
+    queue_more:'Show more', queue_end:'No more tracks in the queue', queue_repeat_one:'Repeating the current track',
+    queue_party:'Playback is controlled by the room.',
+    queue_unavailable:'Queued track is unavailable',
     nav_history:'Listening history', history_title:'History', history_subtitle:'Played in this app',
     history_count:'Listens: {n}', history_clear:'Clear', history_confirm_clear:'Delete history?',
     history_empty:'Your music will appear here', history_empty_hint:'Play a track. It will appear here after a few seconds.',
@@ -1985,7 +2005,7 @@ const STRINGS = {
     remove:'Remove', choose:'Choose',
     min_dur:'Min. audio file duration', min_dur_sub:'Files shorter than this are skipped when scanning',
     secs:'sec',
-    version:'Version', repository:'Repository', stack:'Stack',
+    version:'Version', repository:'Repository', stack:'Stack', queue_icon_credit:'Queue icon',
     update_idle:'Updates', update_check:'Check for updates', update_checking:'Checking for updates…',
     update_available:'Update available', update_install:'Update and restart',
     update_later:'Later', update_dialog_install:'Install',
@@ -2965,14 +2985,16 @@ const itemHover = {
    любом обновлении state (setPlMembers едет по плейлистам) первые две
    кнопки меню дёргались. третья кнопка инлайном — не дёргалась, по этому
    и вычислили причину */
-function Item({ label, icon, disabled, onClick, onClose }) {
+function Item({ label, icon, disabled, onClick, onClose, keyboard }) {
+  const Element = keyboard ? motion.button : motion.div;
   return (
-    <motion.div variants={itemVars} data-motion-spatial="" onClick={disabled ? null : () => { onClick?.(); onClose(); }}
+    <Element variants={itemVars} data-motion-spatial="" onClick={disabled ? null : () => { onClick?.(); onClose(); }}
       style={{ ...itemStyle, color: disabled ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.86)', cursor: disabled ? 'default' : 'pointer' }}
+      {...(keyboard ? { type:'button', className:'queue-menu-item', disabled } : {})}
       {...(disabled ? {} : itemHover)}>
       <span style={{display:'flex', alignItems:'center', justifyContent:'center', width:14, opacity:0.7}}>{icon}</span>
       <span>{label}</span>
-    </motion.div>
+    </Element>
   );
 }
 
@@ -3679,13 +3701,14 @@ const TrackRow = React.memo(function TrackRow({ track, isActive, isLoading, isEr
     return () => clearTimeout(id);
   }, [isLoading]);
   const handleClick = useCallback(() => onClick(track), [onClick, track]);
-  const handleContextMenu = useCallback((e) => {
-    if (!onContextMenu) return;
-    e.preventDefault();
-    onContextMenu(track, e.clientX, e.clientY);
-  }, [onContextMenu, track]);
   return (
-    <div className={isActive ? 'track-row active' : 'track-row'} onClick={handleClick} onContextMenu={handleContextMenu}
+    <div className={isActive ? 'track-row active' : 'track-row'} onClick={handleClick} role="button" tabIndex={0}
+      onContextMenu={event => openTrackContext(event, track, onContextMenu)}
+      onKeyDown={event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        handleClick();
+      }}
       style={{
         display:'flex', alignItems:'center', gap:10, padding:'8px 10px', borderRadius:9,
         cursor:'pointer', position:'relative', zIndex:1,
@@ -3735,7 +3758,7 @@ const TrackRow = React.memo(function TrackRow({ track, isActive, isLoading, isEr
    вход — spring + каскад пунктов (лёгкий mac-стиль), «добавить» раскрывает
    сабменю-пикер со своими плейлистами, где чекбокс = трек внутри плейлиста
    (клик снимает/кладёт, повторно добавить нельзя) */
-function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl, onDownload,
+function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl, onDownload, onQueueTrack,
   playlists, playlistsLoading, onEnsurePlaylists, plMembers, onEnsureMembers,
   onToggleInPlaylist, onCreateWithTrack }) {
   const SUB_W = 262; /* ширины хватает чекбоксу + обложке + названию + счётчику */
@@ -3762,7 +3785,8 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
     if (y < PAD) y = PAD;
     setPos({ x, y });
     setPlOpen(false); setSubPos(null); setBusyId(null); setDoneNew(false);
-  }, [menu.x, menu.y]);
+    if (menu.focusFrom) el.querySelector('.queue-menu-item')?.focus({ preventScroll: true });
+  }, [menu.x, menu.y, menu.focusFrom]);
 
   /* позиция сабменю: у правого края меню, при нехватке места — слева.
      сабменю — сосед меню в портале (не потомок): backdrop-filter меню иначе
@@ -3904,6 +3928,12 @@ function TrackContextMenu({ menu, onClose, onCopyLink, onStartStation, canAddPl,
         zIndex: 9998,
       }}>
       <div style={{ display:'flex', flexDirection:'column' }}>
+      {onQueueTrack && <>
+        <Item keyboard label={t('queue_next')} onClose={onClose}
+          onClick={() => onQueueTrack(menu.track, true)} icon={<QueueIcon name="next" size={14}/>}/>
+        <Item keyboard label={t('queue_add')} onClose={onClose}
+          onClick={() => onQueueTrack(menu.track, false)} icon={<QueueIcon name="add" size={14}/>}/>
+      </>}
       {/* «Скачать» ВМЕСТО «Скопировать ссылку» — по решению пользователя.
           canDownload=false, когда качать нечем: локальный файл или трек,
           у которого SC отдал только hls. тогда остаётся ссылка, а не
@@ -6062,7 +6092,16 @@ function FxPanel({ open, inPlayer, settings, onSettings, onClose, onOpenCrossfad
 const homeArtworkListeners = new WeakMap();
 const homeArtworkObservers = new WeakMap();
 
-const HomeCard = React.memo(function HomeCard({ track, onSelect, artHidden, showArtwork, isLiked, onLike, coverRadius = '3%' }) {
+function openTrackContext(event, track, onContextMenu) {
+  if (!onContextMenu) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const anchor = event.currentTarget.getBoundingClientRect();
+  const keyboard = event.button !== 2;
+  onContextMenu(track, keyboard ? anchor.left + 8 : event.clientX, keyboard ? anchor.bottom : event.clientY, keyboard);
+}
+
+const HomeCard = React.memo(function HomeCard({ track, onSelect, onContextMenu, artHidden, showArtwork, isLiked, onLike, coverRadius = '3%' }) {
   const handleClick = useCallback(() => onSelect(track), [onSelect, track]);
   const [popKey, setPopKey] = useState(0);
   const [artNearViewport, setArtNearViewport] = useState(false);
@@ -6098,6 +6137,7 @@ const HomeCard = React.memo(function HomeCard({ track, onSelect, artHidden, show
        на каждом изменении фильтра. Возврат из плеера переключает отдельный
        opacity-keyframe, чтобы сетка проявлялась волной без сдвига слота обложки. */
     <div className="home-card home-card-anim" onClick={handleClick}
+      onContextMenu={event => openTrackContext(event, track, onContextMenu)}
       style={{ borderRadius:16, cursor:'pointer' }}>
       <div style={{
         padding:'8px 8px 7px', textAlign:'center',
@@ -6161,7 +6201,7 @@ const HomeCard = React.memo(function HomeCard({ track, onSelect, artHidden, show
    замыканием — иначе React.memo сравнивал бы по ссылке на новый объект
    и пропускал бы всегда. Мемоизация работает только когда ВСЕ пропы
    стабильны: список, Set лайков, три коллбека и два примитива. */
-const HomeGrid = React.memo(function HomeGrid({ list, visible, likedIds, onLike, onSelect, heroId, reverseId, returnKey = 0, coverRadius = '3%' }) {
+const HomeGrid = React.memo(function HomeGrid({ list, visible, likedIds, onLike, onSelect, onContextMenu, heroId, reverseId, returnKey = 0, coverRadius = '3%' }) {
   const [keepArtwork, setKeepArtwork] = useState(visible);
   useEffect(() => {
     if (visible) {
@@ -6177,7 +6217,7 @@ const HomeGrid = React.memo(function HomeGrid({ list, visible, likedIds, onLike,
       style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(128px, 1fr))', gap:18}}>
       {list.map(t => (
         <HomeCard key={t.id} track={t}
-          onSelect={onSelect}
+          onSelect={onSelect} onContextMenu={onContextMenu}
           coverRadius={coverRadius}
           showArtwork={visible || keepArtwork}
           artHidden={(reverseId != null && t.id === reverseId) || (heroId != null && t.id === heroId)}
@@ -8268,8 +8308,13 @@ function SettingsView({ settings, onSettings, visible, onScanTracks, onClearFold
             GitHub
           </Btn>
         </Row>
-        <Row label={t('stack')} last>
+        <Row label={t('stack')}>
           <span style={{ fontSize: 'var(--fs-sm)', color: SN.mid }}>Tauri v2 · Rust · React</span>
+        </Row>
+        <Row label={t('queue_icon_credit')} last>
+          <Btn title="https://icons8.com" onClick={() => window.open('https://icons8.com','_blank','noopener')}>
+            Icons8
+          </Btn>
         </Row>
       </Card>
     ),
@@ -8487,7 +8532,7 @@ function HomeGridSkeleton({ coverRadius = '3%' }) {
   );
 }
 
-function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoading, isError, hideDividers, artHidden }) {
+function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, onContextMenu, isLoading, isError, hideDividers, artHidden }) {
   const t = useLang();
   const lang = React.useContext(LangContext);
   const [hov, setHov] = useState(false);
@@ -8505,6 +8550,7 @@ function SearchTrackRow({ track, isLiked, onLike, onClick, onCoverClick, isLoadi
     : null;
   return (
     <div onPointerEnter={e => { if (isFineHover(e)) setHov(true); }} onPointerLeave={()=>setHov(false)}
+      onContextMenu={event => openTrackContext(event, track, onContextMenu)}
       /* Строка ничего не анимирует при появлении: список меняется целиком,
          и плавность делает один общий фейд контейнера (см. ArtistView /
          SearchView). Здесь только дешёвое приглушение недоступного трека —
@@ -9461,7 +9507,8 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
                   )}
                   {results.map(tr => (
                     <PlaylistAddRow key={tr.id} tr={tr} added={inList.has(tr.id)} onAdd={addTrack}
-                      onPlay={onPlayTrack} isLoading={loadingTrackId === tr.id} isError={errorTrackId === tr.id}/>
+                      onPlay={() => onPlayTrack(tr, results)}
+                      isLoading={loadingTrackId === tr.id} isError={errorTrackId === tr.id}/>
                   ))}
                 </div>
               </>
@@ -9493,7 +9540,8 @@ const PlaylistEditor = React.forwardRef(function PlaylistEditor({ visible, playl
                     </div>
                     {recs.map(tr => (
                       <PlaylistAddRow key={tr.id} tr={tr} added={inList.has(tr.id)} onAdd={addTrack}
-                        onPlay={onPlayTrack} isLoading={loadingTrackId === tr.id} isError={errorTrackId === tr.id}/>
+                        onPlay={() => onPlayTrack(tr, recs)}
+                        isLoading={loadingTrackId === tr.id} isError={errorTrackId === tr.id}/>
                     ))}
                   </>
                 )}
@@ -9681,7 +9729,7 @@ function saveRecent(list) {
    Смысл не только в украшении: первый результат — самый релевантный, и
    раньше он ничем не отличался от остальных строк, поэтому его приходилось
    искать глазами по первому месту в списке. */
-function SearchTopResult({ track, isLiked, onLike, onPlay, onSelect, isLoading, isError, artHidden, glowOff }) {
+function SearchTopResult({ track, isLiked, onLike, onPlay, onSelect, onContextMenu, isLoading, isError, artHidden, glowOff }) {
   const t = useLang();
   const [popKey, setPopKey] = useState(0);
   const [glow, setGlow] = useState(null);
@@ -9704,6 +9752,7 @@ function SearchTopResult({ track, isLiked, onLike, onPlay, onSelect, isLoading, 
        целиком, ровно как на главной. Сама карточка тут широкая, поэтому
        её фон и рамка заданы инлайном, а не классом. */
     <div className="home-card" onClick={onSelect}
+      onContextMenu={event => openTrackContext(event, track, onContextMenu)}
       style={{
         position:'relative', display:'flex', alignItems:'center', gap:18,
         padding:'13px 16px 13px 13px', borderRadius:16, overflow:'hidden', cursor:'pointer',
@@ -9854,7 +9903,7 @@ function SearchArtistCard({ user, onClick }) {
   );
 }
 
-const SearchView = React.forwardRef(function SearchView({ visible, scAuth, likedIds, onLike, onPlayTrack, onSelectTrack, onResultsLoaded, onArtistClick, loadingTrackId, errorTrackId, hideDividers, heroId, glowOff, onLogin }, ref) {
+const SearchView = React.forwardRef(function SearchView({ visible, scAuth, likedIds, onLike, onPlayTrack, onSelectTrack, onTrackMenu, onResultsLoaded, onArtistClick, loadingTrackId, errorTrackId, hideDividers, heroId, glowOff, onLogin }, ref) {
   const T = useLang();
   const inputRef = useRef(null);
   const listRef = useRef(null);
@@ -9873,12 +9922,14 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
   const offsetRef    = useRef(0);
   /* номер последнего запроса выдачи (см. doSearch) */
   const reqSeq       = useRef(0);
+  const resultsQueryRef = useRef('');
   hasMoreRef.current = hasMore;
   offsetRef.current  = offset;
   React.useImperativeHandle(ref, () => ({
     focus: () => { inputRef.current?.focus(); inputRef.current?.select(); },
-    loadMore: () => {
+    loadMore: expected => {
       if (!hasMoreRef.current || loadingRef.current) return;
+      if (expected !== queryRef.current || expected !== resultsQueryRef.current) return;
       doSearch(queryRef.current, offsetRef.current);
     },
     /* Обложка трека в этом списке — источник полёта в плеер. Ищем только
@@ -9928,6 +9979,7 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
         return SC_TITLES.has(scTitleKey(mapped.id)) ? mapped : cleanScTrackForSearch(mapped);
       });
       if (off === 0) {
+        resultsQueryRef.current = q;
         setResults(newTracks);
         setUsers((usersRes?.data?.collection || []).map(u => ({
           id: u.id, username: u.username,
@@ -9941,7 +9993,7 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
         if (newTracks.length > 0 || usersRes?.data?.collection?.length > 0) pushRecent(q);
       } else {
         setResults(prev => [...prev, ...newTracks]);
-        if (newTracks.length > 0) onResultsLoaded?.(newTracks);
+        if (newTracks.length > 0) onResultsLoaded?.(newTracks, 'search', q);
       }
       setHasMore(!!tracksRes?.data?.next_href);
       setOffset(off + 20);
@@ -10352,10 +10404,11 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
                 {T('search_best')}
               </div>
               <SearchTopResult track={top}
+                onContextMenu={onTrackMenu}
                 isLiked={likedIds.has(top.id)}
                 onLike={() => onLike(top)}
-                onSelect={() => onSelectTrack(top, results)}
-                onPlay={() => onPlayTrack(top, results)}
+                onSelect={() => onSelectTrack(top, results, resultsQueryRef.current)}
+                onPlay={() => onPlayTrack(top, results, resultsQueryRef.current)}
                 isLoading={loadingTrackId === top.id}
                 isError={errorTrackId === top.id}
                 artHidden={heroId != null && top.id === heroId}
@@ -10389,10 +10442,11 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
               </div>
               {rest.map(t => (
                 <SearchTrackRow key={t.id} track={t}
+                  onContextMenu={onTrackMenu}
                   isLiked={likedIds.has(t.id)}
                   onLike={() => onLike(t)}
-                  onClick={() => onSelectTrack(t, results)}
-                  onCoverClick={() => onPlayTrack(t, results)}
+                  onClick={() => onSelectTrack(t, results, resultsQueryRef.current)}
+                  onCoverClick={() => onPlayTrack(t, results, resultsQueryRef.current)}
                   isLoading={loadingTrackId === t.id}
                   isError={errorTrackId === t.id}
                   artHidden={heroId != null && t.id === heroId}
@@ -10414,9 +10468,9 @@ const SearchView = React.forwardRef(function SearchView({ visible, scAuth, liked
 });
 
 /* ── ArtistView ──────────────────────────────────────────────────────────── */
-function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlayTrack, onSelectTrack,
+const ArtistView = React.forwardRef(function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlayTrack, onSelectTrack, onTrackMenu,
                       loadingTrackId, errorTrackId, artistCacheRef, onFollow,
-                      onTracksAppended, onLogin, hideDividers, glowOff }) {
+                      onTracksAppended, onLogin, hideDividers, glowOff }, ref) {
   const t = useLang();
   const [tab, setTab] = useState('popular');
   const [fetched, setFetched] = useState(null);
@@ -10491,6 +10545,7 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
   }, [visible, artist?.id, artist?.username]);
 
   const profileId = fetched?.id || artist?.id || null;
+  const playbackKey = `${profileId}:${tab}`;
   const follow = followStatus?.profileId === profileId && followStatus.auth === scAuth ? followStatus : null;
   const isFollowing = follow?.following;
 
@@ -10564,8 +10619,10 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
     setLoadingMore(true);
     const href = nextHrefRef.current;
     const currentTab = tab;
+    const request = tabReqRef.current;
     try {
       const res = await window.electronAPI.scFetch(href, scAuth.token, scAuth.clientId);
+      if (request !== tabReqRef.current || href !== nextHrefRef.current) return;
       const newTracks = (res.data?.collection || []).map(mapTrack);
       const nh = res.data?.next_href || null;
       nextHrefRef.current = nh;
@@ -10580,13 +10637,18 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
       /* очередью играет сам список артиста (см. onCoverClick ниже), поэтому
          догруженные треки надо в неё доставить — иначе next упрётся в
          конец снимка, сделанного в момент клика, и уйдёт в лайки */
-      onTracksAppended?.(newTracks);
-    } catch {}
-    loadingMoreRef.current = false;
-    setLoadingMore(false);
+      onTracksAppended?.(newTracks, 'artist', playbackKey);
+    } catch {} finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
   };
+  React.useImperativeHandle(ref, () => ({
+    loadMore: expected => { if (expected === playbackKey) loadMore(); },
+  }));
 
   const profile = fetched ? { ...artist, ...fetched } : artist;
+  const playbackOrigin = { kind:'artist', key:playbackKey };
   const avatarUrl = profile?.avatarUrl || null;
 
   /* мягкое пятно за аватаром — цвет берём из самой картинки тем же
@@ -10695,7 +10757,7 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
                 onPointerLeave={event => { delete event.currentTarget.dataset.pointerPressed; }}
                 onBlur={event => { delete event.currentTarget.dataset.pointerPressed; }}
                 onKeyDown={event => { delete event.currentTarget.dataset.pointerPressed; }}
-                onClick={() => canPlay && onPlayTrack(artistTracks[0], artistTracks)}
+                onClick={() => canPlay && onPlayTrack(artistTracks[0], artistTracks, playbackOrigin)}
               >
                 <svg width="9" height="10" viewBox="0 0 10 12" fill="currentColor" aria-hidden="true">
                   <polygon points="0,0 10,6 0,12"/>
@@ -10844,10 +10906,11 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
                searchQueueRef оставался null, и next/prev после трека
                артиста уезжали в лайки — то есть в другой список */
             <SearchTrackRow key={tr.id} track={tr}
+              onContextMenu={onTrackMenu}
               isLiked={likedIds?.has(tr.id) || false}
               onLike={onLike ? () => onLike(tr) : null}
-              onClick={() => onSelectTrack?.(tr, artistTracks)}
-              onCoverClick={() => onPlayTrack?.(tr, artistTracks)}
+              onClick={() => onSelectTrack?.(tr, artistTracks, playbackOrigin)}
+              onCoverClick={() => onPlayTrack?.(tr, artistTracks, playbackOrigin)}
               isLoading={loadingTrackId === tr.id}
               isError={errorTrackId === tr.id}
               hideDividers={hideDividers}/>
@@ -10862,7 +10925,7 @@ function ArtistView({ artist, visible, onClose, scAuth, likedIds, onLike, onPlay
       </div>
     </div>
   );
-}
+});
 
 /* ── App ─────────────────────────────────────────────────────────────────── */
 /* заглушка «трека нет». раньше она была литералом прямо в выражении
@@ -11101,6 +11164,7 @@ function App() {
   const homeSearchRef     = useRef(null);
   const libSearchRef      = useRef(null);
   const searchViewRef     = useRef(null);
+  const artistPlaybackViewRef = useRef(null);
   const discordTimerRef    = useRef(null);
   const discordPushRef     = useRef(null);
   const discordProgressRef = useRef(0);
@@ -11117,6 +11181,8 @@ function App() {
   const filteredScRef     = useRef([]);
   const searchRef         = useRef('');
   const searchQueueRef    = useRef(null);
+  const scPlaybackOriginRef = useRef(null);
+  const localPlaybackQueueRef = useRef(null);
   /* токен текущей загрузки SC-трека: handleScTrackClick делает await'ы, и без
      guard'а два быстрых клика давали гонку — включался не тот трек */
   const scReqRef          = useRef(0);
@@ -11144,6 +11210,28 @@ function App() {
   const xfadePrimeRef   = useRef(null);   // предзагруженный следующий трек
   const xfadeTickRef    = useRef(null);
   const localTracksRef  = useRef([]);
+  const [queuedTracks, setQueuedTracks] = useState([]);
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [queueInstant, setQueueInstant] = useState(false);
+  const queueDisplayRef = useRef({ entries: [], upcoming: [] });
+  const queueToggleRef = useRef(null);
+  const queueBackRef = useRef(null);
+  const focusQueueToggleRef = useRef(false);
+  function toggleQueue(event) {
+    const keyboard = event.detail === 0 || event.key === 'Escape';
+    focusQueueToggleRef.current = keyboard;
+    setQueueInstant(keyboard);
+    setQueueOpen(open => !open);
+  }
+  useLayoutEffect(() => {
+    if (!focusQueueToggleRef.current) return;
+    focusQueueToggleRef.current = false;
+    (queueOpen ? queueBackRef : queueToggleRef).current?.focus({ preventScroll:true });
+  }, [queueOpen]);
+  const [, refreshPlaybackQueue] = useReducer(value => value + 1, 0);
+  const queuedTracksRef = useRef(queuedTracks);
+  const queuedTrackIdRef = useRef(0);
+  const queueRunRef = useRef(null);
   /* очередь/режим нужны peek'у следующего трека, а он крутится из setInterval
      с пустым списком deps — читать state он не увидит, поэтому зеркалим */
   const shuffleOnRef      = useRef(false);
@@ -11152,6 +11240,10 @@ function App() {
      позицию, и пересоздание на каждом рендере обнуляло бы её. */
   if (!shuffleStateRef.current) {
     shuffleStateRef.current = new Shuffle({ repeat: () => repeatRef.current });
+  }
+  const localShuffleRef = useRef(null);
+  if (!localShuffleRef.current) {
+    localShuffleRef.current = new Shuffle({ repeat: () => repeatRef.current });
   }
   // Геометрия для полёта обложки берётся из текущей сетки при навигации.
   const findArtEl = useCallback((id) => {
@@ -12247,19 +12339,22 @@ function App() {
 
   useEffect(() => () => window.electronAPI?.discordClear?.(), []);
 
-  useEffect(() => {
-    const eng = shuffleStateRef.current;
-    if (!shuffle) { eng.clear(); return; }
-    /* Порядок обычно уже собран тем, кто перемешивание включил
-       (handleShuffleToggle / handleShuffleStart) — и пересобирать его здесь
-       было бы ровно то, от чего раньше спасал флаг shuffleKeepRef. Пересборка
-       теперь живёт в самом движке и зовётся оттуда, где очередь правда
-       сменилась. Этот эффект остался только для кнопки в мини-плеере: она
-       включает перемешивание голым setShuffle, без выбора списка. */
-    if (eng.active) return;
-    const cur = scPlayingTrackRef.current;
-    if (cur) eng.start(activeQueueList(), cur.id);
-  }, [shuffle]);
+  function togglePlaybackShuffle() {
+    if (!partyCanControl()) return;
+    if (shuffle) {
+      shuffleStateRef.current.clear();
+      localShuffleRef.current.clear();
+    } else {
+      const current = trackRef.current;
+      const local = current?.path || (!scPlayingTrackRef.current && sourceMode === 'local');
+      const engine = local ? localShuffleRef.current : shuffleStateRef.current;
+      const base = queueBaseTrack(current);
+      const list = activeQueueList();
+      if (base && base !== BLANK_TRACK && list.some(track => track.id === base.id)) engine.start(list, base.id);
+      else engine.prepare(list);
+    }
+    setShuffle(!shuffle);
+  }
 
   /* список, из которого реально играет next/prev — тот же приоритет, что и
      везде: станция > плейлист > очередь поиска > лайки. нужен кнопке
@@ -12267,10 +12362,9 @@ function App() {
      режим берём из settingsRef, а не из замыкания: эффект [shuffle] не
      перезапускается на смене режима и держал бы старый */
   function activeQueueList() {
-    const s = settingsRef.current;
-    const sc = (s?.soundcloudAuth && s?.sourceMode === 'sc') ? 'sc' : 'local';
-    if (sc === 'sc') return scQueueList();
-    return searchRef.current ? filteredRef.current : tracks;
+    if (trackRef.current?.path) return localQueueList();
+    if (scPlayingTrackRef.current || sourceMode === 'sc') return scQueueList();
+    return localQueueList();
   }
 
   /* переключатель режима, а не «перемешать ещё раз». второй клик ВЫКЛЮЧАЕТ
@@ -12278,40 +12372,33 @@ function App() {
      порядке. включение — как handleShuffleStart: случайный трек + переход в
      плеер. список приходит с места нажатия, потому что он у всех трёх кнопок
      разный (лайки / активная очередь / треки плейлиста) */
-  function handleShuffleToggle(list) {
+  function handleShuffleToggle(list, origin) {
     if (!partyCanControl()) return;
-    if (shuffle) { setShuffle(false); return; }
-    handleShuffleStart(list);
+    if (shuffle) { togglePlaybackShuffle(); return; }
+    handleShuffleStart(list, origin);
   }
 
   /* «случайно»: перемешать переданный список, включить первый случайный трек
      и уйти в плеер. список приходит снаружи — по нажатию не угадать, что
      имеется в виду: с главного экрана это лайки, в плеере — активная очередь,
      в чипе плейлиста — треки плейлиста */
-  function handleShuffleStart(list) {
-    if (!partyCanSelect(settingsRef.current.sourceMode !== 'sc')) return;
+  function handleShuffleStart(list, origin) {
     const pool = (list || []).filter(Boolean);
     if (!pool.length) { showToast(t('shuffle_empty')); return; }
+    const local = !!pool[0].path;
+    if (!partyCanSelect(local)) return;
+    queueRunRef.current = null;
     setShuffle(true);
-    const eng = shuffleStateRef.current;
-    const s = settingsRef.current;
-    const sc = (s?.soundcloudAuth && s?.sourceMode === 'sc') ? 'sc' : 'local';
-    if (sc === 'sc') {
-      /* Порядок строим ЗДЕСЬ, из того списка, на который нажали. Ниже
-         handleScTrackClick идёт с autoSkip=true — пересборку «от клика» он
-         пропускает, и порядок остаётся выбранным пользователем, а не
-         активной очередью. Если эти списки разошлись, движок сам пересоберёт
-         порядок на следующем peek — раньше next в этом случае просто
-         останавливал плеер. */
-      eng.start(pool, null);
-      const first = eng.track(eng.order[0]) || pool[0];
-      handleScTrackClick(first, -1, true, 0, -1);
+    const engine = local ? localShuffleRef.current : shuffleStateRef.current;
+    if (local) {
+      if (origin || !localPlaybackQueueRef.current) rememberLocalQueue(list);
     } else {
-      const cur = tracks[trackIdx];
-      let n; do { n = Math.floor(Math.random() * pool.length); } while (pool[n] === cur && pool.length > 1);
-      const at = tracks.indexOf(pool[n]);
-      if (at >= 0) { setTrackIdx(at); setIsPlaying(true); }
+      if (origin) rememberScQueue(list, origin);
     }
+    engine.start(list);
+    const first = engine.track(engine.order[0]) || pool[0];
+    if (local) startQueuedLocal(first);
+    else handleScTrackClick(first, -1, true);
     /* уводим в плеер без hero-анимации: клика по карточке не было, и
        искать artRef для случайного трека незачем */
     setHomeVisible(false);
@@ -12320,12 +12407,169 @@ function App() {
     setNavActive('library');
   }
 
-  function handleNext() {
+  function updateQueuedTracks(entries) {
+    queuedTracksRef.current = entries;
+    setQueuedTracks(entries);
+  }
+
+  function addQueuedTrack(track, next) {
+    const entry = { id: ++queuedTrackIdRef.current, track };
+    const entries = queuedTracksRef.current;
+    updateQueuedTracks(next ? [entry, ...entries] : [...entries, entry]);
+    showToast(t(next ? 'queue_added_next' : 'queue_added'));
+  }
+
+  function removeQueuedTrack(entry) {
+    updateQueuedTracks(queuedTracksRef.current.filter(item => item !== entry));
+  }
+
+  function firstQueuedTrack(current) {
+    if (partyClientRef.current?.active || partyClientRef.current?.request) return null;
+    const source = current?.path ? 'local' : scPlayingTrackRef.current ? 'sc' : sourceMode;
+    return queuedTracksRef.current.find(entry => queueSource(entry.track) === source) || null;
+  }
+
+  function resolveQueuedTrack(entry) {
+    const queued = entry.track;
+    if (queued.path) return localTracksRef.current.find(item => item.path === queued.path);
+    if (scAuthRef.current) {
+      const cached = scCacheMapRef.current.get(Number(queued.id));
+      if (cached?.streamUrl || cached?.hlsUrl) return cached;
+      if (queued.streamUrl || queued.hlsUrl) return queued;
+    }
+  }
+
+  function queueBaseTrack(current) {
+    const run = queueRunRef.current;
+    return run?.currentKey === queueTrackKey(current) ? run.anchor : current;
+  }
+
+  function commitQueuedTrack(entry, current) {
+    const anchor = queueBaseTrack(current);
+    queueRunRef.current = { anchor: anchor && anchor !== BLANK_TRACK && queueSource(anchor) === queueSource(entry.track) ? anchor : null,
+      currentKey: queueTrackKey(entry.track) };
+    removeQueuedTrack(entry);
+  }
+
+  function startQueuedLocal(track) {
+    if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
+    ++scReqRef.current;
+    trackSwitchingRef.current = false;
+    setLoadingTrackId(null);
+    setPendingPlayerTrack(null);
+    const index = localTracksRef.current.indexOf(track);
+    if (scPlayingTrackRef.current) destroyHls();
+    if (!scPlayingTrackRef.current && index === trackIdx && audioRef.current?.__sewTrackPath === track.path) {
+      const audio = audioRef.current;
+      audio.currentTime = 0;
+      restorePlaybackVolume(audio);
+      audio.play().catch(() => setIsPlaying(false));
+      discordProgressRef.current = 0;
+      pushDiscord(0);
+    }
+    scPlayingTrackRef.current = null;
+    setScPlayingTrack(null);
+    setTrackIdx(index);
+    trackRef.current = track;
+    progressRef.current = 0;
+    setIsPlaying(true);
+  }
+
+  function playQueuedTrack(entry, automatic = false) {
+    if (partyClientRef.current?.active || partyClientRef.current?.request) return;
+    if (!queuedTracksRef.current.includes(entry)) return;
+    const current = trackRef.current;
+    const next = resolveQueuedTrack(entry);
+    if (!next) {
+      removeQueuedTrack(entry);
+      showToast(t('queue_unavailable'));
+      return;
+    }
+    if (next.path) {
+      if (!current?.path && shuffle) localShuffleRef.current.prepare(localQueueList());
+      commitQueuedTrack(entry, current);
+      startQueuedLocal(next);
+    } else {
+      handleScTrackClick(next, scTracksRef.current.findIndex(item => item.id === next.id), true, 0, 1, {
+        pending: () => queuedTracksRef.current.includes(entry),
+        start: () => {
+          if (!scPlayingTrackRef.current && shuffle) shuffleStateRef.current.prepare(scQueueList());
+          commitQueuedTrack(entry, current);
+        },
+        fail: () => {
+          removeQueuedTrack(entry);
+          showToast(t('queue_unavailable'));
+        },
+        resume: () => {
+          if (automatic || audioRef.current?.ended) handleNextRef.current?.(false, true);
+        },
+      });
+    }
+  }
+
+  function playSourceTrack(item) {
+    const next = item.track;
+    if (!partyCanSelect(!!next.path)) return;
+    if (item.step) (next.path ? localShuffleRef.current : shuffleStateRef.current).commit(item.step);
+    if (next.path) {
+      queueRunRef.current = null;
+      startQueuedLocal(next);
+    } else {
+      handleScTrackClick(next, scTracksRef.current.findIndex(track => track.id === next.id), true);
+    }
+  }
+
+  function rememberLocalQueue(list) {
+    localPlaybackQueueRef.current = { paths: list.map(track => track.path) };
+  }
+
+  function movePlaybackSourceTrack(from, to) {
+    if (partyClientRef.current?.active || partyClientRef.current?.request || repeatRef.current === 'one') return;
+    const current = trackRef.current;
+    const local = !!current?.path;
+    if (!local && !scPlayingTrackRef.current) return;
+    if (shuffleOnRef.current) {
+      if (from.step && to.step && playbackOrder(current).moveUpcoming(from.step, to.step)) refreshPlaybackQueue();
+      return;
+    }
+    if (from.step || to.step) return;
+    const list = local ? localQueueList() : scQueueList();
+    const first = upcomingSourceTracks(current)[0]?.index;
+    if (first == null || from.index < first || to.index < first
+      || playbackKey(list[from.index]) !== playbackKey(from.track)
+      || playbackKey(list[to.index]) !== playbackKey(to.track)) return;
+    const reordered = moveQueueItem(list, from.index, to.index);
+    if (reordered === list) return;
+    if (local) rememberLocalQueue(reordered);
+    else if (stationQueueRef.current) stationQueueRef.current = reordered;
+    else if (playlistQueueRef.current) playlistQueueRef.current = reordered;
+    else searchQueueRef.current = reordered;
+    refreshPlaybackQueue();
+  }
+
+  function rememberScQueue(list, origin = null) {
+    if (partyClientRef.current?.active || partyClientRef.current?.request) return;
+    stationQueueRef.current = playlistQueueRef.current = null;
+    searchQueueRef.current = list;
+    scPlaybackOriginRef.current = origin;
+    setStationActive(null);
+    setPlaylistActive(null);
+  }
+
+  function loadMorePlaybackSource() {
+    const origin = scPlaybackOriginRef.current;
+    if (!searchQueueRef.current || !origin) return;
+    if (origin.kind === 'search') searchViewRef.current?.loadMore(origin.key);
+    if (origin.kind === 'artist') artistPlaybackViewRef.current?.loadMore(origin.key);
+  }
+
+  function handleNext(ended = false, skippingUnavailable = false) {
     if (!partyCanControl()) return;
     if (partyClientRef.current?.active && !scPlayingTrackRef.current) return;
     /* Входящий трек уже текущий. Завершаем микс, не откатывая очередь. */
     if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
-    if (repeat === 'one') {
+    let queued = firstQueuedTrack(trackRef.current);
+    if (repeat === 'one' && !skippingUnavailable && (!queued || ended === true)) {
       const audio = audioRef.current;
       if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
       progressRef.current = 0;
@@ -12344,25 +12588,27 @@ function App() {
       pushDiscord(0);
       return;
     }
-    if (scPlayingTrack) {
+    if (queued && trackSwitchingRef.current) return;
+    while (queued && !resolveQueuedTrack(queued)) {
+      removeQueuedTrack(queued);
+      showToast(t('queue_unavailable'));
+      queued = firstQueuedTrack(trackRef.current);
+    }
+    if (queued) {
+      playQueuedTrack(queued, true);
+      return;
+    }
+    const cloud = scPlayingTrackRef.current;
+    if (cloud) {
       const list = scQueueList();
       if (shuffle) {
         const eng = shuffleStateRef.current;
-        eng.sync(list);
-        if (searchQueueRef.current && eng.left() <= 3) searchViewRef.current?.loadMore();
-        const step = eng.peek(1);
-        if (!step) { setIsPlaying(false); return; }
-        eng.commit(step);
-        const nextTrack = eng.track(step.id);
-        if (nextTrack) handleScTrackClick(nextTrack, scTracksRef.current.indexOf(nextTrack), true);
-        else setIsPlaying(false);
-        return;
+        if (eng.left() <= 3) loadMorePlaybackSource();
+      } else if (list.findIndex(t => t.id === queueBaseTrack(cloud)?.id) + 1 >= list.length - 3) {
+        loadMorePlaybackSource();
       }
-      const curIdx = list.findIndex(t => t.id === scPlayingTrack.id);
-      const ni = curIdx + 1;
-      if (searchQueueRef.current && ni >= list.length - 3) searchViewRef.current?.loadMore();
-      if (ni < list.length) handleScTrackClick(list[ni], scTracksRef.current.indexOf(list[ni]), true);
-      else if (repeat === 'all') handleScTrackClick(list[0], scTracksRef.current.indexOf(list[0]), true);
+      const next = upcomingSourceTracks(cloud)[0];
+      if (next) playSourceTrack(next);
       else setIsPlaying(false);
       return;
     }
@@ -12371,34 +12617,16 @@ function App() {
        в режиме sc вообще не должно быть: пользователь жмёт «вперёд» и получает
        перемотку невидимого локального трека вместо следующего SC. Возвращаемся
        явно. */
-    if (sourceMode === 'sc') { setIsPlaying(false); return; }
-    const list = searchRef.current ? filteredRef.current : tracks;
-    if (!list.length) { setIsPlaying(false); return; }
-    if (shuffle) {
-      const cur = tracks[trackIdx];
-      let n; do { n = Math.floor(Math.random()*list.length); } while (list[n] === cur && list.length > 1);
-      setTrackIdx(tracks.indexOf(list[n]));
-      progressRef.current = 0; return;
-    }
-    /* curIdx может быть -1: текущий трек не попал в отфильтрованный список
-       (поиск его отсеял). Раньше next = 0 и мы просто прыгали на первый
-       элемент списка — визуально это выглядело как «следующий трек включился
-       рандомно». Считаем позицию по общему списку и берём её +1. */
-    const curIdx = list.indexOf(tracks[trackIdx]);
-    if (curIdx < 0) {
-      const firstInList = list[0];
-      if (!firstInList) { setIsPlaying(false); return; }
-      setTrackIdx(tracks.indexOf(firstInList));
-      progressRef.current = 0; return;
-    }
-    const next = curIdx + 1;
-    if (next >= list.length) {
-      if (repeat === 'all') { setTrackIdx(tracks.indexOf(list[0])); }
-      else { setIsPlaying(false); }
+    if (sourceMode === 'sc' && !trackRef.current?.path) { setIsPlaying(false); return; }
+    const next = upcomingSourceTracks(trackRef.current)[0];
+    if (!next) { setIsPlaying(false); return; }
+    if (isPlayingRef.current || queueRunRef.current) {
+      playSourceTrack(next);
     } else {
-      setTrackIdx(tracks.indexOf(list[next]));
+      if (next.step) localShuffleRef.current.commit(next.step);
+      setTrackIdx(tracks.indexOf(next.track));
+      progressRef.current = 0;
     }
-    progressRef.current = 0;
   }
   handleNextRef.current = handleNext;
 
@@ -12415,6 +12643,21 @@ function App() {
       discordProgressRef.current = 0;
       pushDiscord(0);
       return;
+    }
+    const current = trackRef.current;
+    const anchor = queueBaseTrack(current);
+    if (anchor !== current && anchor) {
+      if (anchor.path) {
+        const previous = localTracksRef.current.find(item => item.path === anchor.path);
+        if (previous) {
+          queueRunRef.current = null;
+          startQueuedLocal(previous);
+          return;
+        }
+      } else {
+        handleScTrackClick(anchor, scTracksRef.current.findIndex(item => item.id === anchor.id), true, 0, -1);
+        return;
+      }
     }
     if (scPlayingTrack) {
       const list = scQueueList();
@@ -12438,9 +12681,19 @@ function App() {
     }
     /* тот же случай, что в handleNext: в режиме sc локальный список трогать
        нельзя, и пустой список делить на ноль нельзя */
-    if (sourceMode === 'sc' || !tracks.length) return;
-    const list = searchRef.current ? filteredRef.current : tracks;
+    if (sourceMode === 'sc' && !current?.path) return;
+    const list = localQueueList();
     if (!list.length) return;
+    if (shuffle) {
+      const engine = localShuffleRef.current;
+      engine.sync(list);
+      const step = engine.peek(-1);
+      if (!step) return;
+      engine.commit(step);
+      setTrackIdx(tracks.indexOf(engine.track(step.id)));
+      progressRef.current = 0;
+      return;
+    }
     const curIdx = list.indexOf(tracks[trackIdx]);
     /* curIdx === -1 бывает двух видов: трек не выбран (trackIdx -1, список
        пустой) или он отсеян поиском. Формула «назад» в обоих случаях
@@ -12779,6 +13032,8 @@ function App() {
   }, []);
   const handleToggleSource = useCallback(() => setSettings(s => ({ ...s, sourceMode: s.sourceMode === 'sc' ? 'local' : 'sc' })), []);
   const sourceMode = (settings.soundcloudAuth && settings.sourceMode === 'sc') ? 'sc' : 'local';
+  const queuePanelSource = track.path ? 'local' : scPlayingTrack ? 'sc' : sourceMode;
+  const queueHasEntries = queuedTracks.some(entry => queueSource(entry.track) === queuePanelSource);
   /* какие куски интерфейса спрятаны (Оформление → «Элементы интерфейса») */
   const uiHidden = uiHiddenOf(settings);
 
@@ -13237,13 +13492,15 @@ function App() {
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState(null);
   const showUpdateDialog = startupReady && settingsLoaded && appUpdate.availableVersion
     && appUpdate.availableVersion !== dismissedUpdateVersion;
-  function handleSearchResultsLoaded(newTracks) {
-    if (!searchQueueRef.current) return;
-    searchQueueRef.current = [...searchQueueRef.current, ...newTracks];
-    /* Движок допишет новые id в конец порядка и запомнит их треки. Проверять
-       флаг перемешивания не нужно: при выключенном порядок пуст и extend() —
-       no-op. */
-    shuffleStateRef.current.extend(newTracks);
+  function handleSearchResultsLoaded(newTracks, kind, key) {
+    const origin = scPlaybackOriginRef.current;
+    if (!searchQueueRef.current || origin?.kind !== kind || origin.key !== key) return;
+    const known = new Set(searchQueueRef.current.map(track => track.id));
+    const appended = newTracks.filter(track => !known.has(track.id));
+    if (!appended.length) return;
+    searchQueueRef.current = [...searchQueueRef.current, ...appended];
+    shuffleStateRef.current.extend(appended);
+    refreshPlaybackQueue();
   }
 
   function showToast(msg) {
@@ -13297,28 +13554,40 @@ function App() {
      handleScTrackClick — иначе префетч тянул бы не тот трек. */
   function scQueueList() {
     return stationQueueRef.current || playlistQueueRef.current
-      || searchQueueRef.current
-      || (searchRef.current ? filteredScRef.current : scTracksRef.current);
+      || searchQueueRef.current || scTracksRef.current;
   }
 
-  /* Кто играет следующим. НИЧЕГО не меняет — только читает. Коммит позиции
-     в shuffle-порядке делает сам startCrossfade. */
-  function peekNextSc() {
-    const list = scQueueList();
-    const cur  = scPlayingTrackRef.current;
-    if (!cur || !list.length) return null;
-    const eng = shuffleStateRef.current;
-    eng.sync(list);
-    if (shuffleOnRef.current) {
-      const step = eng.peek(1);
-      if (!step) return null;
-      const t = eng.track(step.id);
-      return t ? { track: t, step } : null;
+  function localQueueList() {
+    const library = localTracksRef.current;
+    const source = localPlaybackQueueRef.current;
+    if (!source) return library;
+    if (source.library !== library) {
+      const byPath = new Map(library.map(track => [track.path, track]));
+      source.list = source.paths.map(path => byPath.get(path)).filter(Boolean);
+      source.library = library;
     }
-    const ni = list.findIndex(t => t.id === cur.id) + 1;
-    if (ni >= 0 && ni < list.length) return { track: list[ni], step: null };
-    if (repeatRef.current === 'all' && list.length) return { track: list[0], step: null };
-    return null;
+    return source.list;
+  }
+
+  function playbackOrder(current) {
+    return current?.path || !scPlayingTrackRef.current ? localShuffleRef.current : shuffleStateRef.current;
+  }
+
+  function upcomingSourceTracks(current, fullList = false) {
+    const local = current?.path || !scPlayingTrackRef.current;
+    const list = local ? localQueueList() : scQueueList();
+    if (!list.length) return [];
+    if (shuffleOnRef.current) {
+      const engine = playbackOrder(current);
+      engine.sync(list);
+      const steps = fullList ? engine.upcoming() : [engine.peek(1)].filter(Boolean);
+      return steps.map(step => ({ track: engine.track(step.id), step }));
+    }
+    const position = list.findIndex(track => playbackKey(track) === playbackKey(queueBaseTrack(current))) + 1;
+    const start = position === list.length && repeatRef.current === 'all' ? 0 : position;
+    const wrapped = start === 0 && position === list.length && list.length > 1;
+    const end = fullList ? list.length - Number(wrapped) : start + 1;
+    return list.slice(start, end).map((track, offset) => ({ track, step: null, index: start + offset }));
   }
 
   /* Резолв CDN-ссылки. Вынесено из handleScTrackClick, чтобы префетч и
@@ -13393,7 +13662,7 @@ function App() {
       if (partyClientRef.current?.active) { pausePartyPlayback(); partyClientRef.current.sync(); return; }
       const prime = xfadePrimeRef.current;
       if (prime?.ready && startCrossfade(prime.next, prime)) return;
-      handleNextRef.current?.();
+      handleNextRef.current?.(true);
     };
   }
 
@@ -13401,35 +13670,28 @@ function App() {
   const playbackKey = t => t?.path ? `local:${t.path}` : `sc:${t?.id}`;
 
   function peekNextPlayback() {
-    if (scPlayingTrackRef.current) return peekNextSc();
     const current = trackRef.current;
-    if (!current?.path) return null;
-    const list = searchRef.current ? filteredRef.current : localTracksRef.current;
-    if (!list.length) return null;
-    if (shuffleOnRef.current) {
-      const candidates = list.filter(t => t.path !== current.path);
-      if (!candidates.length) return null;
-      return { track: candidates[Math.floor(Math.random() * candidates.length)], step: null };
+    const queued = firstQueuedTrack(current);
+    if (queued) {
+      const track = resolveQueuedTrack(queued);
+      return track ? { track, step: null, queued } : null;
     }
-    const index = list.findIndex(t => t.path === current.path);
-    const next = list[index + 1] || (repeatRef.current === 'all' ? list[0] : null);
-    return next && next.path !== current.path ? { track: next, step: null } : null;
+    if (!scPlayingTrackRef.current && !current?.path) return null;
+    return upcomingSourceTracks(current)[0] || null;
   }
 
   function primeStillValid(prime) {
     if (!prime || prime.forId !== playbackKey(trackRef.current)
       || prime.intro !== crossfadeSettings(settingsRef.current).intro
       || prime.shuffle !== shuffleOnRef.current || prime.repeat !== repeatRef.current) return false;
-    const list = scPlayingTrackRef.current ? scQueueList()
-      : searchRef.current ? filteredRef.current : localTracksRef.current;
-    if (!list.some(t => playbackKey(t) === prime.trackId)) return false;
-    if (prime.shuffle) {
-      // peek() may construct a fresh random cycle at repeat-all. Keep the first
-      // reserved step, rather than drawing a different next track every tick.
-      const eng = shuffleStateRef.current;
-      return !scPlayingTrackRef.current || (prime.shuffleOrder === eng.order && prime.shufflePos === eng.pos);
+    const queued = firstQueuedTrack(trackRef.current);
+    if (queued || prime.next.queued) {
+      return queued === prime.next.queued && playbackKey(resolveQueuedTrack(queued)) === prime.trackId;
     }
-    return playbackKey(peekNextPlayback()?.track) === prime.trackId;
+    const next = peekNextPlayback();
+    return playbackKey(next?.track) === prime.trackId
+      && next?.step?.index === prime.next.step?.index
+      && next?.step?.order === prime.next.step?.order;
   }
 
   async function primeNextPlayback(current, next) {
@@ -13441,8 +13703,6 @@ function App() {
       intro: config.intro, controller: new AbortController(), audio: b };
     prime.shuffle = shuffleOnRef.current;
     prime.repeat = repeatRef.current;
-    prime.shuffleOrder = shuffleStateRef.current.order;
-    prime.shufflePos = shuffleStateRef.current.pos;
     xfadePrimeRef.current = prime;
     b.__sewPrime = prime;
     b.pause();
@@ -13511,7 +13771,7 @@ function App() {
       prime.starting = false;
       b.pause();
       cur.volume = volumeRef.current;
-      if (cur.ended && audioRef.current === cur) handleNextRef.current?.();
+      if (cur.ended && audioRef.current === cur) handleNextRef.current?.(true);
     };
     (async () => {
       try {
@@ -13533,7 +13793,9 @@ function App() {
           Math.max(0, (duration - cur.currentTime) / rate));
         const xf = { from: cur, to: b,
           envelope: new CrossfadeEnvelope({ seconds, curve: config.curve, position: b.currentTime }) };
-        if (peek.step) shuffleStateRef.current.commit(peek.step);
+        if (peek.step) playbackOrder(curTrack).commit(peek.step);
+        if (peek.queued) commitQueuedTrack(peek.queued, curTrack);
+        else queueRunRef.current = null;
         const pair = rotateDecks(cur, b);
         outgoingRef.current = { audio: cur, hls: hlsRef.current };
         hlsRef.current = deckBHlsRef.current;
@@ -13686,9 +13948,9 @@ function App() {
       if (scPlayingTrackRef.current && searchQueueRef.current) {
         const eng = shuffleStateRef.current;
         if (shuffleOnRef.current) {
-          if (eng.left() <= 3) searchViewRef.current?.loadMore();
-        } else if (list.findIndex(t => t.id === curTrack.id) + 1 >= list.length - 3) {
-          searchViewRef.current?.loadMore();
+          if (eng.left() <= 3) loadMorePlaybackSource();
+        } else if (list.findIndex(t => t.id === queueBaseTrack(curTrack)?.id) + 1 >= list.length - 3) {
+          loadMorePlaybackSource();
         }
       }
       const next = peekNextPlayback();
@@ -13736,6 +13998,8 @@ function App() {
       return;
     }
     if (entry.source === 'local') {
+      queueRunRef.current = null;
+      localPlaybackQueueRef.current = null;
       setPendingPlayerTrack(null);
       const idx = tracks.findIndex(local => local.path?.toLowerCase() === entry.track.path.toLowerCase());
       if (idx < 0) { setHistoryLoadingId(null); showToast(t('history_unavailable')); return; }
@@ -13750,6 +14014,7 @@ function App() {
       setSettings(s => ({ ...s, sourceMode: 'local' }));
       setScPlayingTrack(null);
       setTrackIdx(idx);
+      if (shuffle) localShuffleRef.current.start(tracks, tracks[idx].id);
       progressRef.current = 0;
       setIsPlaying(true);
       return;
@@ -13777,6 +14042,7 @@ function App() {
       setStationActive(null);
       setPlaylistActive(null);
       searchQueueRef.current = [fresh, ...scTracksRef.current.filter(item => item.id !== fresh.id)];
+      scPlaybackOriginRef.current = null;
       setSettings(s => ({ ...s, sourceMode: 'sc' }));
       await handleScTrackClick(fresh, scTracksRef.current.findIndex(item => item.id === fresh.id));
     } catch {
@@ -13786,7 +14052,7 @@ function App() {
     }
   };
 
-  async function handleScTrackClick(scTrack, idx, autoSkip = false, skipCount = 0, direction = 1) {
+  async function handleScTrackClick(scTrack, idx, autoSkip = false, skipCount = 0, direction = 1, queued) {
     if (partyClientRef.current?.active && partyClientRef.current.role === 'guest') {
       partyClientRef.current.suggestTrack(scTrack);
       return;
@@ -13805,8 +14071,11 @@ function App() {
        не нужно — ниже для ручного клика она и так пересобирается по shuffle. */
     if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
     trackSwitchingRef.current = true;
-    setScPlayingIdx(idx);
-    progressRef.current = 0;
+    if (!queued) {
+      setScPlayingIdx(idx);
+      progressRef.current = 0;
+      destroyHls();
+    }
     /* Здесь стояло setIsPlaying(false) — и это была причина, по которой
        кнопка play дёргалась на каждом переключении трека. У sc-трека между
        началом переключения и setIsPlaying(true) проходит около секунды
@@ -13816,19 +14085,18 @@ function App() {
        — стоим. Сброс переехал в точки, где переключение реально
        заканчивается ничем (нет авторизации, поток не резолвился, ошибка). */
     setLoadingTrackId(scTrack.id);
-    destroyHls();
-
     const auth = scAuthRef.current;
     if (!auth) { clearPendingPlayerTrack(scTrack.id); trackSwitchingRef.current = false; setLoadingTrackId(null); setIsPlaying(false); return; }
 
-    if (!autoSkip && shuffle) {
+    if (!autoSkip && shuffleOnRef.current) {
       /* Клик по треку в перемешанном режиме: он встаёт первым, остальное
          перемешивается заново. Пул синхронизируем с реальной очередью, а не с
          тем списком, который пришёл кнопкой — иначе порядок остался бы от
          чужого списка. */
       const eng = shuffleStateRef.current;
-      eng.sync(scQueueList());
-      eng.rebuild(scTrack.id);
+      const list = scQueueList();
+      if (list.some(track => track.id === scTrack.id)) eng.start(list, scTrack.id);
+      else eng.prepare(list);
     }
 
     const markError = () => {
@@ -13839,7 +14107,7 @@ function App() {
 
     const skipInDirection = () => {
       const list = scQueueList();
-      if (shuffle) {
+      if (shuffleOnRef.current) {
         /* Обход битых треков: идём по порядку в заданную сторону и не даём
            себе закрутиться — skipCount ограничивает количество шагов размером
            порядка. */
@@ -13854,7 +14122,7 @@ function App() {
           }
           /* Шаг упёрся в конец порядка. Заворачиваем только вперёд и только
              при repeat-all: в этом случае движок сам вернёт новый порядок. */
-          if (direction > 0 && repeat === 'all') {
+          if (direction > 0 && repeatRef.current === 'all') {
             const nextStep = eng.peek(1);
             if (nextStep) {
               eng.commit(nextStep);
@@ -13872,20 +14140,28 @@ function App() {
       const ni = curIdx + direction;
       if (skipCount < list.length && ni >= 0 && ni < list.length) {
         handleScTrackClick(list[ni], scTracksRef.current.indexOf(list[ni]), true, skipCount + 1, direction);
-      } else if (repeat === 'all' && direction > 0 && skipCount < list.length) {
+      } else if (repeatRef.current === 'all' && direction > 0 && skipCount < list.length) {
         handleScTrackClick(list[0], scTracksRef.current.indexOf(list[0]), true, skipCount + 1, direction);
       } else {
         setIsPlaying(false);
       }
     };
 
-    if (!scTrack.streamUrl && !scTrack.hlsUrl) {
+    const rejectSelection = (cancelled = false) => {
       clearPendingPlayerTrack(scTrack.id);
       trackSwitchingRef.current = false;
       setLoadingTrackId(null);
-      setIsPlaying(false);
-      markError();
-      if (autoSkip) { skipInDirection(); }
+      if (!cancelled) {
+        markError();
+        if (queued) queued.fail();
+        else setIsPlaying(false);
+      }
+      if (queued) queued.resume();
+      else if (autoSkip) skipInDirection();
+    };
+
+    if (!scTrack.streamUrl && !scTrack.hlsUrl) {
+      rejectSelection();
       return;
     }
 
@@ -13900,17 +14176,19 @@ function App() {
     const resolvedUrl = r?.url || null;
     const isHls = !!r?.isHls;
 
+    if (queued && !queued.pending()) { rejectSelection(true); return; }
     if (!resolvedUrl) {
-      clearPendingPlayerTrack(scTrack.id);
-      trackSwitchingRef.current = false;
-      setLoadingTrackId(null);
-      setIsPlaying(false);
-      markError();
-      if (autoSkip) { skipInDirection(); }
+      rejectSelection();
       return;
     }
 
     const resolved = { ...scTrack, resolvedUrl };
+    if (queued) {
+      destroyHls();
+      setScPlayingIdx(idx);
+      progressRef.current = 0;
+      queued.start();
+    } else queueRunRef.current = null;
     scPlayingTrackRef.current = resolved;
     trackRef.current = resolved;
     setScPlayingTrack(resolved);
@@ -14159,20 +14437,15 @@ function App() {
   async function selectTrack(t) {
     if (!partyCanSelect(!!t.path)) return;
     const startPlayLocal = (idx) => {
-      setPendingPlayerTrack(null);
-      setScPlayingTrack(null);
-      setTrackIdx(idx);
-      progressRef.current = 0;
-      setIsPlaying(true);
+      queueRunRef.current = null;
+      const next = tracks[idx];
+      rememberLocalQueue(filteredRef.current);
+      if (shuffle) localShuffleRef.current.start(localQueueList(), next.id);
+      startQueuedLocal(next);
     };
     const startPlay = () => {
       if (sourceMode === 'sc') {
-        /* Клик по карточке сетки — такой же библиотечный контекст, как клик в
-           списке слева, и очередь поиска должна сброситься. В onClickItem
-           библиотеки это есть, здесь забыли: после поиска в SearchView очередь
-           оставалась живой, и next/prev/skip шли по ней — играл трек из
-           старого поиска, а не тот, что в списке */
-        searchQueueRef.current = null;
+        rememberScQueue(deferredSearch ? filteredScRef.current : null);
         const scIdx = scTracks.indexOf(t);
         if (scIdx >= 0) handleScTrackClick(t, scIdx);
       } else {
@@ -14296,12 +14569,18 @@ function App() {
       return;
     }
     if (sourceMode === 'sc') {
-      searchQueueRef.current = null;
+      if (pinnedTrack?.id !== t.id) {
+        rememberScQueue(deferredSearch ? filteredScRef.current : null);
+      }
       handleScTrackClick(t, scTracksRef.current.indexOf(t));
       return;
     }
     const idx = tracks.indexOf(t);
     if (idx < 0) return;
+    queueRunRef.current = null;
+    rememberLocalQueue(filteredRef.current);
+    if (shuffle) localShuffleRef.current.start(localQueueList(), t.id);
+    refreshPlaybackQueue();
     if (xfadeRef.current || xfadePrimeRef.current) abortCrossfade();
     setPendingPlayerTrack(null);
     setScPlayingTrack(null);
@@ -14335,7 +14614,9 @@ function App() {
     setIsPlaying(true);
   };
   const libClickStable = useCallback(t => libClickRef.current(t), []);
-  const libCtxStable   = useCallback((tr, x, y) => setTrackMenu({ track: tr, x, y }), []);
+  const libCtxStable = useCallback((track, x, y, keyboard) => setTrackMenu({
+    track, x, y, focusFrom: keyboard ? document.activeElement : null,
+  }), []);
 
   const likedIds = useMemo(() => new Set(scTracks.map(t => t.id)), [scTracks]);
 
@@ -14414,6 +14695,7 @@ function App() {
       setView('player');
       setNavActive('library');
       /* трек уже звучит — не трогаем элемент. иначе играл бы с нуля */
+      if (keepCurrent && shuffleOnRef.current) shuffleStateRef.current.start(queue, cur.id);
       if (!keepCurrent) handleScTrackClick(mapped[0], -1);
     } catch {
       showToast(t('station_err'));
@@ -14514,6 +14796,13 @@ function App() {
   [scTracks, searchLower]);
   filteredScRef.current = filteredSc;
   const activeList = sourceMode === 'sc' ? filteredSc : filtered;
+  if (queueOpen) {
+    const hasCurrent = track !== BLANK_TRACK;
+    queueDisplayRef.current = {
+      upcoming: hasCurrent && !partyActive && repeat !== 'one' ? upcomingSourceTracks(track, true) : [],
+      entries: queuedTracks.filter(entry => queueSource(entry.track) === queuePanelSource),
+    };
+  }
   const activeListPlayingId = sourceMode === 'sc'
     ? (scPlayingTrack ? scPlayingTrack.id : null)
     : (scPlayingTrack ? null : track?.id);
@@ -15203,7 +15492,7 @@ function App() {
                 </div>
               )}
               <ShuffleBtn variant="pill" h={38} on={shuffle} style={{alignSelf:'center'}}
-                onClick={() => handleShuffleToggle(sourceMode === 'sc' ? scTracks : tracks)}
+                onClick={() => handleShuffleToggle(sourceMode === 'sc' ? scTracks : sortedTracks, { kind:'library' })}
                 disabled={(sourceMode === 'sc' ? scTracks.length : tracks.length) === 0}/>
             </div>}
             {showWelcome ? (
@@ -15280,6 +15569,7 @@ function App() {
                 likedIds={sourceMode === 'sc' ? likedIds : null}
                 onLike={sourceMode === 'sc' ? handleLike : null}
                 onSelect={selectTrackStable}
+                onContextMenu={libCtxStable}
                 returnKey={homeReturnKey}
                 coverRadius={libraryCoverRadius}
                 heroId={hero && entryCoverFlightStarted && !heroExiting ? hero.track.id : null}
@@ -15313,7 +15603,7 @@ function App() {
             : 'opacity 0.14s ease, transform 0.18s ease, width 0.44s cubic-bezier(0.4,0,0.2,1)',
         }}>
           <div style={{width:260, flexShrink:0, height:'100%', position:'relative'}}>
-          <div data-motion-spatial="" style={{
+          <div data-motion-spatial="" inert={!playerVisible || lyricsOpen || fxOpen ? '' : undefined} style={{
             position:'absolute', inset:0, display:'flex', flexDirection:'column',
             /* уступает место любой из двух панелей колонки — тексту и эффектам:
                обе приезжают справа на месте списка */
@@ -15336,6 +15626,8 @@ function App() {
               ? 'opacity 0.16s ease, transform 0.16s ease'
               : 'opacity 0.3s ease 0.08s, transform 0.44s cubic-bezier(0.22,1,0.36,1) 0.08s',
           }}>
+          <div className="queue-library-layer" data-queue-active={!queueOpen} data-queue-instant={queueInstant}
+            inert={queueOpen ? '' : undefined} aria-hidden={queueOpen || undefined}>
           <AnimatePresence initial={false} mode="wait">
           {stationActive ? (
             <motion.div key="station-chip" data-motion-spatial=""
@@ -15385,6 +15677,7 @@ function App() {
                     overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
                   }}>{stationActive.origTrack.title}</div>
                 </div>
+                <QueueToggle compact buttonRef={queueToggleRef} hasEntries={queueHasEntries} onClick={toggleQueue} t={t}/>
                 <div onClick={handleExitStation} title={t('station_exit')} style={{
                   width:26, height:26, borderRadius:8, flexShrink:0,
                   display:'flex', alignItems:'center', justifyContent:'center',
@@ -15452,6 +15745,7 @@ function App() {
                     </>)}
                   </div>
                 </div>
+                <QueueToggle compact buttonRef={queueToggleRef} hasEntries={queueHasEntries} onClick={toggleQueue} t={t}/>
                 <ShuffleBtn variant="icon" on={shuffle} title={t('shuffle_all')}
                   onClick={() => handleShuffleToggle(playlistActive.tracks)}
                   disabled={!playlistActive.tracks.length}/>
@@ -15523,6 +15817,7 @@ function App() {
                   }}>×</div>
                 )}
               </div>
+              <QueueToggle buttonRef={queueToggleRef} hasEntries={queueHasEntries} onClick={toggleQueue} t={t}/>
               <ShuffleBtn variant="icon" field h={34} on={shuffle} onClick={() => handleShuffleToggle(activeQueueList())}/>
               </div>
             </motion.div>
@@ -15540,6 +15835,17 @@ function App() {
             scrollTargetId={libScrollTargetId}
             onContextMenuItem={libCtxStable}
           />
+          </div>
+          <PlaybackQueue active={queueOpen}
+            {...queueDisplayRef.current}
+            current={track !== BLANK_TRACK ? track : null} isPlaying={isPlaying} isLoading={loadingTrackId != null}
+            motionEnabled={playerVisible && !libCollapsed && !lyricsOpen && !fxOpen} reduced={reduced}
+            repeatOne={repeat === 'one'} pausedForParty={partyActive} onBack={toggleQueue} backRef={queueBackRef}
+            onPlay={playQueuedTrack} onPlaySource={playSourceTrack} onMoveSource={movePlaybackSourceTrack}
+            onMove={(entry, offset) => updateQueuedTracks(moveQueuedTrack(queuedTracksRef.current, entry, offset))}
+            onRemove={removeQueuedTrack}
+            onClear={() => updateQueuedTracks(queuedTracksRef.current.filter(entry => queueSource(entry.track) !== queuePanelSource))}
+            t={t} instant={queueInstant}/>
           </div>
           <LyricsPanel open={lyricsOpen} inPlayer={view === 'player' && playerVisible} state={lyricsView} activeLine={lyricsActive}
             audioRef={audioRef}
@@ -15744,7 +16050,7 @@ function App() {
               <TransportButton onClick={handleToggleFx} active={fxOpen} size={SIDE} title={t('eq')}>
                 <span aria-hidden="true" className="player-toggle-icon player-equalizer-icon"/>
               </TransportButton>
-              <TransportButton onClick={()=>{ if (partyCanControl()) setShuffle(s=>!s); }} disabled={partyLocked} active={shuffle} size={SIDE}>
+              <TransportButton onClick={togglePlaybackShuffle} disabled={partyLocked} active={shuffle} size={SIDE}>
                 <span aria-hidden="true" className="player-toggle-icon player-shuffle-icon"/>
               </TransportButton>
               <TransportButton onClick={handlePrev} disabled={partyLocked} size={SKIP} title={t('playback_previous')}>
@@ -15814,13 +16120,22 @@ function App() {
         <PlaylistEditor ref={plEditorRef} visible={view==='playlistEditor' && !!editingPlaylist}
           playlist={editingPlaylist?.playlist} scAuth={settings.soundcloudAuth||null}
           onClose={handleClosePlEditor} onUpdated={handlePlaylistUpdated} onDelete={handleDeletePlaylist}
-          fallbackTracks={scTracks} onPlayTrack={tr => handleScTrackClick(tr, -1)}
+          fallbackTracks={scTracks} onPlayTrack={(tr, list, origin) => {
+            rememberScQueue(list, origin);
+            handleScTrackClick(tr, -1);
+          }}
           playingTrackId={scPlayingTrack?.id ?? null}
           loadingTrackId={loadingTrackId} errorTrackId={errorTrackId}/>
-        <SearchView ref={searchViewRef} visible={view==='search'} scAuth={settings.soundcloudAuth||null}
+        <SearchView ref={searchViewRef} visible={view==='search'} scAuth={settings.soundcloudAuth||null} onTrackMenu={libCtxStable}
           likedIds={likedIds} onLike={handleLike}
-          onPlayTrack={(t, queue) => { searchQueueRef.current = queue || null; handleScTrackClick(t, -1); }}
-          onSelectTrack={(t, queue) => { searchQueueRef.current = queue || null; openSearchTrack(t); }}
+          onPlayTrack={(track, list, query) => {
+            rememberScQueue(list, { kind:'search', key:query });
+            handleScTrackClick(track, -1);
+          }}
+          onSelectTrack={(track, list, query) => {
+            rememberScQueue(list, { kind:'search', key:query });
+            openSearchTrack(track);
+          }}
           onResultsLoaded={handleSearchResultsLoaded}
           onArtistClick={handleOpenArtist}
           loadingTrackId={loadingTrackId} errorTrackId={errorTrackId}
@@ -15828,14 +16143,18 @@ function App() {
           heroId={hero && entryCoverFlightStarted && !heroExiting ? hero.track.id : null}
           glowOff={settings.accentMode==='off' || settings.ambientGlow === false}
           onLogin={() => { setSettingsSec('account'); handleNav('settings'); }}/>
-        <ArtistView artist={artistView} visible={view==='artist'} onClose={handleCloseArtist} scAuth={settings.soundcloudAuth||null} artistCacheRef={artistCacheRef}
+        <ArtistView ref={artistPlaybackViewRef} artist={artistView} visible={view==='artist'} onClose={handleCloseArtist} scAuth={settings.soundcloudAuth||null} artistCacheRef={artistCacheRef} onTrackMenu={libCtxStable}
           hideDividers={HIDE_DIVIDERS} glowOff={settings.accentMode==='off' || settings.ambientGlow === false}
           likedIds={likedIds} onLike={handleLike}
-          /* очередь = список артиста. раньше второй аргумент не передавался,
-             searchQueueRef оставался null, и next после трека артиста уезжал
-             в лайки — в совсем другой список */
-          onPlayTrack={(tr, queue) => { searchQueueRef.current = queue || null; handleScTrackClick(tr, -1); }}
-          onSelectTrack={(tr, queue) => { searchQueueRef.current = queue || null; handleScTrackClick(tr, -1); setHomeVisible(false); setPlayerVisible(true); setView('player'); setNavActive('library'); }}
+          onPlayTrack={(track, list, origin) => {
+            rememberScQueue(list, origin);
+            handleScTrackClick(track, -1);
+          }}
+          onSelectTrack={(track, list, origin) => {
+            rememberScQueue(list, origin);
+            handleScTrackClick(track, -1);
+            setHomeVisible(false); setPlayerVisible(true); setView('player'); setNavActive('library');
+          }}
           onTracksAppended={handleSearchResultsLoaded}
           onLogin={() => { setSettingsSec('account'); handleNav('settings'); }}
           loadingTrackId={loadingTrackId} errorTrackId={errorTrackId}
@@ -15881,7 +16200,11 @@ function App() {
         <AnimatePresence>
           {trackMenu && (
             <TrackContextMenu key="ctxmenu" menu={trackMenu}
-              onClose={() => setTrackMenu(null)}
+              onClose={() => {
+                setTrackMenu(null);
+                if (trackMenu.focusFrom?.isConnected) trackMenu.focusFrom.focus({ preventScroll:true });
+              }}
+              onQueueTrack={queueTrackKey(trackMenu.track) ? addQueuedTrack : null}
               onCopyLink={handleCopyTrackLink}
               onStartStation={handleStartStation}
               onDownload={handleOpenDownload}

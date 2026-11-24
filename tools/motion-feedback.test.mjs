@@ -2,10 +2,90 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import * as lifecycle from '../src/motion-lifecycle.js';
+import { queueTrackKey } from '../src/playback-queue.js';
 import { hookHarness, animationElement, findNode } from './motion-harness.mjs';
 
 const app = readFileSync(new URL('../src/app.jsx', import.meta.url), 'utf8');
 const feedbackHook = readFileSync(new URL('../src/use-motion-feedback.js', import.meta.url), 'utf8');
+
+test('queue pointer capture reorders by the row under the pointer and cancels without a move', () => {
+  const source = readFileSync(new URL('../src/playback-queue.jsx', import.meta.url), 'utf8');
+  let hit, captured;
+  const document = { elementFromPoint: () => hit };
+  const harness = hookHarness(source + '\nexport { QueueRows };', {
+    './playback-queue.js': { queueTrackKey }, './playback-queue.css': {}, './queue-track-motion.jsx': {},
+  }, { document });
+  const items = [1, 2, 3].map(id => ({ track: { id } }));
+  const moves = [];
+  const render = () => harness.render(harness.exports.QueueRows, { items, limit: 3, group: 'source', t: key => key,
+    onMove: (...args) => moves.push(args) });
+  let tree = render();
+  const list = tree.ref.current;
+  list.closest = () => null;
+  list.children = items.map(({ track }) => ({
+    dataset: { queueRowKey: `source:${track.id}:0` }, parentElement: list, closest() { return this; },
+  }));
+  const grip = () => findNode(tree, node => node.props?.className === 'queue-icon-button queue-grip').props;
+  const event = { pointerId: 7, button: 0, clientX: 10, clientY: 25,
+    currentTarget: { setPointerCapture: id => { captured = id; } } };
+
+  grip().onPointerDown(event);
+  assert.equal(captured, 7);
+  hit = list.children[2];
+  grip().onPointerMove({ ...event, clientY: 110 });
+  tree = render();
+  assert.ok(findNode(tree, node => node.props?.['data-drop'] === 'after'));
+  grip().onPointerUp({ ...event, clientY: 110 });
+  assert.deepEqual(moves, [[items[0], items[2], 2]]);
+
+  grip().onPointerDown(event);
+  grip().onPointerMove({ ...event, clientY: 110 });
+  grip().onPointerCancel(event);
+  grip().onPointerUp({ ...event, clientY: 110 });
+  tree = render();
+  assert.equal(findNode(tree, node => node.props?.['data-drop'] != null), null);
+  assert.equal(moves.length, 1);
+});
+
+test('queue promotes the actual upcoming row and cancels the handoff when reduced motion turns on', () => {
+  const source = readFileSync(new URL('../src/queue-track-motion.jsx', import.meta.url), 'utf8');
+  const harness = hookHarness(source, { './motion-lifecycle.js': lifecycle }, { getComputedStyle: () => ({ opacity: '1' }) });
+  const { QueueTrackMotion } = harness.exports;
+  const rect = top => ({ top, bottom: top + 42, height: 42 });
+  const oldProps = { enabled: true, reduced: false, trackKey: 'sc:1' };
+  const motion = new QueueTrackMotion(oldProps);
+  const current = animationElement();
+  current.getBoundingClientRect = () => rect(10);
+  const ghost = animationElement();
+  ghost.removeAttribute = () => {};
+  ghost.remove = () => { ghost.removed = true; };
+  current.cloneNode = () => ghost;
+  const next = { dataset: { queueRowKey: 'source:2:0', queueTrackKey: 'sc:2' }, getBoundingClientRect: () => rect(72) };
+  const following = animationElement();
+  following.dataset = { queueRowKey: 'source:3:0', queueTrackKey: 'sc:3' };
+  let followingTop = 114;
+  following.getBoundingClientRect = () => rect(followingTop);
+  let rows = [next, following];
+  const exit = { append: node => assert.equal(node, ghost) };
+  motion.body.current = { getBoundingClientRect: () => ({ top: 0, bottom: 200, height: 200 }),
+    querySelector: selector => selector === '.queue-current' ? current : exit,
+    querySelectorAll: () => rows };
+
+  motion.props = { ...oldProps, trackKey: 'sc:2' };
+  const snapshot = motion.getSnapshotBeforeUpdate(oldProps);
+  rows = [following];
+  followingTop = 72;
+  motion.componentDidUpdate(oldProps, null, snapshot);
+  assert.equal(current.calls[0].frames[0].transform, 'translateY(62px)');
+  assert.equal(ghost.calls[0].frames.at(-1).opacity, 0);
+  assert.equal(following.calls[0].frames[0].transform, 'translateY(42px)');
+
+  motion.props = { ...motion.props, reduced: true, trackKey: 'sc:3' };
+  assert.equal(motion.getSnapshotBeforeUpdate(oldProps), null);
+  motion.componentDidUpdate(oldProps, null, null);
+  assert.equal(current.calls[0].cancelled, true);
+  assert.equal(ghost.removed, true);
+});
 
 test('track feedback is a two-phase 160ms transform pulse with no pinned inline style', () => {
   const el = animationElement(), owner = lifecycle.createFeedbackMotion(el);
@@ -116,15 +196,16 @@ test('artist play-all press is pointer-only, disabled is real and transport exec
   const end = app.indexOf('</button>', begin) + '</button>'.length;
   assert.ok(begin > 0 && end > begin);
   const tracks = [{ id: 1 }, { id: 2 }], calls = [];
+  const playbackOrigin = { kind:'artist', key:'1:popular' };
   const harness = hookHarness(`export function Button({ canPlay }) { return (${app.slice(begin, end)}); }`, {}, {
-    artistTracks: tracks, onPlayTrack: (...args) => calls.push(args), t: key => key,
+    artistTracks: tracks, playbackOrigin, onPlayTrack: (...args) => calls.push(args), t: key => key,
   });
   let tree = harness.render(harness.exports.Button, { canPlay: false });
   const target = { dataset: {}, style: {} }, event = { currentTarget: target, button: 0, pointerType: 'mouse' };
   tree.props.onPointerDown(event); tree.props.onClick(); assert.equal(tree.props.disabled, true);
   assert.deepEqual(calls, []); assert.deepEqual(target.dataset, {});
   tree = harness.render(harness.exports.Button, { canPlay: true }); tree.props.onPointerDown(event);
-  assert.equal(target.dataset.pointerPressed, 'true'); tree.props.onClick(); assert.deepEqual(calls, [[tracks[0], tracks]]);
+  assert.equal(target.dataset.pointerPressed, 'true'); tree.props.onClick(); assert.deepEqual(calls, [[tracks[0], tracks, playbackOrigin]]);
   tree.props.onPointerUp(event); assert.deepEqual(target.dataset, {});
   tree.props.onPointerDown(event); tree.props.onKeyDown({ ...event, key: 'Enter' }); assert.deepEqual(target.dataset, {});
   tree.props.onClick(); assert.equal(calls.length, 2);
